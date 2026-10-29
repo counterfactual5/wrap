@@ -27,7 +27,7 @@ def main():
     cur = None
     for idx, L in enumerate(layers):
         m = L.get("motion") or {}
-        if L["type"] == "code" and L["draw"] == "grid":
+        if L["type"] == "code" and L["draw"] in ("grid", "dots"):
             inputs += ["-loop", "1", "-framerate", str(FPS), "-i", B(f"build/prepared/{L['id']}.png")]
             chains.append(f"[{idx}]scale={W}:{H},setsar=1[l{idx}]")
             if cur is not None:

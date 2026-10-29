@@ -7,7 +7,7 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BLENDS = {"multiply", "screen"}
 LAYER_TYPES = {"code", "ai"}
-DRAWS = {"grid", "bar"}
+DRAWS = {"grid", "bar", "dots"}
 METRICS = {"changed_pixel_ratio", "red_pixel_ratio", "edge_key_purity"}
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 

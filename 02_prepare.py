@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from lib import manifest
-from lib.draw import grid
+from lib.draw import dots, grid
 from lib.metrics import edge_key_purity, read_rgb
 from lib.png import read_size, write_png
 from schema import ROOT, gate_of, hex_rgb, load_spec
@@ -25,11 +25,12 @@ def main():
     blocked = False
 
     for L in spec["layers"]:
-        if L["type"] == "code" and L["draw"] == "grid":
+        if L["type"] == "code" and L["draw"] in ("grid", "dots"):
             rel = f"build/prepared/{L['id']}.png"
-            write_png(os.path.join(ROOT, rel), W, H, grid(W, H))
+            img_data = grid(W, H) if L["draw"] == "grid" else dots(W, H)
+            write_png(os.path.join(ROOT, rel), W, H, img_data)
             manifest.register("prepared", L["id"], rel, source="code")
-            print(f"drew {rel}")
+            print(f"drew {rel} ({L['draw']})")
 
         if L["type"] != "ai":
             continue

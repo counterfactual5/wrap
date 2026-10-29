@@ -16,6 +16,22 @@ def grid(w, h, paper=(244, 244, 244), line=(217, 217, 217), step=80):
     return b"".join(rows)
 
 
+def dots(w, h, paper=(244, 244, 244), dot=(200, 200, 200), step=40, radius=2):
+    """Draw a procedural dot matrix background."""
+    px = bytearray(bytes(paper) * (w * h))
+    for cy in range(step // 2, h, step):
+        for cx in range(step // 2, w, step):
+            for dy in range(-radius, radius + 1):
+                y = cy + dy
+                if 0 <= y < h:
+                    for dx in range(-radius, radius + 1):
+                        x = cx + dx
+                        if 0 <= x < w and (dx * dx + dy * dy <= radius * radius):
+                            idx = (y * w + x) * 3
+                            px[idx:idx + 3] = bytes(dot)
+    return bytes(px)
+
+
 def fake_city(w, h, ink=(17, 17, 17), key=(255, 255, 255)):
     """White canvas + deterministic black 'buildings' on a baseline. No RNG, no externals."""
     px = bytearray(bytes(key) * (w * h))

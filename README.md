@@ -1,9 +1,9 @@
 # Poster Video Pipeline (Code-Driven Single-Shot)
 
 A deterministic, code-driven video synthesis pipeline that compiles a structured shot specification (`spec/*.poster.json`) into 1080p 30fps video using 3 layers:
-1. **Code Background** (Procedural grid)
+1. **Code Background** (Procedural `grid` or `dots`)
 2. **AI Subject** (City silhouette, blend: multiply, edge keying)
-3. **Code Foreground** (Animated geometric accent bar)
+3. **Code Foreground** (Animated geometric accent `bar`)
 
 ---
 
