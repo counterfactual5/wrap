@@ -82,6 +82,11 @@ python3 pipeline.py run --spec spec/shot-01.poster.json
 make clean
 ```
 
+### 5. Concatenate Shots via Timeline
+```bash
+python3 pipeline.py concat --timeline spec/timeline.json --output build/full.mp4
+```
+
 ---
 
 ## Reusable Agent Skill

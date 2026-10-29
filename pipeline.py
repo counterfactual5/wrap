@@ -8,6 +8,7 @@ Commands:
   gate       S4: run quality gates (motion, color, purity, freeze)
   run        Execute stages S1 -> S2 -> S3 -> S4 in sequence
   init-shot  Initialize a new shot specification template
+  concat     Concatenate multiple rendered shots via timeline.json
   test       Execute full automated test suite
   clean      Clean intermediate build artifacts
 """
@@ -64,6 +65,11 @@ def main():
     # init-shot
     p_init = subparsers.add_parser("init-shot", help="Initialize a new shot specification template")
     p_init.add_argument("shot_id", help="Shot ID, e.g. shot-02")
+
+    # concat
+    p_cat = subparsers.add_parser("concat", help="Concatenate multiple rendered shots via timeline")
+    p_cat.add_argument("--timeline", default="spec/timeline.json", help="Path to timeline.json")
+    p_cat.add_argument("--output", default="build/full.mp4", help="Path to output mp4")
 
     # test
     subparsers.add_parser("test", help="Run full regression test suite")
@@ -133,6 +139,50 @@ def main():
         with open(target, "w") as f:
             json.dump(template, f, indent=2)
         print(f"Initialized new shot specification: {target}")
+
+    elif args.command == "concat":
+        timeline_path = os.path.join(ROOT, args.timeline)
+        if not os.path.exists(timeline_path):
+            os.makedirs(os.path.dirname(timeline_path), exist_ok=True)
+            with open(timeline_path, "w") as f:
+                json.dump({"id": "full-sequence", "shots": ["spec/shot-01.poster.json"]}, f, indent=2)
+            print(f"Created default timeline at: {timeline_path}")
+
+        with open(timeline_path) as f:
+            tl = json.load(f)
+
+        shots = tl.get("shots", [])
+        if not shots:
+            sys.exit("Error: timeline.json has no shots")
+
+        rendered_mp4s = []
+        for shot in shots:
+            shot_file = os.path.join(ROOT, shot if shot.endswith(".json") else f"spec/{shot}.poster.json")
+            if not os.path.exists(shot_file):
+                sys.exit(f"Error: shot spec not found: {shot_file}")
+            with open(shot_file) as sf:
+                s_data = json.load(sf)
+            sid = s_data["id"]
+            mp4_path = os.path.join(ROOT, "build", f"{sid}.mp4")
+            if not os.path.exists(mp4_path):
+                print(f"Shot MP4 missing: {mp4_path}. Rendering now...")
+                run_stage(["03_compose.py", "--spec", shot_file], f"Render {sid}")
+            rendered_mp4s.append(mp4_path)
+
+        out_path = os.path.join(ROOT, args.output)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        concat_txt = os.path.join(ROOT, "build", "concat_list.txt")
+        with open(concat_txt, "w") as f:
+            for p in rendered_mp4s:
+                f.write(f"file '{os.path.abspath(p)}'\n")
+
+        print(f"Concatenating {len(rendered_mp4s)} shots -> {out_path} ...")
+        cmd = [
+            "ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
+            "-i", concat_txt, "-c", "copy", "-movflags", "+faststart", out_path
+        ]
+        subprocess.run(cmd, check=True)
+        print(f"Successfully generated: {out_path} (size: {os.path.getsize(out_path)} bytes)")
 
     elif args.command == "test":
         run_stage(["-m", "unittest", "discover", "tests"], "Regression Test Suite")
