@@ -67,6 +67,21 @@ class TestPipeline(unittest.TestCase):
         v2 = manifest.sha256(os.path.join(ROOT, "build", "shot-01.mp4"))
         self.assertEqual(v1, v2, f"Bit-for-bit mismatch: {v1} != {v2}")
 
+    def test_04_init_shot(self):
+        test_shot = "test-shot-init"
+        target = os.path.join(ROOT, "spec", f"{test_shot}.poster.json")
+        try:
+            if os.path.exists(target):
+                os.remove(target)
+            res = subprocess.run([sys.executable, "pipeline.py", "init-shot", test_shot], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue(os.path.exists(target))
+            spec = load_spec(target)
+            self.assertEqual(spec["id"], test_shot)
+        finally:
+            if os.path.exists(target):
+                os.remove(target)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,10 +7,12 @@ Commands:
   compose    S3: single-command ffmpeg composition
   gate       S4: run quality gates (motion, color, purity, freeze)
   run        Execute stages S1 -> S2 -> S3 -> S4 in sequence
+  init-shot  Initialize a new shot specification template
   test       Execute full automated test suite
   clean      Clean intermediate build artifacts
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -59,6 +61,10 @@ def main():
     p_run.add_argument("--force", action="store_true", help="Force re-generation of assets")
     p_run.add_argument("--fixture", action="store_true", help="Use deterministic fixture")
 
+    # init-shot
+    p_init = subparsers.add_parser("init-shot", help="Initialize a new shot specification template")
+    p_init.add_argument("shot_id", help="Shot ID, e.g. shot-02")
+
     # test
     subparsers.add_parser("test", help="Run full regression test suite")
 
@@ -99,6 +105,34 @@ def main():
         run_stage(["03_compose.py", "--spec", args.spec], "S3: Compose (FFmpeg)")
         run_stage(["04_gate.py", "--spec", args.spec], "S4: Quality Gates")
         print("\nPipeline completed successfully! All gates passed.")
+
+    elif args.command == "init-shot":
+        shot_id = args.shot_id.strip()
+        os.makedirs(os.path.join(ROOT, "spec"), exist_ok=True)
+        target = os.path.join(ROOT, "spec", f"{shot_id}.poster.json")
+        if os.path.exists(target):
+            print(f"Spec already exists: {target}")
+            return
+        template = {
+            "id": shot_id,
+            "canvas": {"w": 1920, "h": 1080},
+            "fps": 30,
+            "durationInFrames": 150,
+            "style": "spec/style.json",
+            "layers": [
+                {"id": "bg", "type": "code", "draw": "grid", "rect": [0, 0, 1920, 1080], "z": 0},
+                {"id": "subject", "type": "ai", "asset": f"{shot_id}-subject", "keyColor": "#ffffff", "blend": "multiply", "rect": [0, 0, 1920, 1080], "z": 1, "motion": {"type": "geometric", "zoom": [1.0, 1.05]}},
+                {"id": "accent", "type": "code", "draw": "bar", "rect": [0, 880, 240, 70], "color": "#E03A3A", "z": 2, "motion": {"type": "geometric", "pan": [0, 540]}}
+            ],
+            "gates": [
+                {"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0005, "hi": 0.08},
+                {"id": "red", "metric": "red_pixel_ratio", "lo": 0.002, "hi": 0.02},
+                {"id": "keyPurity", "metric": "edge_key_purity", "lo": 0.98}
+            ]
+        }
+        with open(target, "w") as f:
+            json.dump(template, f, indent=2)
+        print(f"Initialized new shot specification: {target}")
 
     elif args.command == "test":
         run_stage(["-m", "unittest", "discover", "tests"], "Regression Test Suite")

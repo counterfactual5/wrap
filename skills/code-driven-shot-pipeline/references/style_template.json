@@ -1,0 +1,15 @@
+{
+  "keyColor": "#ffffff",
+  "palette": {
+    "ink": "#111111",
+    "accent": "#E03A3A",
+    "grid": "#D9D9D9",
+    "paper": "#F4F4F4"
+  },
+  "promptFields": {
+    "subject": "flat vector silhouette of a dense city skyline",
+    "composition": "single row of buildings, baseline at bottom, varied heights, no sky",
+    "background": "pure solid white background, no gradient, no vignette, no shadow",
+    "exclude": "no text, no windows detail, no color, no outline, no watermark"
+  }
+}
