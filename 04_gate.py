@@ -11,6 +11,22 @@ from lib import manifest, metrics
 from schema import ROOT, load_spec
 
 
+def _bar_band(spec):
+    """Vertical band covering the accent bar's travel (rect y .. y+h, padded)."""
+    for L in spec["layers"]:
+        if L["type"] == "code" and L.get("draw") == "bar":
+            x, y, w, h = L["rect"]
+            return [max(0, y - 20), min(spec["canvas"]["h"], y + h + 20)]
+    return None
+
+
+def _accent_color(spec):
+    for L in spec["layers"]:
+        if L["type"] == "code" and L.get("draw") == "bar":
+            return L.get("color")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="S4: Quality gates validation")
     parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
@@ -27,7 +43,19 @@ def main():
         inp = ("-framerate", str(FPS))
         if g["metric"] == "changed_pixel_ratio":
             return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp))
-        if g["metric"] == "red_pixel_ratio":
+        if g["metric"] == "subject_motion_ratio":
+            # Same metric, restricted to the region outside g["region"] — a
+            # panning bar can no longer mask a static AI subject.
+            band = g.get("region") or _bar_band(spec)
+            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=tuple(band)))
+        if g["metric"] in ("red_pixel_ratio", "accent_color_ratio"):
+            if g["metric"] == "accent_color_ratio":
+                from schema import hex_rgb
+                color = _accent_color(spec)
+                if color is None:
+                    raise RuntimeError("accent_color_ratio: no bar layer color in spec")
+                tables = metrics._mask_tables(hex_rgb(color))
+                return metrics.median(metrics.color_pixel_ratios(frames, W, H, tables, inp))
             return metrics.median(metrics.red_pixel_ratios(frames, W, H, inp))
         if g["metric"] == "edge_key_purity":
             # Verify sha256 through the manifest (not trust a stored number): a

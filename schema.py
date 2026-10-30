@@ -8,7 +8,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 BLENDS = {"multiply", "screen"}
 LAYER_TYPES = {"code", "ai"}
 DRAWS = {"grid", "bar", "dots"}
-METRICS = {"changed_pixel_ratio", "red_pixel_ratio", "edge_key_purity"}
+METRICS = {"changed_pixel_ratio", "red_pixel_ratio", "edge_key_purity", "subject_motion_ratio", "accent_color_ratio"}
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -85,6 +85,12 @@ def validate(spec):
             e(f"gate {g.get('id')}: needs lo and/or hi")
         if lo is not None and hi is not None and lo > hi:
             e(f"gate {g.get('id')}: lo > hi")
+        # region: optional [y0, y1] canvas band excluded from motion metrics,
+        # so a panning foreground cannot mask a static subject.
+        r = g.get("region")
+        if r is not None and not (isinstance(r, list) and len(r) == 2
+                                  and all(isinstance(v, int) for v in r) and 0 <= r[0] < r[1] <= spec["canvas"]["h"]):
+            e(f"gate {g.get('id')}: region must be [y0,y1] ints within canvas height")
     return errs
 
 

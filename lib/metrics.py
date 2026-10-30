@@ -26,25 +26,58 @@ def _frames(src, w, h, pix_fmt, bpp, extra_in=()):
         raise RuntimeError(f"ffmpeg failed on {src}")
 
 
-def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=()):
+def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None):
     """Per adjacent-frame pair: share of pixels whose luma differs by > luma_delta.
-    Identical rows are skipped with a C-level bytes compare first, so static
-    content is nearly free; only rows that actually change pay the exact loop.
-    (Unlike red_ratio_of_frame there is no unary-mask trick here: the comparison
-    is between two frames — binary — so per-byte |a-b|>delta is the exact form.)"""
+    exclude_band=(y0, y1) drops those canvas rows from both the count and the
+    denominator, so a foreground bar panning across the frame cannot mask a
+    static subject. Identical rows are skipped with a C-level bytes compare
+    first, so static content is nearly free."""
     out, prev = [], None
+    y0, y1 = exclude_band if exclude_band else (h, h)  # empty range when unused
+    denom = w * (h - (y1 - y0))
     for f in _frames(src, w, h, "gray", 1, extra_in):
         if prev is not None:
             n = 0
             for y in range(h):
+                if y0 <= y < y1:
+                    continue
                 a, b = prev[y * w:(y + 1) * w], f[y * w:(y + 1) * w]
                 if a != b:
                     n += sum(1 for p, q in zip(a, b) if abs(p - q) > luma_delta)
-            out.append(n / (w * h))
+            out.append(n / denom)
         prev = f
     return out
 
 
+def _mask_tables(rgb_hex):
+    """Per-channel 0/1 translate tables for 'pixel is close to this color'.
+    Derived from the spec's layer color, not hardcoded red: hue is kept by
+    requiring the dominant channel high and the other two low, each within a
+    tolerance band around the target channel values."""
+    r0, g0, b0 = rgb_hex
+    tol = 40
+    t_r = bytes(1 if abs(v - r0) <= tol + 30 else 0 for v in range(256))
+    t_g = bytes(1 if abs(v - g0) <= tol else 0 for v in range(256))
+    t_b = bytes(1 if abs(v - b0) <= tol else 0 for v in range(256))
+    return t_r, t_g, t_b
+
+
+def color_ratio_of_frame(rgb, w, h, tables):
+    """Share of pixels matching the derived color mask, via bytes.translate +
+    big-int AND + popcount (same trick the old hardcoded red mask used)."""
+    t_r, t_g, t_b = tables
+    r = rgb[0::3].translate(t_r)
+    g = rgb[1::3].translate(t_g)
+    b = rgb[2::3].translate(t_b)
+    both = int.from_bytes(r, "big") & int.from_bytes(g, "big") & int.from_bytes(b, "big")
+    return both.bit_count() / (w * h)
+
+
+def color_pixel_ratios(src, w, h, tables, extra_in=()):
+    return [color_ratio_of_frame(f, w, h, tables) for f in _frames(src, w, h, "rgb24", 3, extra_in)]
+
+
+# Kept for the existing red gate and tests: the exact old mask (r>120, g<90, b<90).
 _T_R = bytes(1 if v > 120 else 0 for v in range(256))
 _T_GB = bytes(1 if v < 90 else 0 for v in range(256))
 
