@@ -6,6 +6,7 @@ Usage: python3 03_compose.py [--spec path/to/spec.json]
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -16,12 +17,26 @@ from lib import manifest
 from schema import ROOT, load_spec
 
 
+def frames_fingerprint(frames_dir):
+    """Aggregate sha256 over the frame sequence: sorted *.png names + contents.
+    S4 re-computes this before measuring, so gating a shot against another
+    shot's leftover frames (shared build/frames) fails fast instead of
+    blessing foreign pixels. Non-PNG entries (.DS_Store, subdirs) are ignored:
+    Finder droppings must not invalidate a fresh render."""
+    h = hashlib.sha256()
+    for name in sorted(n for n in os.listdir(frames_dir) if n.endswith(".png")):
+        h.update(name.encode())
+        with open(os.path.join(frames_dir, name), "rb") as f:
+            for b in iter(lambda: f.read(1 << 20), b""):
+                h.update(b)
+    return h.hexdigest()
+
+
 def encoder_fingerprint():
     """ffmpeg/x264 identity for cross-machine reproducibility checks (S4 compares)."""
     out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True).stdout
     first = out.splitlines()[0] if out else "unknown"
     x264 = next((l.strip() for l in out.splitlines() if "x264" in l), "")
-    import hashlib
     return hashlib.sha256((first + x264).encode()).hexdigest()[:16]
 
 
@@ -97,13 +112,14 @@ def main():
 
     render_remotion(spec, frames_dir)
 
-    n = len(os.listdir(frames_dir))
+    n = len([f for f in os.listdir(frames_dir) if f.endswith(".png")])
     if n != spec["durationInFrames"]:
         sys.exit(f"expected {spec['durationInFrames']} frames, got {n}")
 
     out_mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
     encode_mp4(spec, frames_dir, out_mp4)
     row = manifest.register("video", None, f"build/{shot_id}.mp4", frames=n,
+                            frames_sha=frames_fingerprint(frames_dir),
                             encoder=encoder_fingerprint())
     print(f"engine=remotion frames={n} video sha256={row['sha256'][:12]} encoder={row['encoder']}")
     return 0

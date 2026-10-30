@@ -6,9 +6,46 @@ import json
 import os
 import subprocess
 import sys
+from importlib import import_module
 
 from lib import manifest, metrics
 from schema import ROOT, load_spec
+
+
+def _verify_measured_object(shot_id):
+    """The gate must measure THIS shot's artifacts, not whatever last sat in the
+    shared build/frames. Two bindings, both fail-fast:
+    1. the manifest video row (sha-verified by manifest.verified) must belong to
+       this shot — its path is build/{shot_id}.mp4;
+    2. the frame directory's aggregate fingerprint must equal the one S3
+       registered for that row, so stale/replaced frames are refused."""
+    row = manifest.verified("video", None)
+    if row is None:
+        raise RuntimeError(
+            "gate: no manifest-verified video row; run S3 (03_compose.py) first")
+    # compare normalized paths: os.path.join stays POSIX-shaped here, but the
+    # literal f-string is what 03_compose registers.
+    expected_mp4 = os.path.normpath(f"build/{shot_id}.mp4")
+    if os.path.normpath(row.get("path", "")) != expected_mp4:
+        raise RuntimeError(
+            f"gate: manifest video row is {row.get('path')} (another shot's "
+            f"render); build/frames holds that shot's frames, not {shot_id}'s — "
+            f"re-run S3 for this shot before gating")
+    registered = row.get("frames_sha")
+    if not registered:
+        raise RuntimeError(
+            "gate: manifest video row predates frame binding (no frames_sha); "
+            "re-run S3 (03_compose.py) to register the frame fingerprint")
+    frames_dir = os.path.join(ROOT, "build", "frames")
+    if not os.path.isdir(frames_dir):
+        raise RuntimeError(
+            "gate: build/frames is missing; run S3 (03_compose.py) before gating")
+    compose = import_module("03_compose")
+    live = compose.frames_fingerprint(frames_dir)
+    if live != registered:
+        raise RuntimeError(
+            f"gate: build/frames does not match the fingerprint registered for "
+            f"{shot_id} (frames replaced or stale); re-run S3 before gating")
 
 
 def _bar_band(spec):
@@ -34,6 +71,7 @@ def main():
 
     spec = load_spec(args.spec)
     shot_id = spec.get("id", "shot-01")
+    _verify_measured_object(shot_id)
     W, H, FPS = spec["canvas"]["w"], spec["canvas"]["h"], spec["fps"]
     frames = os.path.join(ROOT, "build", "frames", "%05d.png")
     mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
@@ -95,7 +133,6 @@ def main():
 
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.
-    from importlib import import_module
     compose = import_module("03_compose")
     vid = manifest.verified("video", None)
     if vid and vid.get("encoder"):
@@ -113,4 +150,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except RuntimeError as ex:
+        print(f"S4 ERROR: {ex}", file=sys.stderr)
+        sys.exit(1)
