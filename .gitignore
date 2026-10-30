@@ -1,2 +1,7 @@
 build/
 __pycache__/
+node_modules
+.tmp/
+docs/.local/
+out/
+public/prepared/

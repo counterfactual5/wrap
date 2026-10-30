@@ -1,0 +1,17 @@
+{
+  "name": "poster-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio remotion/index.ts",
+    "render": "remotion render remotion/index.ts Shot out/shot.mp4"
+  },
+  "devDependencies": {
+    "@remotion/cli": "^4.0.529",
+    "@types/react": "^19.2.7",
+    "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}

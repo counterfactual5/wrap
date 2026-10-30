@@ -91,11 +91,12 @@ def download_file(url, target_path):
 
 def main():
     parser = argparse.ArgumentParser(description="S1: Generate assets")
+    parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
     parser.add_argument("--force", action="store_true", help="Force re-generation even if manifest entry exists")
     parser.add_argument("--fixture", action="store_true", help="Use deterministic code fixture instead of API")
     args = parser.parse_args()
 
-    spec = load_spec()
+    spec = load_spec(args.spec)
     style_path = os.path.join(ROOT, spec.get("style", "spec/style.json"))
     style = {}
     if os.path.exists(style_path):

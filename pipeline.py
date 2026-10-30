@@ -83,7 +83,7 @@ def main():
         run_stage(["schema.py", args.spec], "Spec Validation")
 
     elif args.command == "generate":
-        gen_args = ["01_generate.py"]
+        gen_args = ["01_generate.py", "--spec", args.spec]
         if args.force:
             gen_args.append("--force")
         if args.fixture:
@@ -101,7 +101,7 @@ def main():
 
     elif args.command == "run":
         run_stage(["schema.py", args.spec], "Spec Validation")
-        gen_args = ["01_generate.py"]
+        gen_args = ["01_generate.py", "--spec", args.spec]
         if args.force:
             gen_args.append("--force")
         if args.fixture:

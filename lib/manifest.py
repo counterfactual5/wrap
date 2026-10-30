@@ -16,10 +16,15 @@ def sha256(path):
 
 
 def load():
+    empty = {"assets": {}, "prepared": {}, "video": None}
     if not os.path.exists(PATH):
-        return {"assets": {}, "prepared": {}, "video": None}
+        return empty
     with open(PATH) as f:
-        return json.load(f)
+        m = json.load(f)
+    # Tolerate manifests written before a section existed (or hand-trimmed).
+    for k, v in empty.items():
+        m.setdefault(k, v if not isinstance(v, dict) else {})
+    return m
 
 
 def save(m):

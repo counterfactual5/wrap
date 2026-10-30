@@ -2,6 +2,7 @@
 Usage: python3 02_prepare.py [--spec path/to/spec.json]
 """
 import argparse
+import json
 import math
 import os
 import subprocess
@@ -21,13 +22,18 @@ def main():
 
     spec = load_spec(args.spec)
     W, H = spec["canvas"]["w"], spec["canvas"]["h"]
+    style_path = os.path.join(ROOT, spec.get("style", "spec/style.json"))
+    palette = {}
+    if os.path.exists(style_path):
+        with open(style_path) as f:
+            palette = json.load(f).get("palette", {})
     os.makedirs(os.path.join(ROOT, "build", "prepared"), exist_ok=True)
     blocked = False
 
     for L in spec["layers"]:
         if L["type"] == "code" and L["draw"] in ("grid", "dots"):
             rel = f"build/prepared/{L['id']}.png"
-            img_data = grid(W, H) if L["draw"] == "grid" else dots(W, H)
+            img_data = grid(W, H, palette) if L["draw"] == "grid" else dots(W, H, palette)
             write_png(os.path.join(ROOT, rel), W, H, img_data)
             manifest.register("prepared", L["id"], rel, source="code")
             print(f"drew {rel} ({L['draw']})")

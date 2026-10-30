@@ -35,8 +35,9 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(red_ratio, 1.0)
 
     def test_02_stages_run(self):
-        # S1 (ensure assets verified)
-        res = subprocess.run([sys.executable, "01_generate.py"], cwd=ROOT, capture_output=True, text=True)
+        # S1 (ensure assets verified, spec-aware)
+        res = subprocess.run([sys.executable, "01_generate.py", "--spec", "spec/shot-01.poster.json"],
+                             cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
         # S2 (prepare & key purity check)
@@ -81,6 +82,67 @@ class TestPipeline(unittest.TestCase):
         finally:
             if os.path.exists(target):
                 os.remove(target)
+
+    def test_05_keypurity_gate_verifies_sha(self):
+        """The keyPurity gate must go red when a prepared asset is tampered with.
+
+        S4 reads purity through manifest.verified() (sha256-checked), not a stored
+        number — a modified file must be caught, not trusted."""
+        path = os.path.join(ROOT, "build", "prepared", "city-silhouette.png")
+        self.assertTrue(os.path.exists(path), "run S2 first")
+        original = open(path, "rb").read()
+        try:
+            # flip one pixel near the edge (inside the 8px purity ring)
+            import lib.png as png
+            w, h = png.read_size(path)
+            rgb = bytearray(metrics.read_rgb(path, w, h))
+            i = (4 * w + 4) * 3
+            rgb[i:i + 3] = b"\x00\xff\x00"
+            png.write_png(path, w, h, bytes(rgb))
+
+            res = subprocess.run([sys.executable, "04_gate.py"], cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0,
+                                "tampered prepared asset passed the gate; purity path not sha-verified")
+        finally:
+            with open(path, "wb") as f:
+                f.write(original)
+
+    def test_06_style_palette_is_truth(self):
+        """S2 must consume style.json palette: change accent -> grid paper changes."""
+        style_path = os.path.join(ROOT, "spec", "style.json")
+        with open(style_path) as f:
+            original = f.read()
+        try:
+            style = json.loads(original)
+            style["palette"]["paper"] = "#101010"
+            with open(style_path, "w") as f:
+                json.dump(style, f, indent=2)
+
+            res = subprocess.run([sys.executable, "02_prepare.py"], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+
+            rgb = metrics.read_rgb(os.path.join(ROOT, "build", "prepared", "bg.png"), 1920, 1080)
+            # (10, 100): off the 80px grid lines, pure paper
+            i = (100 * 1920 + 10) * 3
+            self.assertEqual(list(rgb[i:i + 3]), [16, 16, 16],
+                             "grid paper did not follow style.palette.paper")
+        finally:
+            with open(style_path, "w") as f:
+                f.write(original)
+            subprocess.run([sys.executable, "02_prepare.py"], cwd=ROOT, capture_output=True)
+
+    def test_07_manifest_tolerates_missing_sections(self):
+        """An old/hand-trimmed manifest without 'prepared' must not crash load()."""
+        backup = manifest.PATH + ".bak"
+        os.replace(manifest.PATH, backup)
+        try:
+            with open(manifest.PATH, "w") as f:
+                json.dump({"assets": {}}, f)
+            m = manifest.load()
+            self.assertEqual(m.get("prepared"), {})
+            self.assertIsNone(m.get("video"))
+        finally:
+            os.replace(backup, manifest.PATH)
 
 
 if __name__ == "__main__":

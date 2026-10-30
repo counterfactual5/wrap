@@ -30,7 +30,17 @@ def main():
         if g["metric"] == "red_pixel_ratio":
             return metrics.median(metrics.red_pixel_ratios(frames, W, H, inp))
         if g["metric"] == "edge_key_purity":
-            rows = [manifest.load()["prepared"].get(L["asset"], {}).get("purity") for L in spec["layers"] if L["type"] == "ai"]
+            # Verify sha256 through the manifest (not trust a stored number): a
+            # tampered prepared asset must fail the gate, not sail through it.
+            rows = []
+            for L in spec["layers"]:
+                if L["type"] != "ai":
+                    continue
+                row = manifest.verified("prepared", L["asset"])
+                if row is None:
+                    raise RuntimeError(
+                        f"prepared asset '{L['asset']}' not manifest-verified; run S2")
+                rows.append(row.get("purity"))
             if not rows or any(r is None for r in rows):
                 raise RuntimeError("no purity recorded; run S2")
             return min(rows)
@@ -54,6 +64,18 @@ def main():
     print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
+
+    # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
+    # produced the mp4. Mismatch = re-encode expected, not a quality failure.
+    from importlib import import_module
+    compose = import_module("03_compose")
+    vid = manifest.verified("video", None)
+    if vid and vid.get("encoder"):
+        live = compose.encoder_fingerprint()
+        ok = live == vid["encoder"]
+        print(f"{'PASS' if ok else 'WARN'}  encoder   ffmpeg_fingerprint   manifest={vid['encoder'][:12]} live={live[:12]}")
+        results.append({"id": "encoder", "metric": "ffmpeg_fingerprint",
+                        "value": live, "pass": ok, "warn": not ok})
 
     gate_out = os.path.join(ROOT, "build", "gates.json")
     with open(gate_out, "w") as f:

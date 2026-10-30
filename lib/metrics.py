@@ -28,7 +28,10 @@ def _frames(src, w, h, pix_fmt, bpp, extra_in=()):
 
 def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=()):
     """Per adjacent-frame pair: share of pixels whose luma differs by > luma_delta.
-    Identical rows are skipped with a C-level bytes compare, so static content is nearly free."""
+    Identical rows are skipped with a C-level bytes compare first, so static
+    content is nearly free; only rows that actually change pay the exact loop.
+    (Unlike red_ratio_of_frame there is no unary-mask trick here: the comparison
+    is between two frames — binary — so per-byte |a-b|>delta is the exact form.)"""
     out, prev = [], None
     for f in _frames(src, w, h, "gray", 1, extra_in):
         if prev is not None:

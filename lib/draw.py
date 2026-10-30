@@ -1,23 +1,35 @@
-"""Code-drawn layers and the fake test fixture (stdlib only)."""
+"""Code-drawn layers and the fake test fixture (stdlib only).
+Palette comes from spec/style.json (S2 passes it in); the fallback defaults are
+the same values the style file ships, so colors have exactly one source."""
 from .png import write_png
 
+DEFAULT_PALETTE = {"paper": "#F4F4F4", "grid": "#D9D9D9", "accent": "#E03A3A", "ink": "#111111"}
 
-def grid(w, h, paper=(244, 244, 244), line=(217, 217, 217), step=80):
+
+def _rgb(hexstr):
+    return tuple(int(hexstr[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def grid(w, h, palette=None):
+    p = {**DEFAULT_PALETTE, **(palette or {})}
+    paper, line = _rgb(p["paper"]), _rgb(p["grid"])
     rows = []
     paper_row = bytes(paper) * w
     for y in range(h):
-        if y % step == 0:
+        if y % 80 == 0:
             rows.append(bytes(line) * w)
         else:
             row = bytearray(paper_row)
-            for x in range(0, w, step):
+            for x in range(0, w, 80):
                 row[x * 3:x * 3 + 3] = bytes(line)
             rows.append(bytes(row))
     return b"".join(rows)
 
 
-def dots(w, h, paper=(244, 244, 244), dot=(200, 200, 200), step=40, radius=2):
+def dots(w, h, palette=None, step=40, radius=2):
     """Draw a procedural dot matrix background."""
+    p = {**DEFAULT_PALETTE, **(palette or {})}
+    paper, dot = _rgb(p["paper"]), _rgb(p["grid"])
     px = bytearray(bytes(paper) * (w * h))
     for cy in range(step // 2, h, step):
         for cx in range(step // 2, w, step):
