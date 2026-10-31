@@ -37,9 +37,18 @@ export type Layer = CodeLayer | AiLayer;
 
 export type Gate = {
   id: string;
-  metric: 'changed_pixel_ratio' | 'red_pixel_ratio' | 'edge_key_purity';
+  metric:
+    | 'changed_pixel_ratio'
+    | 'subject_motion_ratio'
+    | 'red_pixel_ratio'
+    | 'accent_color_ratio'
+    | 'edge_key_purity';
   lo?: number;
   hi?: number;
+  lumaDelta?: number;
+  region?: [number, number];
+  ring?: number;
+  tol?: number;
 };
 
 export type ShotSpec = {
@@ -47,6 +56,7 @@ export type ShotSpec = {
   canvas: {w: number; h: number};
   fps: number;
   durationInFrames: number;
+  style?: string;
   layers: Layer[];
   gates: Gate[];
 };

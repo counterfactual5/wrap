@@ -68,7 +68,7 @@ def validate(spec):
                 e(f"{lid}: zoom must be [from,to] numbers >= 1")
             p = m.get("pan")
             if p is not None and not (len(p) == 2 and all(isinstance(v, (int, float)) for v in p)):
-                e(f"{lid}: pan must be [dx,dy] numbers")
+                e(f"{lid}: pan must be [xFrom,xTo] numbers")
             if z is not None and L.get("type") != "ai":
                 e(f"{lid}: zoom only supported on ai layers")
             if p is not None and L.get("draw") != "bar":

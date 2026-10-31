@@ -32,19 +32,28 @@ The **Code-Driven Shot Pipeline** treats motion graphics and video synthesis lik
 |---|---|---|---|
 | **S1 Generate** | `01_generate.py` | Reads `spec` & `style.json`. Fetches AI assets into `assets/*.png` and records SHA256 in `manifest.json`. Reuses frozen assets. | `0` = Assets ready & verified<br>`1` = Generation/Network failure |
 | **S2 Prepare** | `02_prepare.py` | Measures outer 8px key purity on assets. Scales assets with zoom headroom and renders code background layers. | `0` = Purity $\ge 98\%$ & layers ready<br>`1` = Blocked by key impurity |
-| **S3 Compose** | `03_compose.py` (`03_compose.sh`) | Compiles spec into **ONE single FFmpeg command**. Produces lossless `build/frames/%05d.png` and `build/<shot-id>.mp4` with BT.709 color metadata. | `0` = Frames and MP4 rendered |
+| **S3 Compose** | `03_compose.py` (`remotion`) | Compiles spec with **Remotion** rendering engine (`remotion/index.tsx`). Produces lossless `build/frames/%05d.png` and `build/<shot-id>.mp4` with BT.709 color metadata. | `0` = Frames and MP4 rendered |
 | **S4 Gate** | `04_gate.py` | Analyzes lossless PNG frames for motion delta, color accent presence, and freeze frames (`freezedetect`). | `0` = All gates pass<br>`1` = Metric out of bounds |
 
 ## Quality Gate Metrics
 
 - **`changed_pixel_ratio`** (`motion`):
   Fraction of total pixels between adjacent frames whose Luma difference $> 6$. Resolution-independent. Typical target range: `[0.0005, 0.08]`.
+- **`subject_motion_ratio`** (`subject`):
+  Fraction of pixels with Luma difference $> 6$ outside excluded foreground bands (e.g. animated bar), preventing bar motion from masking a static subject. Typical target range: `[0.0005, 0.08]`.
 - **`red_pixel_ratio`** (`red`):
   Fraction of pixels matching RGB accent mask ($R > 120, G < 90, B < 90$). Typical target range: `[0.002, 0.02]`.
+- **`accent_color_ratio`** (`accent`):
+  Fraction of pixels matching arbitrary hex accent color mask from spec layer. Typical target range: `[0.002, 0.02]`.
 - **`edge_key_purity`** (`keyPurity`):
   Fraction of outer 8px boundary pixels matching the key color (e.g. `#ffffff`) within tolerance ($\le 12$). Threshold: $\ge 0.98$.
 - **`freezedetect`** (`freeze`):
   Number of unintended freeze segments $> 0.5\text{s}$. Must be `0`.
+
+## Prerequisites
+- `ffmpeg` (version >= 5.0 with `x264`, `freezedetect`)
+- `python3` (version >= 3.10)
+- `node` (version >= 18.0) and `npm` (run `npm install` for Remotion dependencies)
 
 ## Quick Start & CLI Usage
 

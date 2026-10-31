@@ -16,7 +16,7 @@ spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───►
                  [ S2: Prepare  ] ───► build/prepared/*.png (Fail-fast: key purity >= 0.98)
                          │
                          ▼
-                 [ S3: Compose  ] ───► build/frames/*.png + build/*.mp4 (Single FFmpeg filtergraph)
+                 [ S3: Compose  ] ───► build/frames/*.png + build/*.mp4 (Remotion render engine)
                          │
                          ▼
                  [ S4: Gate     ] ───► build/gates.json (Zero-dependency rawvideo pixel metrics)
@@ -26,7 +26,7 @@ spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───►
 |---|---|---|---|---|
 | **S1** | `01_generate.py` | `spec/`, `manifest.json` | `assets/*.png`, `manifest.json` | `0` = Assets ready & verified; `1` = Error |
 | **S2** | `02_prepare.py` | `assets/`, `spec/` | `build/prepared/*.png` | `0` = Scaled & pure; `1` = Blocked by key purity `< 0.98` |
-| **S3** | `03_compose.py` (`.sh`) | `build/prepared/`, `spec/` | `build/frames/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
+| **S3** | `03_compose.py` (Remotion) | `build/prepared/`, `spec/` | `build/frames/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
 | **S4** | `04_gate.py` | `build/frames/`, `build/*.mp4` | `build/gates.json` | `0` = All gates pass; `1` = Quality violation |
 
 ---
@@ -47,7 +47,9 @@ spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───►
 | Gate | Metric | Definition | Threshold |
 |---|---|---|---|
 | `motion` | `changed_pixel_ratio` | Median fraction of pixels with Luma $\Delta > 6$ | `[0.0005, 0.08]` |
+| `subject` | `subject_motion_ratio` | Median fraction of pixels with Luma $\Delta > 6$ excluding bar region | `[0.0005, 0.08]` |
 | `red` | `red_pixel_ratio` | Median fraction of red accent mask pixels | `[0.002, 0.02]` |
+| `accent` | `accent_color_ratio` | Median fraction of accent color mask pixels | `[0.002, 0.02]` |
 | `keyPurity` | `edge_key_purity` | Fraction of outer 8px border matching key color within tolerance | `≥ 0.98` |
 | `freeze` | `freezedetect` | Unintended frozen segments | `0` segments |
 
@@ -56,8 +58,9 @@ spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───►
 ## Quick Start
 
 ### 1. Prerequisites
-- `ffmpeg` (version >= 5.0 recommended, with `x264`, `zoompan`, `blend`, `overlay`, `freezedetect`)
+- `ffmpeg` (version >= 5.0 recommended, with `x264`, `freezedetect`)
 - `python3` (version >= 3.10, standard library only)
+- `node` (version >= 18.0) and `npm` (run `npm install` for Remotion dependencies)
 
 ### 2. Verify and Test
 ```bash
