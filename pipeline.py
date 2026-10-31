@@ -132,6 +132,7 @@ def main():
             ],
             "gates": [
                 {"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0005, "hi": 0.08},
+                {"id": "subject", "metric": "subject_motion_ratio", "lo": 0.0005, "hi": 0.08, "region": [860, 1000]},
                 {"id": "red", "metric": "red_pixel_ratio", "lo": 0.002, "hi": 0.02},
                 {"id": "keyPurity", "metric": "edge_key_purity", "lo": 0.98}
             ]

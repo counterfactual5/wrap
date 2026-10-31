@@ -26,7 +26,7 @@ export const Index: React.FC = () => {
         fps={30}
         width={1920}
         height={1080}
-        defaultProps={undefined}
+        defaultProps={undefined as unknown as ShotProps}
         calculateMetadata={({props}) => ({
           durationInFrames: props.spec.durationInFrames,
           fps: props.spec.fps,
