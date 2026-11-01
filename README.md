@@ -13,21 +13,28 @@ A deterministic, code-driven video synthesis pipeline that compiles a structured
 spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───► (manifest lockfile)
                          │
                          ▼
-                 [ S2: Prepare  ] ───► build/prepared/*.png (Fail-fast: key purity >= 0.98)
+                 [ S2: Prepare  ] ───► build/prepared/{shot}/*.png (Fail-fast: key purity >= 0.98)
                          │
                          ▼
-                 [ S3: Compose  ] ───► build/frames/*.png + build/*.mp4 (Remotion render engine)
+                 [ S3: Compose  ] ───► build/frames/{shot}/*.png + build/*.mp4 (Remotion render engine)
                          │
                          ▼
-                 [ S4: Gate     ] ───► build/gates.json (Zero-dependency rawvideo pixel metrics)
+                 [ S4: Gate     ] ───► build/gates/{shot}.json (Zero-dependency rawvideo pixel metrics + audio QC)
+                         │
+                         ▼
+                 [ S5: Inspect  ] ───► build/contact_sheet_{shot}.png + build/inspection_{shot}.json (verdict pending judge)
 ```
 
 | Stage | Command / Script | Inputs | Outputs | Exit Code Contract |
 |---|---|---|---|---|
 | **S1** | `01_generate.py` | `spec/`, `manifest.json` | `assets/*.png`, `manifest.json` | `0` = Assets ready & verified; `1` = Error |
-| **S2** | `02_prepare.py` | `assets/`, `spec/` | `build/prepared/*.png` | `0` = Scaled & pure; `1` = Blocked by key purity `< 0.98` |
-| **S3** | `03_compose.py` (Remotion) | `build/prepared/`, `spec/` | `build/frames/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
-| **S4** | `04_gate.py` | `build/frames/`, `build/*.mp4` | `build/gates.json` | `0` = All gates pass; `1` = Quality violation |
+| **S2** | `02_prepare.py` | `assets/`, `spec/` | `build/prepared/{shot}/*.png` | `0` = Scaled & pure; `1` = Blocked by key purity `< 0.98` |
+| **S3** | `03_compose.py` (Remotion) | `build/prepared/{shot}/`, `spec/` | `build/frames/{shot}/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
+| **S4** | `04_gate.py` | `build/frames/{shot}/`, `build/*.mp4` | `build/gates/{shot}.json` | `0` = All gates pass; `1` = Quality violation |
+| **S5** | `05_inspect.py` | `build/{shot}.mp4`, `spec/` | `build/contact_sheet_{shot}.png`, `build/inspection_{shot}.json` | `0` = Evidence generated (verdict `pending_judge`) |
+| **S5+** | `pipeline.py judge --verdict pass\|fail` | contact sheet + checklist | verdict in `inspection_{shot}.json` + `build/gates/{shot}.json` | `0` = judged pass; `1` = judged fail |
+
+S5 splits evidence from verdict: the pipeline never claims a shot *looks* right — a judge (model or human) reads the contact sheet against the spec-declared checklist and records the verdict, which then becomes a hard gate. Prepared artifacts are namespaced per shot (`build/prepared/{shot_id}/`) so a shared `bg` layer can no longer let one shot's style silently overwrite another's.
 
 ---
 
@@ -76,10 +83,13 @@ python3 pipeline.py init-shot shot-02
 
 ### 4. Run Pipeline
 ```bash
-# Full execution (validate -> S1 -> S2 -> S3 -> S4)
+# Full execution (validate -> S1 -> S2 -> S3 -> S4 -> S5)
 make run
 # or
 python3 pipeline.py run --spec spec/shot-01.poster.json
+
+# Judge the contact sheet after review (closes the S5 loop)
+python3 pipeline.py judge --spec spec/shot-01.poster.json --verdict pass --notes "..."
 
 # Clean build artifacts
 make clean
@@ -89,6 +99,7 @@ make clean
 ```bash
 python3 pipeline.py concat --timeline spec/timeline.json --output build/full.mp4
 ```
+Concat also runs **full-video gates** on the assembled output (duration vs timeline, blackdetect, whole-track silence/loudness, A/V alignment, per-shot loudness jump ≤3 LU), written per timeline to `build/gates_full_{timeline}.json`; exit 1 on any red. Per-shot gates cannot see cross-shot seams — this is the layer that does.
 
 ---
 
