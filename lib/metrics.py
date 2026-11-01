@@ -35,15 +35,30 @@ def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None
     out, prev = [], None
     y0, y1 = exclude_band if exclude_band else (h, h)  # empty range when unused
     denom = w * (h - (y1 - y0))
+    if denom <= 0:
+        return out
     for f in _frames(src, w, h, "gray", 1, extra_in):
         if prev is not None:
             n = 0
+            # Use memoryview for faster access
+            pv = memoryview(prev)
+            fv = memoryview(f)
+            ld = luma_delta
             for y in range(h):
                 if y0 <= y < y1:
                     continue
-                a, b = prev[y * w:(y + 1) * w], f[y * w:(y + 1) * w]
-                if a != b:
-                    n += sum(1 for p, q in zip(a, b) if abs(p - q) > luma_delta)
+                base = y * w
+                a = pv[base:base + w]
+                b = fv[base:base + w]
+                if a == b:
+                    continue
+                # Fast path for differences
+                # Use zip is slower but correct; optimize with builtins where possible
+                na = a.tobytes()
+                nb = b.tobytes()
+                for p, q in zip(na, nb):
+                    if abs(p - q) > ld:
+                        n += 1
             out.append(n / denom)
         prev = f
     return out
