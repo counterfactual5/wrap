@@ -1,5 +1,8 @@
 """S3: compose via Remotion (spec as props), then encode a bit-exact mp4 from the PNG frames.
-Contract unchanged: writes build/frames/%05d.png (lossless, what S4 measures) and build/{shot_id}.mp4.
+Contract: writes build/frames/{shot_id}/%05d.png (lossless, what S4 measures)
+and build/{shot_id}.mp4. Frames are namespaced per shot — a shared
+build/frames let whichever shot composed last win, the same race that hit
+build/prepared before its per-shot split.
 The legacy ffmpeg filtergraph engine was removed: Remotion is the single renderer, and code
 layers (grid/dots) are consumed as prepared PNGs so S2 stays their only implementation.
 Usage: python3 03_compose.py [--spec path/to/spec.json]
@@ -44,23 +47,32 @@ def build_props(spec):
     """Spec + prepared assets as inline props. Every image rides in as a data: URL
     (14 KB PNG -> ~19 KB base64) so the bundle's static-file server is never involved:
     the manifest-verified bytes are the exact bytes the renderer sees, and re-renders
-    are reproducible offline."""
+    are reproducible offline. Prepared rows are looked up through the manifest
+    (namespaced per shot) so composing a shot whose S2 never ran fails fast
+    instead of picking up another shot's leftover assets."""
+    shot_id = spec.get("id", "shot-01")
     props = {"spec": spec, "prepared": {}}
     for L in spec["layers"]:
         if L["type"] == "ai":
-            rel = f"build/prepared/{L['asset']}.png"
+            key = f"{shot_id}/{L['asset']}"
         elif L["type"] == "code" and L["draw"] in ("grid", "dots"):
-            rel = f"build/prepared/{L['id']}.png"
+            key = f"{shot_id}/{L['id']}"
         else:
             continue  # bar is a solid-color CSS div; no asset needed
-        with open(os.path.join(ROOT, rel), "rb") as f:
+        row = manifest.verified("prepared", key)
+        if row is None:
+            raise RuntimeError(
+                f"prepared '{key}' not manifest-verified; run S2 (02_prepare.py) "
+                f"for this shot first")
+        with open(os.path.join(ROOT, row["path"]), "rb") as f:
             props["prepared"][L["id"]] = "data:image/png;base64," + base64.b64encode(f.read()).decode()
     return props
 
 
-def render_remotion(spec, out_dir):
+def render_remotion(spec, out_dir, shot_id):
     props = build_props(spec)
-    props_file = os.path.join(ROOT, ".tmp", "render-props.json")
+    # Props file is per shot too: two concurrent S3 runs share .tmp/.
+    props_file = os.path.join(ROOT, ".tmp", f"render-props-{shot_id}.json")
     os.makedirs(os.path.dirname(props_file), exist_ok=True)
     with open(props_file, "w") as f:
         json.dump(props, f)
@@ -108,9 +120,9 @@ def main():
 
     spec = load_spec(args.spec)
     shot_id = spec.get("id", "shot-01")
-    frames_dir = os.path.join(ROOT, "build", "frames")
+    frames_dir = os.path.join(ROOT, "build", "frames", shot_id)
 
-    render_remotion(spec, frames_dir)
+    render_remotion(spec, frames_dir, shot_id)
 
     n = len([f for f in os.listdir(frames_dir) if f.endswith(".png")])
     if n != spec["durationInFrames"]:
@@ -118,7 +130,7 @@ def main():
 
     out_mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
     encode_mp4(spec, frames_dir, out_mp4)
-    row = manifest.register("video", None, f"build/{shot_id}.mp4", frames=n,
+    row = manifest.register("video", shot_id, f"build/{shot_id}.mp4", frames=n,
                             frames_sha=frames_fingerprint(frames_dir),
                             encoder=encoder_fingerprint())
     print(f"engine=remotion frames={n} video sha256={row['sha256'][:12]} encoder={row['encoder']}")

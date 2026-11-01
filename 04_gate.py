@@ -1,4 +1,7 @@
-"""S4: measure the gates on the lossless PNG frames; exit 1 if any is red. Writes build/gates.json.
+"""S4: measure the gates on the lossless PNG frames; exit 1 if any is red.
+Writes build/gates/{shot_id}.json — per shot, so concurrent/alternating S4
+runs cannot overwrite another shot's verdict (build/gates.json was a
+last-writer-wins slot).
 Usage: python3 04_gate.py [--spec path/to/spec.json]
 """
 import argparse
@@ -13,39 +16,34 @@ from schema import ROOT, load_spec
 
 
 def _verify_measured_object(shot_id):
-    """The gate must measure THIS shot's artifacts, not whatever last sat in the
-    shared build/frames. Two bindings, both fail-fast:
-    1. the manifest video row (sha-verified by manifest.verified) must belong to
-       this shot — its path is build/{shot_id}.mp4;
+    """The gate must measure THIS shot's artifacts, not another shot's. The
+    manifest video section is keyed per shot, so the binding cannot be evicted
+    by a later render of a different shot; two fail-fast checks remain:
+    1. the sha-verified video row for this shot must exist (i.e. S3 ran for it);
     2. the frame directory's aggregate fingerprint must equal the one S3
-       registered for that row, so stale/replaced frames are refused."""
-    row = manifest.verified("video", None)
+       registered, so stale/replaced frames are refused."""
+    row = manifest.verified("video", shot_id)
     if row is None:
         raise RuntimeError(
-            "gate: no manifest-verified video row; run S3 (03_compose.py) first")
-    # compare normalized paths: os.path.join stays POSIX-shaped here, but the
-    # literal f-string is what 03_compose registers.
-    expected_mp4 = os.path.normpath(f"build/{shot_id}.mp4")
-    if os.path.normpath(row.get("path", "")) != expected_mp4:
-        raise RuntimeError(
-            f"gate: manifest video row is {row.get('path')} (another shot's "
-            f"render); build/frames holds that shot's frames, not {shot_id}'s — "
-            f"re-run S3 for this shot before gating")
+            f"gate: no manifest-verified video row for {shot_id}; "
+            f"run S3 (03_compose.py) for this shot first")
     registered = row.get("frames_sha")
     if not registered:
         raise RuntimeError(
             "gate: manifest video row predates frame binding (no frames_sha); "
             "re-run S3 (03_compose.py) to register the frame fingerprint")
-    frames_dir = os.path.join(ROOT, "build", "frames")
+    frames_dir = os.path.join(ROOT, "build", "frames", shot_id)
     if not os.path.isdir(frames_dir):
         raise RuntimeError(
-            "gate: build/frames is missing; run S3 (03_compose.py) before gating")
+            f"gate: build/frames/{shot_id} is missing; run S3 (03_compose.py) "
+            f"before gating")
     compose = import_module("03_compose")
     live = compose.frames_fingerprint(frames_dir)
     if live != registered:
         raise RuntimeError(
-            f"gate: build/frames does not match the fingerprint registered for "
-            f"{shot_id} (frames replaced or stale); re-run S3 before gating")
+            f"gate: build/frames/{shot_id} does not match the fingerprint "
+            f"registered for {shot_id} (frames replaced or stale); re-run S3 "
+            f"before gating")
 
 
 def _bar_band(spec):
@@ -73,7 +71,7 @@ def main():
     shot_id = spec.get("id", "shot-01")
     _verify_measured_object(shot_id)
     W, H, FPS = spec["canvas"]["w"], spec["canvas"]["h"], spec["fps"]
-    frames = os.path.join(ROOT, "build", "frames", "%05d.png")
+    frames = os.path.join(ROOT, "build", "frames", shot_id, "%05d.png")
     mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
     results, red = [], False
 
@@ -85,7 +83,8 @@ def main():
             # Same metric, restricted to the region outside g["region"] — a
             # panning bar can no longer mask a static AI subject.
             band = g.get("region") or _bar_band(spec)
-            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=tuple(band)))
+            exclude = tuple(band) if band else None
+            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=exclude))
         if g["metric"] in ("red_pixel_ratio", "accent_color_ratio"):
             if g["metric"] == "accent_color_ratio":
                 from schema import hex_rgb
@@ -102,10 +101,10 @@ def main():
             for L in spec["layers"]:
                 if L["type"] != "ai":
                     continue
-                row = manifest.verified("prepared", L["asset"])
+                row = manifest.verified("prepared", f"{shot_id}/{L['asset']}")
                 if row is None:
                     raise RuntimeError(
-                        f"prepared asset '{L['asset']}' not manifest-verified; run S2")
+                        f"prepared asset '{shot_id}/{L['asset']}' not manifest-verified; run S2")
                 rows.append(row.get("purity"))
             if not rows or any(r is None for r in rows):
                 raise RuntimeError("no purity recorded; run S2")
@@ -142,9 +141,12 @@ def main():
         results.append({"id": "encoder", "metric": "ffmpeg_fingerprint",
                         "value": live, "pass": ok, "warn": not ok})
 
-    gate_out = os.path.join(ROOT, "build", "gates.json")
+    gate_dir = os.path.join(ROOT, "build", "gates")
+    os.makedirs(gate_dir, exist_ok=True)
+    gate_out = os.path.join(gate_dir, f"{shot_id}.json")
     with open(gate_out, "w") as f:
         json.dump(results, f, indent=2)
+    print(f"gates written: build/gates/{shot_id}.json")
 
     return 1 if red else 0
 
