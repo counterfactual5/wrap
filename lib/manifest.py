@@ -1,4 +1,8 @@
-"""manifest.json: the authority on frozen files. Only already-on-disk, sha256-verified entries."""
+"""manifest.json: the authority on frozen files. Only already-on-disk, sha256-verified entries.
+Sections `assets` and `prepared` are keyed rows; `video` is keyed by shot id
+(m["video"][shot_id]) so concurrent/alternating S3 runs cannot evict another
+shot's binding. Legacy single-row manifests (m["video"] = row) are migrated on
+load, deriving the shot id from the row's build/{shot_id}.mp4 path."""
 import hashlib
 import json
 import os
@@ -15,8 +19,18 @@ def sha256(path):
     return h.hexdigest()
 
 
+def _migrate_video(v):
+    """Legacy manifests stored the last render as a single row. Re-key it."""
+    if isinstance(v, dict) and "path" in v:
+        sid = os.path.basename(v.get("path", "")).replace(".mp4", "")
+        return {sid: v} if sid else {}
+    if isinstance(v, dict):
+        return v
+    return {}
+
+
 def load():
-    empty = {"assets": {}, "prepared": {}, "video": None}
+    empty = {"assets": {}, "prepared": {}, "video": {}}
     if not os.path.exists(PATH):
         return empty
     with open(PATH) as f:
@@ -24,6 +38,7 @@ def load():
     # Tolerate manifests written before a section existed (or hand-trimmed).
     for k, v in empty.items():
         m.setdefault(k, v if not isinstance(v, dict) else {})
+    m["video"] = _migrate_video(m["video"])
     return m
 
 
@@ -34,13 +49,12 @@ def save(m):
 
 
 def register(section, key, relpath, **extra):
+    if key is None:
+        raise ValueError(f"register({section!r}): key is required (shot id / asset id)")
     m = load()
     full = os.path.join(ROOT, relpath)
     row = {"path": relpath, "sha256": sha256(full), "bytes": os.path.getsize(full), **extra}
-    if section == "video":
-        m["video"] = row
-    else:
-        m[section][key] = row
+    m[section][key] = row
     save(m)
     return row
 
@@ -48,7 +62,7 @@ def register(section, key, relpath, **extra):
 def verified(section, key):
     """Row if listed AND file exists AND sha256 matches, else None."""
     m = load()
-    row = m["video"] if section == "video" else m[section].get(key)
+    row = m[section].get(key)
     if not row:
         return None
     full = os.path.join(ROOT, row["path"])
