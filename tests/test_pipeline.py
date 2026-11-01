@@ -5,11 +5,11 @@ import subprocess
 import sys
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lib import manifest, metrics
-from schema import load_spec, validate
+from core import manifest, metrics
+from core.schema import load_spec, validate
 
 
 class TestPipeline(unittest.TestCase):
@@ -36,20 +36,20 @@ class TestPipeline(unittest.TestCase):
 
     def test_02_stages_run(self):
         # S1 (ensure assets verified, spec-aware)
-        res = subprocess.run([sys.executable, "01_generate.py", "--spec", "spec/shot-01.poster.json"],
+        res = subprocess.run([sys.executable, "stages/01_generate.py", "--spec", "spec/shot-01.poster.json"],
                              cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
         # S2 (prepare & key purity check)
-        res = subprocess.run([sys.executable, "02_prepare.py"], cwd=ROOT, capture_output=True, text=True)
+        res = subprocess.run([sys.executable, "stages/02_prepare.py"], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
         # S3 (compose video & frames)
-        res = subprocess.run([sys.executable, "03_compose.py"], cwd=ROOT, capture_output=True, text=True)
+        res = subprocess.run([sys.executable, "stages/03_compose.py"], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
         # S4 (gates)
-        res = subprocess.run([sys.executable, "04_gate.py"], cwd=ROOT, capture_output=True, text=True)
+        res = subprocess.run([sys.executable, "stages/04_gate.py"], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
         with open(os.path.join(ROOT, "build", "gates", "shot-01.json")) as f:
@@ -62,7 +62,7 @@ class TestPipeline(unittest.TestCase):
         v1 = manifest.sha256(os.path.join(ROOT, "build", "shot-01.mp4"))
 
         # Re-run S3 compose
-        res = subprocess.run([sys.executable, "03_compose.py"], cwd=ROOT, capture_output=True, text=True)
+        res = subprocess.run([sys.executable, "stages/03_compose.py"], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
         v2 = manifest.sha256(os.path.join(ROOT, "build", "shot-01.mp4"))
@@ -93,14 +93,14 @@ class TestPipeline(unittest.TestCase):
         original = open(path, "rb").read()
         try:
             # flip one pixel near the edge (inside the 8px purity ring)
-            import lib.png as png
+            import core.png as png
             w, h = png.read_size(path)
             rgb = bytearray(metrics.read_rgb(path, w, h))
             i = (4 * w + 4) * 3
             rgb[i:i + 3] = b"\x00\xff\x00"
             png.write_png(path, w, h, bytes(rgb))
 
-            res = subprocess.run([sys.executable, "04_gate.py"], cwd=ROOT, capture_output=True, text=True)
+            res = subprocess.run([sys.executable, "stages/04_gate.py"], cwd=ROOT, capture_output=True, text=True)
             self.assertNotEqual(res.returncode, 0,
                                 "tampered prepared asset passed the gate; purity path not sha-verified")
         finally:
@@ -118,7 +118,7 @@ class TestPipeline(unittest.TestCase):
             with open(style_path, "w") as f:
                 json.dump(style, f, indent=2)
 
-            res = subprocess.run([sys.executable, "02_prepare.py"], cwd=ROOT, capture_output=True, text=True)
+            res = subprocess.run([sys.executable, "stages/02_prepare.py"], cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, res.stderr)
 
             rgb = metrics.read_rgb(os.path.join(ROOT, "build", "prepared", "shot-01", "bg.png"), 1920, 1080)
@@ -129,7 +129,7 @@ class TestPipeline(unittest.TestCase):
         finally:
             with open(style_path, "w") as f:
                 f.write(original)
-            subprocess.run([sys.executable, "02_prepare.py"], cwd=ROOT, capture_output=True)
+            subprocess.run([sys.executable, "stages/02_prepare.py"], cwd=ROOT, capture_output=True)
 
     def test_07_manifest_tolerates_missing_sections(self):
         """An old/hand-trimmed manifest without 'prepared' must not crash load()."""

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
 
 MANIFEST = os.path.join(ROOT, "manifest.json")
@@ -22,7 +22,7 @@ FRAMES_ROOT = os.path.join(ROOT, "build", "frames")
 
 def gate(spec):
     return subprocess.run(
-        [sys.executable, "04_gate.py", "--spec", spec],
+        [sys.executable, "stages/04_gate.py", "--spec", spec],
         cwd=ROOT, capture_output=True, text=True)
 
 
@@ -74,7 +74,7 @@ class TestGateBinding(unittest.TestCase):
     def test_gate_refuses_foreign_frames(self):
         """Gating a shot with no bound render must fail, name the shot in
         stderr, and not write that shot's gates file."""
-        from lib import manifest
+        from core import manifest
         video = manifest.load().get("video") or {}
         bound = next(iter(video), None)
         foreign = "shot-02" if bound != "shot-02" else "shot-01"
@@ -99,7 +99,7 @@ class TestGateBinding(unittest.TestCase):
 
     def test_gate_accepts_bound_shot(self):
         """The shot whose render is bound in the manifest gates green."""
-        from lib import manifest
+        from core import manifest
         video = manifest.load().get("video") or {}
         bound = next(iter(video), None)
         if bound is None:
@@ -113,7 +113,7 @@ class TestGateBinding(unittest.TestCase):
     def test_gate_refuses_replaced_frames(self):
         """Frames swapped after S3 registered the fingerprint must be refused
         by the fingerprint branch (not by some other check)."""
-        from lib import manifest
+        from core import manifest
         video = manifest.load().get("video") or {}
         bound = next(iter(video), None)
         if bound is None:
@@ -125,8 +125,8 @@ class TestGateBinding(unittest.TestCase):
         with open(first, "rb") as f:
             original = f.read()
         try:
-            import lib.png as png
-            from lib import metrics
+            import core.png as png
+            from core import metrics
             w, h = png.read_size(first)
             rgb = bytearray(metrics.read_rgb(first, w, h))
             rgb[0:3] = bytes([rgb[0] ^ 0xFF, rgb[1], rgb[2]])
@@ -143,7 +143,7 @@ class TestGateBinding(unittest.TestCase):
     def test_gate_refuses_manifest_without_fingerprint(self):
         """A manifest row predating frame binding (no frames_sha) must be
         refused with a pointer to re-run S3."""
-        from lib import manifest
+        from core import manifest
         video = manifest.load().get("video") or {}
         bound = next(iter(video), None)
         if bound is None:

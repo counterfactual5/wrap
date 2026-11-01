@@ -9,10 +9,17 @@ import json
 import os
 import subprocess
 import sys
-from importlib import import_module
+import os
+import sys
 
-from lib import manifest, metrics
-from schema import ROOT, load_spec
+# stages/ lives one level below the repo root; put the root on sys.path so
+# `import core.*` works however this script was invoked (direct, -m, or
+# importlib).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from core import manifest, metrics
+from core.render import encoder_fingerprint, frames_fingerprint
+from core.schema import ROOT, load_spec
 
 
 def _verify_measured_object(shot_id):
@@ -37,8 +44,7 @@ def _verify_measured_object(shot_id):
         raise RuntimeError(
             f"gate: build/frames/{shot_id} is missing; run S3 (03_compose.py) "
             f"before gating")
-    compose = import_module("03_compose")
-    live = compose.frames_fingerprint(frames_dir)
+    live = frames_fingerprint(frames_dir)
     if live != registered:
         raise RuntimeError(
             f"gate: build/frames/{shot_id} does not match the fingerprint "
@@ -87,7 +93,7 @@ def main():
             return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=exclude))
         if g["metric"] in ("red_pixel_ratio", "accent_color_ratio"):
             if g["metric"] == "accent_color_ratio":
-                from schema import hex_rgb
+                from core.schema import hex_rgb
                 color = _accent_color(spec)
                 if color is None:
                     raise RuntimeError("accent_color_ratio: no bar layer color in spec")
@@ -132,7 +138,7 @@ def main():
 
     # Audio QC Gates: silence, loudness (LUFS), and AV duration alignment
     if spec.get("audio"):
-        from lib import audio
+        from core import audio
         # 1. Silence check: non-silent audio track
         sil_res = audio.measure_audio_silence(mp4)
         sil_ok = not sil_res["is_silent"]
@@ -170,10 +176,9 @@ def main():
 
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.
-    compose = import_module("03_compose")
     vid = manifest.verified("video", shot_id)
     if vid and vid.get("encoder"):
-        live = compose.encoder_fingerprint()
+        live = encoder_fingerprint()
         ok = live == vid["encoder"]
         print(f"{'PASS' if ok else 'WARN'}  encoder   ffmpeg_fingerprint   manifest={vid['encoder'][:12]} live={live[:12]}")
         results.append({"id": "encoder", "metric": "ffmpeg_fingerprint",

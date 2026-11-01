@@ -1,10 +1,12 @@
-"""Spec validation (stdlib only). `python schema.py [spec]` exits 1 on any error."""
+"""Spec validation (stdlib only). `python core/schema.py [spec]` exits 1 on any error."""
 import json
 import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# core/ lives one level below the repo root: ROOT is the project root, so
+# spec/, assets/, build/ and manifest.json resolve the same way from anywhere.
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 BLENDS = {"multiply", "screen", "normal"}
 LAYER_TYPES = {"code", "ai", "text", "hud", "card"}
 DRAWS = {

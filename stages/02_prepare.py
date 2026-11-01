@@ -8,11 +8,16 @@ import os
 import subprocess
 import sys
 
-from lib import manifest
-from lib.draw import dots, grid
-from lib.metrics import edge_key_purity, read_rgb
-from lib.png import read_size, write_png
-from schema import ROOT, gate_of, hex_rgb, load_spec
+# stages/ lives one level below the repo root; put the root on sys.path so
+# `import core.*` works however this script was invoked (direct, -m, or
+# importlib).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from core import manifest
+from core.draw import dots, grid
+from core.metrics import edge_key_purity, read_rgb
+from core.png import read_size, write_png
+from core.schema import ROOT, gate_of, hex_rgb, load_spec
 
 
 def main():

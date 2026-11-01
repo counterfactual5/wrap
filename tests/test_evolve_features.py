@@ -9,11 +9,11 @@ import subprocess
 import sys
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lib import audio
-from schema import VALID_BEATS, validate_timeline
+from core import audio
+from core.schema import VALID_BEATS, validate_timeline
 
 
 class TestEvolveFeatures(unittest.TestCase):
@@ -89,7 +89,7 @@ class TestEvolveFeatures(unittest.TestCase):
     def test_03_visual_inspect_stage(self):
         # Run 05_inspect.py on shot-01 (fixture)
         res = subprocess.run([
-            sys.executable, "05_inspect.py", "--spec", "spec/shot-01.poster.json"
+            sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json"
         ], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"05_inspect.py failed:\n{res.stderr}")
 
@@ -118,7 +118,7 @@ class TestEvolveFeatures(unittest.TestCase):
 
         # Recording a fail verdict must flip the gate entry and exit non-zero
         res = subprocess.run([
-            sys.executable, "05_inspect.py", "--spec", "spec/shot-01.poster.json",
+            sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json",
             "--record", "fail", "--notes", "unit-test fail recording"
         ], cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(res.returncode, 0, "record fail must exit non-zero")
@@ -134,7 +134,7 @@ class TestEvolveFeatures(unittest.TestCase):
 
         # Recording a pass verdict exits zero and flips the entry back
         res = subprocess.run([
-            sys.executable, "05_inspect.py", "--spec", "spec/shot-01.poster.json",
+            sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json",
             "--record", "pass", "--notes", "unit-test pass recording"
         ], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)

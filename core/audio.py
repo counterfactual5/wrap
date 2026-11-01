@@ -8,7 +8,7 @@ import os
 import subprocess
 import urllib.parse
 import urllib.request
-from schema import ROOT
+from core.schema import ROOT
 
 
 def get_audio_duration(file_path):

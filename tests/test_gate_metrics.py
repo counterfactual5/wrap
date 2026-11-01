@@ -3,11 +3,11 @@ import os
 import sys
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lib import metrics
-from schema import load_spec, validate
+from core import metrics
+from core.schema import load_spec, validate
 
 
 class TestGateMetrics(unittest.TestCase):

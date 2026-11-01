@@ -21,7 +21,9 @@ import shutil
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.realpath(__file__))
+CORE = os.path.join(ROOT, "core")
+STAGES = os.path.join(ROOT, "stages")
 
 
 def run_stage(cmd_args, desc):
@@ -41,7 +43,7 @@ def gate_full_video(out_path, timeline_id, segments):
     across cut boundaries (each shot is loudnorm'd independently — two in-band
     shots can still pop at the seam). Writes build/gates_full_{timeline}.json
     (namespaced per timeline, unlike the shared per-shot gates.json)."""
-    from lib import audio
+    from core import audio
 
     results, red = [], False
 
@@ -192,10 +194,10 @@ def main():
     args = parser.parse_args()
 
     if args.command == "validate":
-        run_stage(["schema.py", args.spec], "Spec Validation")
+        run_stage([os.path.join(CORE, "schema.py"), args.spec], "Spec Validation")
 
     elif args.command == "generate":
-        gen_args = ["01_generate.py", "--spec", args.spec]
+        gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", args.spec]
         if args.force:
             gen_args.append("--force")
         if args.fixture:
@@ -203,39 +205,39 @@ def main():
         run_stage(gen_args, "S1: Asset Generation / Verification")
 
     elif args.command == "prepare":
-        run_stage(["02_prepare.py", "--spec", args.spec], "S2: Prepare & Purity Check")
+        run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", args.spec], "S2: Prepare & Purity Check")
 
     elif args.command == "compose":
-        run_stage(["03_compose.py", "--spec", args.spec], "S3: Compose (FFmpeg)")
+        run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", args.spec], "S3: Compose (FFmpeg)")
 
     elif args.command == "gate":
-        run_stage(["04_gate.py", "--spec", args.spec], "S4: Quality Gates")
+        run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", args.spec], "S4: Quality Gates")
 
     elif args.command == "inspect":
-        run_stage(["05_inspect.py", "--spec", args.spec, "--grid", args.grid], "S5: Visual Self-Audit Inspection")
+        run_stage([os.path.join(STAGES, "05_inspect.py"), "--spec", args.spec, "--grid", args.grid], "S5: Visual Self-Audit Inspection")
 
     elif args.command == "judge":
         if args.verdict:
-            judge_args = ["05_inspect.py", "--spec", args.spec, "--record", args.verdict]
+            judge_args = [os.path.join(STAGES, "05_inspect.py"), "--spec", args.spec, "--record", args.verdict]
             if args.notes:
                 judge_args += ["--notes", args.notes]
             run_stage(judge_args, f"S5: Record judge verdict ({args.verdict})")
         else:
-            run_stage(["05_inspect.py", "--spec", args.spec], "S5: Visual Self-Audit Inspection (evidence + instructions)")
+            run_stage([os.path.join(STAGES, "05_inspect.py"), "--spec", args.spec], "S5: Visual Self-Audit Inspection (evidence + instructions)")
 
     elif args.command == "run":
         with pipeline_lock():
-            run_stage(["schema.py", args.spec], "Spec Validation")
-            gen_args = ["01_generate.py", "--spec", args.spec]
+            run_stage([os.path.join(CORE, "schema.py"), args.spec], "Spec Validation")
+            gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", args.spec]
             if args.force:
                 gen_args.append("--force")
             if args.fixture:
                 gen_args.append("--fixture")
             run_stage(gen_args, "S1: Asset Generation / Verification")
-            run_stage(["02_prepare.py", "--spec", args.spec], "S2: Prepare & Purity Check")
-            run_stage(["03_compose.py", "--spec", args.spec], "S3: Compose (FFmpeg)")
-            run_stage(["04_gate.py", "--spec", args.spec], "S4: Quality Gates")
-            run_stage(["05_inspect.py", "--spec", args.spec], "S5: Visual Self-Audit Inspection")
+            run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", args.spec], "S2: Prepare & Purity Check")
+            run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", args.spec], "S3: Compose (FFmpeg)")
+            run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", args.spec], "S4: Quality Gates")
+            run_stage([os.path.join(STAGES, "05_inspect.py"), "--spec", args.spec], "S5: Visual Self-Audit Inspection")
         print(
             "\nPipeline completed: all deterministic gates passed.\n"
             "Visual inspection is PENDING judge — review the contact sheet, then run:\n"
@@ -282,7 +284,7 @@ def main():
         with open(timeline_path) as f:
             tl = json.load(f)
 
-        from schema import validate_timeline
+        from core.schema import validate_timeline
         tl_errs = validate_timeline(tl)
         if tl_errs:
             sys.exit(f"Timeline validation failed:\n  " + "\n  ".join(tl_errs))
@@ -316,8 +318,8 @@ def main():
             # Contract: only verified rendered files are assembled
             if not os.path.exists(mp4_path):
                 print(f"      [Build Contract] MP4 missing for {sid}. Building and gating now...")
-                run_stage(["03_compose.py", "--spec", shot_file], f"Render {sid}")
-                run_stage(["04_gate.py", "--spec", shot_file], f"Gate {sid}")
+                run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", shot_file], f"Render {sid}")
+                run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", shot_file], f"Gate {sid}")
             rendered_mp4s.append(mp4_path)
             dur = s_data["durationInFrames"] / s_data["fps"]
             segments.append((sid, cursor, dur))

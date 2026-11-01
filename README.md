@@ -27,11 +27,11 @@ spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───►
 
 | Stage | Command / Script | Inputs | Outputs | Exit Code Contract |
 |---|---|---|---|---|
-| **S1** | `01_generate.py` | `spec/`, `manifest.json` | `assets/*.png`, `manifest.json` | `0` = Assets ready & verified; `1` = Error |
-| **S2** | `02_prepare.py` | `assets/`, `spec/` | `build/prepared/{shot}/*.png` | `0` = Scaled & pure; `1` = Blocked by key purity `< 0.98` |
-| **S3** | `03_compose.py` (Remotion) | `build/prepared/{shot}/`, `spec/` | `build/frames/{shot}/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
-| **S4** | `04_gate.py` | `build/frames/{shot}/`, `build/*.mp4` | `build/gates/{shot}.json` | `0` = All gates pass; `1` = Quality violation |
-| **S5** | `05_inspect.py` | `build/{shot}.mp4`, `spec/` | `build/contact_sheet_{shot}.png`, `build/inspection_{shot}.json` | `0` = Evidence generated (verdict `pending_judge`) |
+| **S1** | `stages/01_generate.py` | `spec/`, `manifest.json` | `assets/*.png`, `manifest.json` | `0` = Assets ready & verified; `1` = Error |
+| **S2** | `stages/02_prepare.py` | `assets/`, `spec/` | `build/prepared/{shot}/*.png` | `0` = Scaled & pure; `1` = Blocked by key purity `< 0.98` |
+| **S3** | `stages/03_compose.py` (Remotion) | `build/prepared/{shot}/`, `spec/` | `build/frames/{shot}/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
+| **S4** | `stages/04_gate.py` | `build/frames/{shot}/`, `build/*.mp4` | `build/gates/{shot}.json` | `0` = All gates pass; `1` = Quality violation |
+| **S5** | `stages/05_inspect.py` | `build/{shot}.mp4`, `spec/` | `build/contact_sheet_{shot}.png`, `build/inspection_{shot}.json` | `0` = Evidence generated (verdict `pending_judge`) |
 | **S5+** | `pipeline.py judge --verdict pass\|fail` | contact sheet + checklist | verdict in `inspection_{shot}.json` + `build/gates/{shot}.json` | `0` = judged pass; `1` = judged fail |
 
 S5 splits evidence from verdict: the pipeline never claims a shot *looks* right — a judge (model or human) reads the contact sheet against the spec-declared checklist and records the verdict, which then becomes a hard gate. Prepared artifacts are namespaced per shot (`build/prepared/{shot_id}/`) so a shared `bg` layer can no longer let one shot's style silently overwrite another's.
@@ -100,6 +100,28 @@ make clean
 python3 pipeline.py concat --timeline spec/timeline.json --output build/full.mp4
 ```
 Concat also runs **full-video gates** on the assembled output (duration vs timeline, blackdetect, whole-track silence/loudness, A/V alignment, per-shot loudness jump ≤3 LU), written per timeline to `build/gates_full_{timeline}.json`; exit 1 on any red. Per-shot gates cannot see cross-shot seams — this is the layer that does.
+
+---
+
+## Repository Layout
+
+```
+pipeline.py            Unified CLI: validate / generate / prepare / compose / gate / inspect / judge / run / concat / test
+stages/                One script per stage: 01_generate … 05_inspect
+core/                  Shared runtime: schema (spec contract), manifest (frozen-file ledger),
+                       metrics (pixel QC), audio (TTS + mastering), render (frame & encoder fingerprints),
+                       draw / png (procedural layers)
+remotion/              TypeScript renderer (React) — the S3 render engine
+spec/                  Shot specs (*.poster.json), styles, timelines
+assets/                Frozen AI-generated images (sha256 in manifest.json)
+tests/                 Regression suite (make verify)
+scripts/               Post-production chains that sit above the pipeline (e.g. scripts/enhance/)
+```
+
+Run a stage directly when debugging it:
+```bash
+python3 stages/03_compose.py --spec spec/shot-01.poster.json
+```
 
 ---
 

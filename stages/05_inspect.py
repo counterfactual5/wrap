@@ -27,7 +27,12 @@ import os
 import subprocess
 import sys
 
-from schema import ROOT, load_spec
+# stages/ lives one level below the repo root; put the root on sys.path so
+# `import core.*` works however this script was invoked (direct, -m, or
+# importlib).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from core.schema import ROOT, load_spec
 
 
 def extract_checklist(spec):

@@ -13,8 +13,16 @@ import subprocess
 import sys
 import urllib.request
 
-from lib import manifest
-from schema import ROOT, load_spec
+import os
+import sys
+
+# stages/ lives one level below the repo root; put the root on sys.path so
+# `import core.*` works however this script was invoked (direct, -m, or
+# importlib).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from core import manifest
+from core.schema import ROOT, load_spec
 
 
 def build_prompt(style):
@@ -117,7 +125,7 @@ def main():
             continue
 
         if args.fixture:
-            from lib.draw import write_fixture
+            from core.draw import write_fixture
             write_fixture(target_path)
             row = manifest.register("assets", asset, rel, source="fixture")
             print(f"Registered fixture {rel} sha256={row['sha256'][:12]}")

@@ -48,11 +48,11 @@ The **Code-Driven Shot Pipeline** treats motion graphics and video synthesis lik
 
 | Stage | Script / Command | Contract | Exit Codes |
 |---|---|---|---|
-| **S1 Generate** | `01_generate.py` | Reads `spec` & `style.json`. Fetches AI assets into `assets/*.png` and records SHA256 in `manifest.json`. Reuses frozen assets. | `0` = Assets ready & verified<br>`1` = Generation/Network failure |
-| **S2 Prepare** | `02_prepare.py` | Measures outer 8px key purity on assets. Scales assets with aspect-ratio preservation and renders code background layers. | `0` = Purity $\ge 98\%$ & layers ready<br>`1` = Blocked by key impurity |
-| **S3 Compose** | `03_compose.py` (`remotion`) | Compiles spec with **Remotion** rendering engine (`remotion/index.tsx`). Synthesizes neural audio, applies -16 LUFS broadcast mastering, and produces lossless `build/frames/<shot-id>/%05d.png` and `build/<shot-id>.mp4` with BT.709 color metadata. | `0` = Frames, audio, and MP4 rendered |
-| **S4 Gate** | `04_gate.py` | Analyzes lossless PNG frames for motion delta, color accent presence, freeze frames (`freezedetect`), and evaluates audio QC (silence, -16 LUFS loudness, and AV duration sync $\le 100$ms). | `0` = All gates pass<br>`1` = Metric out of bounds |
-| **S5 Inspect** | `05_inspect.py` | Extracts an 8~12 frame tiled contact sheet (`build/contact_sheet_{shot_id}.png`) and generates a spec layer checklist (`build/inspection_{shot_id}.json`) for visual self-audit against hallucination, misorientation, or text overlap. | `0` = Contact sheet & checklist ready |
+| **S1 Generate** | `stages/01_generate.py` | Reads `spec` & `style.json`. Fetches AI assets into `assets/*.png` and records SHA256 in `manifest.json`. Reuses frozen assets. | `0` = Assets ready & verified<br>`1` = Generation/Network failure |
+| **S2 Prepare** | `stages/02_prepare.py` | Measures outer 8px key purity on assets. Scales assets with aspect-ratio preservation and renders code background layers. | `0` = Purity $\ge 98\%$ & layers ready<br>`1` = Blocked by key impurity |
+| **S3 Compose** | `stages/03_compose.py` (`remotion`) | Compiles spec with **Remotion** rendering engine (`remotion/index.tsx`). Synthesizes neural audio, applies -16 LUFS broadcast mastering, and produces lossless `build/frames/<shot-id>/%05d.png` and `build/<shot-id>.mp4` with BT.709 color metadata. | `0` = Frames, audio, and MP4 rendered |
+| **S4 Gate** | `stages/04_gate.py` | Analyzes lossless PNG frames for motion delta, color accent presence, freeze frames (`freezedetect`), and evaluates audio QC (silence, -16 LUFS loudness, and AV duration sync $\le 100$ms). | `0` = All gates pass<br>`1` = Metric out of bounds |
+| **S5 Inspect** | `stages/05_inspect.py` | Extracts an 8~12 frame tiled contact sheet (`build/contact_sheet_{shot_id}.png`) and generates a spec layer checklist (`build/inspection_{shot_id}.json`) for visual self-audit against hallucination, misorientation, or text overlap. | `0` = Contact sheet & checklist ready |
 
 ## Supported Layer Types
 
@@ -91,7 +91,7 @@ Add voiceover narration and BGM directly to any shot:
 - **`audio_loudness`**: Measured via EBU R128 filter. Integrated loudness must fall within target $\pm 2.5\text{ LUFS}$ (`[-19.0, -13.0]` LUFS, targeting standard `-16.0 LUFS`).
 - **`audio_av_sync`**: Stream duration alignment. $\left|\text{duration}_{\text{video}} - \text{duration}_{\text{audio}}\right| \le 0.100\text{s}$ ($100\text{ms}$).
 
-## Visual Self-Audit (S5: `05_inspect.py`)
+## Visual Self-Audit (S5: `stages/05_inspect.py`)
 
 Solves the blind spot of pure statistical pixel gates:
 - Extracts 9 or 12 evenly-spaced frames into a 3x3 or 4x3 contact sheet (`build/contact_sheet_{shot_id}.png`).

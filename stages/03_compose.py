@@ -9,38 +9,20 @@ Usage: python3 03_compose.py [--spec path/to/spec.json]
 """
 import argparse
 import base64
-import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 
-from lib import manifest
-from schema import ROOT, load_spec
+# stages/ lives one level below the repo root; put the root on sys.path so
+# `import core.*` works however this script was invoked (direct, -m, or
+# importlib).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-
-def frames_fingerprint(frames_dir):
-    """Aggregate sha256 over the frame sequence: sorted *.png names + contents.
-    S4 re-computes this before measuring, so gating a shot against another
-    shot's leftover frames (shared build/frames) fails fast instead of
-    blessing foreign pixels. Non-PNG entries (.DS_Store, subdirs) are ignored:
-    Finder droppings must not invalidate a fresh render."""
-    h = hashlib.sha256()
-    for name in sorted(n for n in os.listdir(frames_dir) if n.endswith(".png")):
-        h.update(name.encode())
-        with open(os.path.join(frames_dir, name), "rb") as f:
-            for b in iter(lambda: f.read(1 << 20), b""):
-                h.update(b)
-    return h.hexdigest()
-
-
-def encoder_fingerprint():
-    """ffmpeg/x264 identity for cross-machine reproducibility checks (S4 compares)."""
-    out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True).stdout
-    first = out.splitlines()[0] if out else "unknown"
-    x264 = next((l.strip() for l in out.splitlines() if "x264" in l), "")
-    return hashlib.sha256((first + x264).encode()).hexdigest()[:16]
+from core import manifest
+from core.render import encoder_fingerprint, frames_fingerprint
+from core.schema import ROOT, load_spec
 
 
 def build_props(spec):
@@ -102,7 +84,7 @@ def encode_mp4(spec, frames_dir, out_mp4):
     audio_spec = spec.get("audio")
     audio_file = None
     if audio_spec and (audio_spec.get("voiceover") or audio_spec.get("bgm")):
-        from lib.audio import prepare_shot_audio
+        from core.audio import prepare_shot_audio
         audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_audio.aac")
         prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
 
