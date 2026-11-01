@@ -1,0 +1,84 @@
+{
+  "id": "vibe-shot-template",
+  "canvas": { "w": 1080, "h": 1920, "bg": "#06080F" },
+  "fps": 30,
+  "durationInFrames": 450,
+  "style": "spec/style-relativity.json",
+  "audio": {
+    "voiceover": "这是引人入胜的科普知识解说文案...",
+    "voice": "zh-CN-YunxiNeural",
+    "bgm": "ambient"
+  },
+  "layers": [
+    {
+      "id": "bg",
+      "type": "code",
+      "draw": "grid",
+      "rect": [0, 0, 1080, 1920],
+      "z": 0
+    },
+    {
+      "id": "hud-badge",
+      "type": "hud",
+      "hudType": "badge",
+      "text": "PHYSICS KNOWLEDGE // 核心物理",
+      "rect": [60, 140, 420, 50],
+      "z": 1
+    },
+    {
+      "id": "title",
+      "type": "text",
+      "text": "为什么引力不是一种“力”？",
+      "subtext": "GRAVITY IS AN ILLUSION // GENERAL RELATIVITY",
+      "rect": [60, 240, 960, 140],
+      "fontSize": 56,
+      "z": 2
+    },
+    {
+      "id": "hero-stage",
+      "type": "code",
+      "draw": "gravity-well",
+      "rect": [40, 360, 1000, 1050],
+      "z": 3
+    },
+    {
+      "id": "caption-capsule",
+      "type": "card",
+      "cardType": "capsule",
+      "title": "核心洞见 // INSIGHT",
+      "quote": "引力并非超距拉力，物体只是沿着弯曲时空的测地线自然滑落。",
+      "rect": [60, 1500, 960, 140],
+      "z": 4
+    },
+    {
+      "id": "telemetry",
+      "type": "hud",
+      "hudType": "telemetry",
+      "text": "+ COORD: 45°18'N 09°24'E // REF: GR-1915",
+      "rect": [60, 1700, 500, 30],
+      "z": 5
+    },
+    {
+      "id": "equalizer",
+      "type": "hud",
+      "hudType": "equalizer",
+      "rect": [60, 1750, 960, 60],
+      "z": 6
+    },
+    {
+      "id": "progress",
+      "type": "hud",
+      "hudType": "progress",
+      "rect": [60, 1830, 960, 6],
+      "z": 7
+    }
+  ],
+  "gates": [
+    {
+      "id": "motion",
+      "metric": "changed_pixel_ratio",
+      "lo": 0.0001,
+      "hi": 0.08
+    }
+  ]
+}
