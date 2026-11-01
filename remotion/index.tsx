@@ -1,5 +1,6 @@
 import {Composition, registerRoot} from 'remotion';
 import {Shot} from './Shot';
+import {RelativityVibe} from './RelativityVibe';
 import type {ShotSpec} from './spec';
 
 // The spec arrives as props (inline JSON or --props=./file), already validated
@@ -33,6 +34,14 @@ export const Index: React.FC = () => {
           width: props.spec.canvas.w,
           height: props.spec.canvas.h,
         })}
+      />
+      <Composition
+        id="RelativityVibe"
+        component={RelativityVibe}
+        durationInFrames={150}
+        fps={30}
+        width={1080}
+        height={1920}
       />
     </>
   );
