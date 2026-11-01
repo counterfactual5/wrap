@@ -52,7 +52,7 @@ class TestPipeline(unittest.TestCase):
         res = subprocess.run([sys.executable, "04_gate.py"], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
-        with open(os.path.join(ROOT, "build", "gates.json")) as f:
+        with open(os.path.join(ROOT, "build", "gates", "shot-01.json")) as f:
             gates = json.load(f)
         for g in gates:
             self.assertTrue(g["pass"], f"Gate {g['id']} failed: {g}")
@@ -88,7 +88,7 @@ class TestPipeline(unittest.TestCase):
 
         S4 reads purity through manifest.verified() (sha256-checked), not a stored
         number — a modified file must be caught, not trusted."""
-        path = os.path.join(ROOT, "build", "prepared", "city-silhouette.png")
+        path = os.path.join(ROOT, "build", "prepared", "shot-01", "city-silhouette.png")
         self.assertTrue(os.path.exists(path), "run S2 first")
         original = open(path, "rb").read()
         try:
@@ -121,7 +121,7 @@ class TestPipeline(unittest.TestCase):
             res = subprocess.run([sys.executable, "02_prepare.py"], cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, res.stderr)
 
-            rgb = metrics.read_rgb(os.path.join(ROOT, "build", "prepared", "bg.png"), 1920, 1080)
+            rgb = metrics.read_rgb(os.path.join(ROOT, "build", "prepared", "shot-01", "bg.png"), 1920, 1080)
             # (10, 100): off the 80px grid lines, pure paper
             i = (100 * 1920 + 10) * 3
             self.assertEqual(list(rgb[i:i + 3]), [16, 16, 16],
@@ -140,7 +140,7 @@ class TestPipeline(unittest.TestCase):
                 json.dump({"assets": {}}, f)
             m = manifest.load()
             self.assertEqual(m.get("prepared"), {})
-            self.assertIsNone(m.get("video"))
+            self.assertEqual(m.get("video"), {})
         finally:
             os.replace(backup, manifest.PATH)
 

@@ -1,10 +1,11 @@
 """Gate binding: S4 must refuse to measure another shot's frames or replaced frames.
-The manifest video row pins which shot build/frames belongs to (path) and what
-it contained when S3 rendered it (frames_sha); 04_gate verifies both before
-measuring, so a stale or foreign build/frames cannot produce a passing verdict.
+The manifest video section is keyed per shot (m["video"][shot_id]) and pins what
+the shot's frames contained when S3 rendered them (frames_sha); 04_gate verifies
+the row and the fingerprint before measuring, so a stale or foreign frame
+directory cannot produce a passing verdict.
 
 The cases are self-sufficient: any state the manifest happens to be in (which
-shot was rendered last) is set up and restored inside each test, so the suite
+shots were rendered last) is set up and restored inside each test, so the suite
 stays green after any legal workflow (including `pipeline.py concat`)."""
 import json
 import os
@@ -16,8 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 MANIFEST = os.path.join(ROOT, "manifest.json")
-FRAMES = os.path.join(ROOT, "build", "frames")
-GATES_JSON = os.path.join(ROOT, "build", "gates.json")
+FRAMES_ROOT = os.path.join(ROOT, "build", "frames")
 
 
 def gate(spec):
@@ -26,13 +26,20 @@ def gate(spec):
         cwd=ROOT, capture_output=True, text=True)
 
 
+def gates_path_for(shot_id):
+    return os.path.join(ROOT, "build", "gates", f"{shot_id}.json")
+
+
+def frames_dir_for(shot_id):
+    return os.path.join(FRAMES_ROOT, shot_id)
+
+
 class _ManifestState:
-    """Rebind the manifest video row's path to a shot, restoring the original
-    bytes afterwards. sha256/bytes stay those of the row read from disk, so
-    this only makes sense for pinning the row to the shot it already describes
-    (that is what the tests use it for); build/frames stays untouched — the
-    mismatch between the row and the real frames is exactly the scenario
-    under test."""
+    """Rebind the manifest video row of a shot, restoring the original bytes
+    afterwards. sha256/bytes stay those of the row read from disk, so this only
+    makes sense for pinning the row to the shot it already describes (that is
+    what the tests use it for); frame directories stay untouched — the mismatch
+    between a row and the real frames is exactly the scenario under test."""
 
     def __init__(self, shot_id):
         self.shot_id = shot_id
@@ -43,9 +50,13 @@ class _ManifestState:
             self.saved = f.read()
         with open(MANIFEST) as f:
             m = json.load(f)
-        row = dict(m["video"])
+        video = m.get("video") or {}
+        if "path" in video:  # legacy single-row manifest
+            video = {os.path.basename(video["path"]).replace(".mp4", ""): video}
+        row = dict(video.get(self.shot_id) or {})
         row["path"] = f"build/{self.shot_id}.mp4"
-        m["video"] = row
+        video[self.shot_id] = row
+        m["video"] = video
         with open(MANIFEST, "w") as f:
             json.dump(m, f, indent=2, sort_keys=True)
         return self
@@ -57,40 +68,44 @@ class _ManifestState:
 
 class TestGateBinding(unittest.TestCase):
     def setUp(self):
-        if not os.path.exists(os.path.join(FRAMES, "00001.png")):
+        if not os.path.isdir(FRAMES_ROOT):
             self.skipTest("run the pipeline first (build/frames missing)")
 
     def test_gate_refuses_foreign_frames(self):
-        """Gating a shot whose render is NOT the bound one must fail, name the
-        shot in stderr, and not rewrite gates.json — regardless of which shot
-        the manifest happens to bind."""
+        """Gating a shot with no bound render must fail, name the shot in
+        stderr, and not write that shot's gates file."""
         from lib import manifest
-        row = manifest.load().get("video") or {}
-        bound = os.path.basename(row.get("path", "")).replace(".mp4", "")
+        video = manifest.load().get("video") or {}
+        bound = next(iter(video), None)
         foreign = "shot-02" if bound != "shot-02" else "shot-01"
-        with _ManifestState(bound):  # pin the row to `bound` explicitly
-            before = None
-            if os.path.exists(GATES_JSON):
-                with open(GATES_JSON, "rb") as f:
-                    before = f.read()
-            res = gate(f"spec/{foreign}.poster.json")
-            self.assertNotEqual(res.returncode, 0,
-                                f"S4 blessed {bound}'s frames for {foreign}'s spec")
-            self.assertIn(foreign, res.stderr, f"stderr must name the shot: {res.stderr}")
-            if before is not None:
-                with open(GATES_JSON, "rb") as f:
-                    self.assertEqual(before, f.read(),
-                                     "a refused gate must not rewrite gates.json")
-            else:
-                self.assertFalse(os.path.exists(GATES_JSON),
-                                 "a refused gate must not write gates.json")
+        if bound is None:
+            self.skipTest("manifest has no video row; run S3 first")
+        gp = gates_path_for(foreign)
+        before = None
+        if os.path.exists(gp):
+            with open(gp, "rb") as f:
+                before = f.read()
+        res = gate(f"spec/{foreign}.poster.json")
+        self.assertNotEqual(res.returncode, 0,
+                            f"S4 blessed {bound}'s frames for {foreign}'s spec")
+        self.assertIn(foreign, res.stderr, f"stderr must name the shot: {res.stderr}")
+        if before is not None:
+            with open(gp, "rb") as f:
+                self.assertEqual(before, f.read(),
+                                 "a refused gate must not rewrite the gates file")
+        else:
+            self.assertFalse(os.path.exists(gp),
+                             "a refused gate must not write a gates file")
 
     def test_gate_accepts_bound_shot(self):
         """The shot whose render is bound in the manifest gates green."""
         from lib import manifest
-        row = manifest.load().get("video") or {}
-        bound = os.path.basename(row.get("path", "")).replace(".mp4", "")
-        self.assertTrue(bound, "manifest has no video row; run S3 first")
+        video = manifest.load().get("video") or {}
+        bound = next(iter(video), None)
+        if bound is None:
+            self.skipTest("manifest has no video row; run S3 first")
+        if not os.path.isdir(frames_dir_for(bound)):
+            self.skipTest(f"run S3 for {bound} first (per-shot frames missing)")
         with _ManifestState(bound):
             res = gate(f"spec/{bound}.poster.json")
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -99,10 +114,14 @@ class TestGateBinding(unittest.TestCase):
         """Frames swapped after S3 registered the fingerprint must be refused
         by the fingerprint branch (not by some other check)."""
         from lib import manifest
-        row = manifest.load().get("video") or {}
-        bound = os.path.basename(row.get("path", "")).replace(".mp4", "")
-        self.assertTrue(bound, "manifest has no video row; run S3 first")
-        first = os.path.join(FRAMES, "00001.png")
+        video = manifest.load().get("video") or {}
+        bound = next(iter(video), None)
+        if bound is None:
+            self.skipTest("manifest has no video row; run S3 first")
+        frames_dir = frames_dir_for(bound)
+        if not os.path.isdir(frames_dir):
+            self.skipTest(f"run S3 for {bound} first (per-shot frames missing)")
+        first = os.path.join(frames_dir, "00001.png")
         with open(first, "rb") as f:
             original = f.read()
         try:
@@ -125,17 +144,18 @@ class TestGateBinding(unittest.TestCase):
         """A manifest row predating frame binding (no frames_sha) must be
         refused with a pointer to re-run S3."""
         from lib import manifest
-        row = manifest.load().get("video") or {}
-        bound = os.path.basename(row.get("path", "")).replace(".mp4", "")
-        self.assertTrue(bound, "manifest has no video row; run S3 first")
+        video = manifest.load().get("video") or {}
+        bound = next(iter(video), None)
+        if bound is None:
+            self.skipTest("manifest has no video row; run S3 first")
         with open(MANIFEST, "rb") as f:
             saved = f.read()
         try:
             with open(MANIFEST) as f:
                 m = json.load(f)
-            row = dict(m["video"])
+            row = dict(m["video"][bound])
             row.pop("frames_sha", None)
-            m["video"] = row
+            m["video"][bound] = row
             with open(MANIFEST, "w") as f:
                 json.dump(m, f, indent=2, sort_keys=True)
             res = gate(f"spec/{bound}.poster.json")
