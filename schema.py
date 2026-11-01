@@ -5,9 +5,14 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-BLENDS = {"multiply", "screen"}
-LAYER_TYPES = {"code", "ai"}
-DRAWS = {"grid", "bar", "dots"}
+BLENDS = {"multiply", "screen", "normal"}
+LAYER_TYPES = {"code", "ai", "text", "hud", "card"}
+DRAWS = {
+    "grid", "bar", "dots", "geodesic", "ripples",
+    "trampoline", "gravity-well", "light-deflection", "spacetime-waves",
+    "blackhole-hero", "time-dilation", "light-cone-tilt", "spaghettification",
+    "tunnel-hero", "wavefunction-hero"
+}
 METRICS = {"changed_pixel_ratio", "red_pixel_ratio", "edge_key_purity", "subject_motion_ratio", "accent_color_ratio"}
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -59,6 +64,15 @@ def validate(spec):
                 e(f"{lid}: draw must be one of {sorted(DRAWS)}")
             if L.get("draw") == "bar" and not HEX.match(L.get("color", "")):
                 e(f"{lid}: bar needs color #rrggbb")
+        if L.get("type") == "text":
+            if not L.get("text"):
+                e(f"{lid}: text layer needs 'text'")
+        if L.get("type") == "hud":
+            if not L.get("hudType"):
+                e(f"{lid}: hud layer needs 'hudType'")
+        if L.get("type") == "card":
+            if not L.get("cardType"):
+                e(f"{lid}: card layer needs 'cardType'")
         m = L.get("motion")
         if m is not None:
             if m.get("type") != "geometric":
@@ -73,6 +87,9 @@ def validate(spec):
                 e(f"{lid}: zoom only supported on ai layers")
             if p is not None and L.get("draw") != "bar":
                 e(f"{lid}: pan only supported on 'bar' layers")
+    if "audio" in spec and spec["audio"] is not None:
+        if not isinstance(spec["audio"], dict):
+            e("audio must be a dictionary")
     gids = set()
     for g in spec["gates"]:
         if g.get("id") in gids:
@@ -102,6 +119,38 @@ def load_spec(path=None):
     if errs:
         raise ValueError("invalid spec:\n  " + "\n  ".join(errs))
     return spec
+
+
+VALID_BEATS = {"hook", "development", "climax", "resolution", "transition", "intro", "outro"}
+
+
+def validate_timeline(timeline):
+    errs = []
+    e = errs.append
+    if not isinstance(timeline, dict):
+        return ["timeline must be a dictionary"]
+    if not timeline.get("id"):
+        e("timeline missing 'id'")
+    shots = timeline.get("shots")
+    if not isinstance(shots, list) or len(shots) == 0:
+        e("timeline 'shots' must be a non-empty list")
+        return errs
+    for idx, s in enumerate(shots):
+        if isinstance(s, str):
+            if not s.strip():
+                e(f"shot {idx}: spec path cannot be empty")
+        elif isinstance(s, dict):
+            if not s.get("spec"):
+                e(f"shot {idx}: dict needs 'spec' path")
+            beat = s.get("beat")
+            if beat is not None and beat not in VALID_BEATS:
+                e(f"shot {idx}: invalid beat '{beat}', must be one of {sorted(VALID_BEATS)}")
+            reason = s.get("reason")
+            if reason is not None and not str(reason).strip():
+                e(f"shot {idx}: 'reason' cannot be empty")
+        else:
+            e(f"shot {idx}: must be a spec path string or dict with spec/beat/reason")
+    return errs
 
 
 def gate_of(spec, metric):
