@@ -130,10 +130,48 @@ def main():
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
 
+    # Audio QC Gates: silence, loudness (LUFS), and AV duration alignment
+    if spec.get("audio"):
+        from lib import audio
+        # 1. Silence check: non-silent audio track
+        sil_res = audio.measure_audio_silence(mp4)
+        sil_ok = not sil_res["is_silent"]
+        red |= not sil_ok
+        print(f"{'PASS' if sil_ok else 'FAIL'}  silence    audio_max_volume     {sil_res['max_volume']:.1f} dB  [>-45.0 dB]")
+        results.append({
+            "id": "audio_silence", "metric": "audio_max_volume",
+            "value": sil_res["max_volume"], "lo": -45.0, "pass": sil_ok
+        })
+
+        # 2. Integrated loudness check: EBU R128 (-16 LUFS target, range [-19.0, -13.0])
+        lufs = audio.measure_audio_loudness(mp4)
+        if lufs is not None:
+            loud_ok = (-19.0 <= lufs <= -13.0)
+            red |= not loud_ok
+            print(f"{'PASS' if loud_ok else 'FAIL'}  loudness   integrated_loudness  {lufs:.1f} LUFS  [-19.0, -13.0]")
+            results.append({
+                "id": "audio_loudness", "metric": "integrated_loudness",
+                "value": lufs, "lo": -19.0, "hi": -13.0, "pass": loud_ok
+            })
+        else:
+            print("WARN  loudness   integrated_loudness  could not measure")
+
+        # 3. AV Duration sync check (diff <= 100ms)
+        av_res = audio.measure_av_durations(mp4)
+        if av_res.get("has_audio"):
+            delta = av_res["delta"]
+            sync_ok = (delta <= 0.10)
+            red |= not sync_ok
+            print(f"{'PASS' if sync_ok else 'FAIL'}  av_sync    duration_delta       {delta:.3f} s  [<= 0.100 s]")
+            results.append({
+                "id": "audio_av_sync", "metric": "duration_delta",
+                "value": delta, "hi": 0.10, "pass": sync_ok
+            })
+
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.
     compose = import_module("03_compose")
-    vid = manifest.verified("video", None)
+    vid = manifest.verified("video", shot_id)
     if vid and vid.get("encoder"):
         live = compose.encoder_fingerprint()
         ok = live == vid["encoder"]

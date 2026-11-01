@@ -99,16 +99,31 @@ def render_remotion(spec, out_dir, shot_id):
 
 def encode_mp4(spec, frames_dir, out_mp4):
     FPS = spec["fps"]
+    audio_spec = spec.get("audio")
+    audio_file = None
+    if audio_spec and (audio_spec.get("voiceover") or audio_spec.get("bgm")):
+        from lib.audio import prepare_shot_audio
+        audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_audio.aac")
+        prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
+
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-framerate", str(FPS), "-i", os.path.join(frames_dir, "%05d.png"),
+    ]
+    if audio_file and os.path.exists(audio_file):
+        cmd.extend(["-i", audio_file])
+
+    cmd.extend([
         "-frames:v", str(spec["durationInFrames"]), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-threads", "1", "-r", str(FPS),
         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
         "-movflags", "+faststart", "-fflags", "+bitexact", "-flags:v", "+bitexact",
         "-pix_fmt", "yuv420p",
-        out_mp4,
-    ]
+    ])
+    if audio_file and os.path.exists(audio_file):
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-shortest"])
+
+    cmd.append(out_mp4)
     print(" ".join(cmd))
     subprocess.run(cmd, check=True, cwd=ROOT)
 
