@@ -21,6 +21,35 @@ MANIFEST_PATH = os.path.join(ROOT, "manifest.json")
 # would be an untracked file, and a tool that snapshots the tree mid-test
 # would read it as "the tree changed".
 BACKUP_DIR = os.path.join(ROOT, ".tmp", "testbakups")
+# The suite drives the real pipeline, which writes tracked files (the ledger,
+# fixture assets). Two suites running side by side — the acceptance check may
+# run a stage's command in parallel with a peer's — would then overwrite each
+# other's files. One suite at a time keeps the tree stable.
+SUITE_LOCK_PATH = os.path.join(ROOT, ".tmp", "test-suite.lock")
+
+
+@contextlib.contextmanager
+def suite_lock():
+    """Serialize whole-suite runs against each other.
+
+    The lock file lives under .tmp/ (gitignored), so it never shows up in a
+    working-tree snapshot."""
+    os.makedirs(os.path.dirname(SUITE_LOCK_PATH), exist_ok=True)
+    fh = open(SUITE_LOCK_PATH, "w")
+    try:
+        import fcntl
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        pass
+    try:
+        yield
+    finally:
+        try:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        fh.close()
 
 
 def _backup_path(name):

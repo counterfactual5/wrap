@@ -9,6 +9,46 @@ import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 PATH = os.path.join(ROOT, "manifest.json")
+LOCK_PATH = os.path.join(ROOT, ".tmp", "manifest.lock")
+
+
+class _ledger_lock:
+    """Advisory lock around the ledger's read-modify-write.
+
+    Two writers racing (two stages running side by side, the test suite beside
+    a render) would otherwise drop one of the rows: both read the same
+    snapshot and the second save overwrites the first. fcntl.flock is
+    advisory but sufficient here — every writer goes through this class.
+    """
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
+        self._fh = open(LOCK_PATH, "w")
+        try:
+            import fcntl
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            # Without flock the atomic write still prevents a torn document.
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            import fcntl
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        self._fh.close()
+        return False
+
+
+def _write_atomic(m):
+    """Write the ledger via a temp file + rename: readers see old or new, never a partial document."""
+    tmp = PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(m, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, PATH)
 
 
 def sha256(path):
@@ -43,20 +83,25 @@ def load():
 
 
 def save(m):
-    with open(PATH, "w") as f:
-        json.dump(m, f, indent=2, sort_keys=True)
-        f.write("\n")
+    _write_atomic(m)
 
 
 def register(section, key, relpath, **extra):
     if key is None:
         raise ValueError(f"register({section!r}): key is required (shot id / asset id)")
-    m = load()
-    full = os.path.join(ROOT, relpath)
-    row = {"path": relpath, "sha256": sha256(full), "bytes": os.path.getsize(full), **extra}
-    m[section][key] = row
-    save(m)
-    return row
+    # The ledger is a read-modify-write, so two writers racing (two stages
+    # running side by side, a test suite beside a render) would silently drop
+    # one of the rows. The lock makes the update atomic; the file is written
+    # to a temp name and moved into place, so a reader never sees a partial
+    # document.
+    with _ledger_lock():
+        m = load()
+        full = os.path.join(ROOT, relpath)
+        row = {"path": relpath, "sha256": sha256(full),
+               "bytes": os.path.getsize(full), **extra}
+        m[section][key] = row
+        _write_atomic(m)
+        return row
 
 
 def verified(section, key):
