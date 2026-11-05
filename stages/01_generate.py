@@ -277,24 +277,38 @@ VIDEO_POLL_INTERVAL = 15
 VIDEO_POLL_TIMEOUT = 2400  # 40 min — H3 quality renders can take ~30 min
 
 
-def _connector_call(tool, payload, timeout=CALL_TIMEOUT):
-    """Call one connector tool with a JSON payload, returning parsed JSON."""
+def _connector_call(tool, payload, timeout=CALL_TIMEOUT, attempts=3):
+    """Call one connector tool with a JSON payload, returning parsed JSON.
+
+    Transient network faults (ECONNRESET, connect timeout, socket error) are
+    common against the connector backend. The video poll in particular runs
+    for minutes while the model works — a single dropped connection would
+    throw away the whole wait — so the call is retried with a growing pause
+    before it is reported as a failure."""
     tmp_dir = os.path.join(ROOT, ".tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     args_file = os.path.join(tmp_dir, f"{tool.replace('__', '_')}.json")
     with open(args_file, "w") as f:
         json.dump(payload, f, indent=2)
     cmd = ["mcode-tools", "connector", "call", tool, "--args-file", args_file]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{tool} timed out after {timeout}s")
-    if proc.returncode != 0:
-        raise RuntimeError(f"{tool} failed (exit {proc.returncode}):\n{proc.stderr}")
-    try:
-        return json.loads(proc.stdout)
-    except Exception as ex:
-        raise RuntimeError(f"{tool} returned non-JSON output:\n{proc.stdout}") from ex
+    last = ""
+    for i in range(attempts):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            last = f"timed out after {timeout}s"
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            try:
+                return json.loads(proc.stdout)
+            except Exception as ex:
+                raise RuntimeError(f"{tool} returned non-JSON output:\n{proc.stdout}") from ex
+        if proc is not None:
+            last = proc.stderr.strip() or f"exit {proc.returncode}"
+        print(f"  {tool} attempt {i + 1}/{attempts} failed: {last}")
+        if i < attempts - 1:
+            time.sleep(2 * (i + 1))
+    raise RuntimeError(f"{tool} failed after {attempts} attempts:\n{last}")
 
 
 def submit_video_generation(prompt, model="MiniMax-H3-Max", duration=6,

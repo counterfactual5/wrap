@@ -20,6 +20,25 @@ from core.png import read_size, write_png
 from core.schema import ROOT, gate_of, hex_rgb, load_spec
 
 
+# Upscale factor above which a video layer's softness is worth flagging.
+UPSCALE_WARN = 1.2
+
+
+def _video_source_size(path):
+    """(width, height) of a video file, or (None, None) if unreadable."""
+    res = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
+        capture_output=True, text=True)
+    parts = res.stdout.strip().split(",")
+    if len(parts) >= 2:
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            pass
+    return None, None
+
+
 def main():
     parser = argparse.ArgumentParser(description="S2: Prepare layers and verify key purity")
     parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
@@ -91,10 +110,30 @@ def main():
                 cmd.append("-an")
             cmd.append(out_path)
             subprocess.run(cmd, check=True)
+
+            # The clip's native size vs the canvas: a clip generated at 768P
+            # (9:16 -> 768x1344) is upscaled to 1080x1920, and the upscale
+            # eats the high-frequency detail — the shot comes out soft with
+            # nothing in the pipeline saying so. Measure it and say it out
+            # loud when the margin is thin.
+            src_w, src_h = _video_source_size(src)
+            upscale = 1.0
+            if src_w and src_h:
+                upscale = max(rw / src_w, rh / src_h)
+            note = ""
+            if upscale >= UPSCALE_WARN:
+                note = (f" [upscale x{upscale:.2f}: source {src_w}x{src_h} "
+                        f"-> {rw}x{rh}]")
+                print(f"  {L['asset']}: source {src_w}x{src_h} is smaller than "
+                      f"the {rw}x{rh} canvas — upscaled x{upscale:.2f}, detail "
+                      f"will soften. Generate at a higher resolution "
+                      f"(768P/2K) or reduce the canvas.")
             manifest.register("prepared", f"{shot_id}/{L['asset']}", rel, source="video",
-                              fps=FPS, has_audio=keep_audio)
+                              fps=FPS, has_audio=keep_audio,
+                              source_size=[src_w, src_h] if src_w else None,
+                              upscale=round(upscale, 3) if src_w else None)
             print(f"prepared {rel} {rw}x{rh} @ {FPS}fps"
-                  f"{' (with native audio)' if keep_audio else ''}")
+                  f"{' (with native audio)' if keep_audio else ''}{note}")
             continue
 
         src_row = manifest.verified("assets", L["asset"])

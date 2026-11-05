@@ -116,6 +116,10 @@ def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"
 AUDIT_CRITERIA = [
     "text_legibility: All title/subtitle/quote texts readable without character corruption or overlap",
     "subject_fidelity: Visual subject matches declared AI asset or Code draw type without stretch",
+    "source_resolution: If the shot's asset was upscaled to reach the canvas size (the "
+    "prepared manifest row records source_size and upscale), judge whether the resulting "
+    "softness is acceptable — a clip generated below the canvas resolution is enlarged, "
+    "and the enlargement eats fine detail",
     "motion_coherence: Motion animates smoothly and logically across contact sheet frames",
     "composition_diversity: This shot's skeleton (layout zones, title/caption/HUD placement, "
     "entrance style) must differ from sibling shots in the same episode — an identical "
