@@ -243,10 +243,19 @@ class TestVideoEndToEnd(unittest.TestCase):
             self.assertGreater(motion["value"], 0.0001,
                                "video layer rendered a frozen image")
         finally:
+            # Remove the asset file AND its manifest rows: the manifest is a
+            # frozen ledger, and a test that leaves rows behind makes the
+            # working tree dirty on every run (delivery then reads that as a
+            # changed tree rather than a green test).
             for path in (spec_path,
                          os.path.join(ROOT, "assets", "video-e2e-clip.mp4")):
                 if os.path.exists(path):
                     os.remove(path)
+            from core import manifest
+            m = manifest.load()
+            m["assets"].pop("video-e2e-clip", None)
+            m["prepared"].pop("video-e2e/video-e2e-clip", None)
+            manifest.save(m)
 
 
 if __name__ == "__main__":
