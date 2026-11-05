@@ -251,27 +251,41 @@ def main():
         if os.path.exists(target):
             print(f"Spec already exists: {target}")
             return
+        # Schema skeleton only — deliberately NO layout. Composition is a
+        # per-episode design decision (SKILL.md "The One Design Law"); a baked
+        # skeleton here is how every episode converged to one identical look.
         template = {
+            "_design_hints": [
+                "Pipeline is fixed; this skeleton has no layout by design.",
+                "Design composition from the shot's narrative role FIRST:",
+                "  hook -> full-bleed poster (ai plate:false + big title via anim + field/path accents)",
+                "  development -> pure diagram (no ai layer; formula card timed to narration)",
+                "  resolution -> full-bleed documentary (real footage, slow reveal)",
+                "Never clone a previous episode's skeleton. Vocabulary:",
+                "  anim (x/y/scale/opacity/rotate keyframes, ease in/out/inout),",
+                "  field particles, path reveal/flow lines, vibe:false, plate:false.",
+                "Before designing: ROLL THE DICE (SKILL.md 'Creative dice') — sample",
+                "  composition x palette x entrance x camera x HUD-density, commit the",
+                "  rolled values here; >=4 shared values with a sibling spec = re-roll.",
+                "Verified examples: skills/code-driven-shot-pipeline/references/",
+                "  reference_hook_poster.json / reference_development_diagram.json /",
+                "  reference_resolution_documentary.json (three composition languages).",
+            ],
             "id": shot_id,
-            "canvas": {"w": 1920, "h": 1080},
+            "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
             "fps": 30,
-            "durationInFrames": 150,
+            "durationInFrames": 450,
             "style": "spec/style.json",
             "layers": [
-                {"id": "bg", "type": "code", "draw": "grid", "rect": [0, 0, 1920, 1080], "z": 0},
-                {"id": "subject", "type": "ai", "asset": f"{shot_id}-subject", "keyColor": "#ffffff", "blend": "multiply", "rect": [0, 0, 1920, 1080], "z": 1, "motion": {"type": "geometric", "zoom": [1.0, 1.05]}},
-                {"id": "accent", "type": "code", "draw": "bar", "rect": [0, 880, 240, 70], "color": "#E03A3A", "z": 2, "motion": {"type": "geometric", "pan": [0, 540]}}
+                {"id": "bg", "type": "code", "draw": "grid", "rect": [0, 0, 1080, 1920], "z": 0}
             ],
             "gates": [
-                {"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0005, "hi": 0.08},
-                {"id": "subject", "metric": "subject_motion_ratio", "lo": 0.0005, "hi": 0.08, "region": [860, 1000]},
-                {"id": "red", "metric": "red_pixel_ratio", "lo": 0.002, "hi": 0.02},
-                {"id": "keyPurity", "metric": "edge_key_purity", "lo": 0.98}
+                {"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}
             ]
         }
         with open(target, "w") as f:
-            json.dump(template, f, indent=2)
-        print(f"Initialized new shot specification: {target}")
+            json.dump(template, f, indent=2, ensure_ascii=False)
+        print(f"Initialized schema skeleton: {target} (layout is yours to design — see _design_hints)")
 
     elif args.command == "concat":
         timeline_path = os.path.join(ROOT, args.timeline)

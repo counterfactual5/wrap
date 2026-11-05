@@ -1,162 +1,141 @@
 ---
 name: code-driven-shot-pipeline
 description: >-
-  Design, synthesize, and verify code-driven poster-style and short-video knowledge shots.
-  Uses a 5-stage deterministic build system (Generate, Prepare, Compose, Gate, Inspect)
-  with lockfile manifest invariants, aspect-ratio preservation, neural audio mastering,
-  audio QC gates, visual self-audit contact sheets, and narrative timeline contracts.
+  Design, synthesize, and verify code-driven short-video knowledge shots.
+  5-stage deterministic build (Generate, Prepare, Compose, Gate, Inspect) with
+  lockfile manifest, audio mastering + QC gates, a visual-audit judge loop,
+  narrative timeline contracts, and a spec-driven expression vocabulary
+  (keyframe anim channels, parameterized field/path primitives, decoration
+  opt-outs). The pipeline is fixed; every episode designs its own shot layouts.
 ---
 
 # Code-Driven Shot Pipeline
 
-## Overview
+The pipeline treats video synthesis like software compilation: a structured JSON
+spec (`spec/*.poster.json`) compiles deterministically (bit-exact mp4) through 5
+decoupled stages with hard quality gates.
 
-The **Code-Driven Shot Pipeline** treats motion graphics and video synthesis like software compilation. Rather than relying on non-deterministic AI video generation or manual timeline editing, it compiles a structured JSON specification (`spec/*.poster.json`) into 1080p (16:9 landscape or 9:16 vertical 1080x1920) 30fps broadcast-quality video clips through 5 decoupled stages, with built-in neural voiceover narration, broadcast mastering, audio quality gates, visual self-audit contact sheets, and multi-shot narrative timeline assembly.
+**The one design law: the pipeline is fixed, expression lives in the spec.**
+Stage flow, manifest authority, and gates never change per episode. Layout,
+composition, motion, entrance timing, and atmosphere are authoring decisions
+made fresh in every spec. **Never clone a previous episode's skeleton** — a
+cloned layout is the single most recognizable failure of this pipeline (identical
+badge/title/framed-card/capsule/HUD stack across shots reads as template output).
+
+## The One Design Law, Applied
+
+Design each shot's composition from its narrative role before writing layers.
+Three verified composition languages (read them as specs, not as templates to copy):
+- **Full-bleed poster (hook)** — `plate: false` AI image covering the whole canvas,
+  oversized title in the lower third via `anim` keyframes, a `path` accent stroke,
+  `field` particles. See `skills/code-driven-shot-pipeline/references/reference_hook_poster.json`.
+- **Pure diagram (development)** — no AI layer at all; dot-grid ground, a physics
+  diagram draw, a formula card entering exactly when the narration states it.
+  See `skills/code-driven-shot-pipeline/references/reference_development_diagram.json`.
+- **Full-bleed documentary (resolution)** — real public-domain footage/stills,
+  slow zoom-out reveal, orbit `path` lines, restrained captions.
+  See `skills/code-driven-shot-pipeline/references/reference_resolution_documentary.json`.
+
+Vary between them *within* an episode. If two shots in one timeline share the same
+skeleton, that is a bug in the authoring, not a style.
+
+### Creative dice (anti-convergence protocol)
+
+LLM authoring drifts toward the layouts it has seen — cloning is the default
+failure, and "random" does not fix it by itself. Before writing any spec, roll
+one sample from each axis and commit it in writing (the rolled combination goes
+into the spec's `_design_hints` so the judge can verify it was honored):
+
+- **composition**: full-bleed poster / diagonal split / centered diagram /
+  extreme-crop close-up / negative-space dominated / frame-within-frame
+- **palette mood**: dark sci-fi / warm paper light / monochrome + single accent /
+  complementary clash / duotone
+- **entrance rhythm**: instant presence + slow reveal / staggered cascade /
+  everything-static-until-one-motion / late punchline
+- **camera**: slow push-in / pull-out reveal / lateral drift / locked-off with
+  element-only motion
+- **HUD density**: none / one instrument / minimal / info-dense
+
+Two specs sharing four or more rolled values is a re-roll. The dice constrain
+*form*, never content — the topic and physics stay in charge.
+
+## Expression Vocabulary (spec-driven, renderer just interpolates)
+
+| Channel | Where | What it controls |
+|---|---|---|
+| `anim` | any layer | Keyframe channels `x/y/scale/opacity/rotate`; frames strictly increasing; optional ease per keyframe (`linear/in/out/inout`) on the segment END. Entrances, camera moves, exits — all data. |
+| `field` (code draw) | `params` | Parameterized particle field: `count, seed, colors, dir, spread, speed, size, glow`. Atmosphere on demand, not baked in. |
+| `path` (code draw) | `params` | SVG path with `reveal` (dash draw-on) or `flow` (drifting dashes), `stroke/width/opacity`. Guide lines, orbits, energy tracks. |
+| `vibe: false` | spec root | Opts out of the baked vertical ambience (particle rain, scanline, blueprint grid). Bring your own atmosphere via layers. |
+| `plate: false` | ai layer | Full-bleed presentation — no card chrome (border/rounding/vignette). |
+| `color` | text layer | Solid color + scrim instead of the default white-cyan gradient. |
+
+Hero draws (`trampoline`, `gravity-well`, `blackhole-hero`, `time-dilation`,
+`light-cone-tilt`, `spaghettification`, `light-deflection`, `spacetime-waves`,
+`tunnel-hero`, `wavefunction-hero`) are **legacy hardcoded scenes**: reuse where the
+subject matches, never build new episodes around their fixed layouts, and prefer
+composing from primitives + `anim` for new content. (Planned: a `three` layer type
+via `@remotion/three` — true 3D scenes, frame-driven for determinism.)
 
 ## Core Invariants
 
-1. **Manifest Authority (Lockfile Model)**:
-   - Text-to-image AI APIs lack seed reproducibility.
-   - Once generated, assets are frozen in `manifest.json` with their SHA256 checksums.
-   - Subsequent pipeline runs strictly reuse frozen assets: `spec + manifest -> identical sha256 mp4`.
-2. **Zero-Dependency Pixel & Audio Metrics**:
-   - Avoid brittle FFmpeg `geq` filter expressions.
-   - Extract raw video frames via `ffmpeg -f rawvideo` and measure pixel metrics in standard Python using bit-twiddling (`bytes.translate`, `int.from_bytes`, and `bit_count` popcounts).
-   - Use resolution-independent metrics (`changed_pixel_ratio` instead of mean luma differences).
-3. **Fail-Fast Keying Purity & Aspect-Ratio Preservation (S2)**:
-   - AI subjects on white background use `blend=multiply` (or screen/normal for dark aesthetics).
-   - The outer 8px perimeter must have $\ge 98\%$ key color purity. If edge gradients/vignettes exist, the build blocks at S2.
-   - **Aspect-Ratio Preservation**: Full-canvas layers scale to fit zoom headroom; subregion card layers strictly preserve the source aspect ratio using `force_original_aspect_ratio=increase,crop={tw}:{th}` to prevent distortion (e.g. circles becoming ovals).
-4. **Deterministic Audio-Visual Sync & Broadcast Mastering**:
-   - Voiceover narration uses high-fidelity neural TTS (Microsoft Edge Neural TTS `zh-CN-YunxiNeural` with brisk `+18%` rate for viral pacing, fallback to local macOS speech).
-   - Audio is mastered through a professional broadcast filter chain:
-     - 75Hz highpass (eliminates mic rumble / plosives)
-     - 250Hz low-mid EQ (+2.5dB warmth)
-     - 3.2kHz presence EQ (+2.0dB speech clarity)
-     - Dynamic compressor (`compand`) and `loudnorm=I=-16:TP=-1.5:LRA=11` targeting standard -16.0 LUFS.
-   - Ambient soundscape is procedurally synthesized via 4-harmonic drone oscillation (55Hz sub, 110Hz bass, 220Hz mid, 440Hz shimmer with tremolo).
-5. **Hero Motion Stage & Popular Science Narrative Invariant**:
-   - Avoid cluttered academic text cards or raw intimidating math formulas.
-   - The **Hero Physical Animation Stage** occupies 65%~70% of the viewport.
-   - Replace abstract equations with **intuitive physical mental models** (e.g. Spacetime Trampoline, Gravity Funnel Rolling Marble, Eddington Eclipse Ray Bending, Spacetime Waves, Relativistic Accretion Photon Streams, Light Cone 90° Inversion).
-   - Subtitles use a minimalist, translucent capsule (`cardType: "capsule"`) anchored below the stage.
-6. **Multi-Shot Narrative Timeline Contract**:
-   - Multi-shot timeline assemblies (`spec/timeline.json`) enforce structured editorial beats (`hook`, `development`, `climax`, `resolution`, `transition`) and explicit reasons.
-   - Dialog/text alone is not completed state; only verified output artifacts under `build/` satisfy the completion contract.
+1. **Manifest Authority (lockfile)** — AI image APIs have no seed; generated assets
+   are frozen in `manifest.json` with SHA256 and reused forever after.
+   `spec + manifest -> identical sha256 mp4`.
+2. **Zero-dependency pixel & audio metrics** — raw-video byte math, not ffmpeg `geq`.
+3. **Fail-fast keying purity & aspect-ratio preservation (S2)** — 8px perimeter purity
+   >= 98% before render spend; subregion scaling always preserves aspect ratio.
+4. **Broadcast audio** — Edge TTS `zh-CN-YunxiNeural` at +18%, mastering chain
+   (highpass/EQ/compand) + `loudnorm` to -16 LUFS; ambient = 4-harmonic drone.
+5. **Narrative timeline contract** — structured `beat` + non-empty `reason` per shot;
+   talk alone is never completed state, only verified `build/` artifacts count.
+6. **Honest gating** — deterministic gates say "not broken"; the S5 judge says
+   "looks right and says something". Neither substitutes for the other.
 
-## The 5 Stages
+## The 5 Stages + Judge Loop
 
-| Stage | Script / Command | Contract | Exit Codes |
+| Stage | Script | Contract | Exit codes |
 |---|---|---|---|
-| **S1 Generate** | `stages/01_generate.py` | Reads `spec` & `style.json`. Fetches AI assets into `assets/*.png` and records SHA256 in `manifest.json`. Reuses frozen assets. | `0` = Assets ready & verified<br>`1` = Generation/Network failure |
-| **S2 Prepare** | `stages/02_prepare.py` | Measures outer 8px key purity on assets. Scales assets with aspect-ratio preservation and renders code background layers. | `0` = Purity $\ge 98\%$ & layers ready<br>`1` = Blocked by key impurity |
-| **S3 Compose** | `stages/03_compose.py` (`remotion`) | Compiles spec with **Remotion** rendering engine (`remotion/index.tsx`). Synthesizes neural audio, applies -16 LUFS broadcast mastering, and produces lossless `build/frames/<shot-id>/%05d.png` and `build/<shot-id>.mp4` with BT.709 color metadata. | `0` = Frames, audio, and MP4 rendered |
-| **S4 Gate** | `stages/04_gate.py` | Analyzes lossless PNG frames for motion delta, color accent presence, freeze frames (`freezedetect`), and evaluates audio QC (silence, -16 LUFS loudness, and AV duration sync $\le 100$ms). | `0` = All gates pass<br>`1` = Metric out of bounds |
-| **S5 Inspect** | `stages/05_inspect.py` | Extracts an 8~12 frame tiled contact sheet (`build/contact_sheet_{shot_id}.png`) and generates a spec layer checklist (`build/inspection_{shot_id}.json`) for visual self-audit against hallucination, misorientation, or text overlap. | `0` = Contact sheet & checklist ready |
+| S1 Generate | `stages/01_generate.py` | Fetch/verify AI assets into `assets/`, record SHA256 in manifest. | 0 / 1 |
+| S2 Prepare | `stages/02_prepare.py` | Key purity gate, aspect-true scaling, code backgrounds into `build/prepared/{shot}/`. | 0 / 1 |
+| S3 Compose | `stages/03_compose.py` | Remotion render -> `build/frames/{shot}/%05d.png` + `build/{shot}.mp4` (BT.709, mastered audio). | 0 / 1 |
+| S4 Gate | `stages/04_gate.py` | Motion/accent/purity/freeze + audio QC (silence > -45 dB, LUFS in [-19,-13], AV sync <= 100 ms) -> `build/gates/{shot}.json`. | 0 / 1 |
+| S5 Inspect | `stages/05_inspect.py` | Contact sheet + spec-derived checklist. Verdict is **`pending_judge`** (`pass: null`) — it never claims the shot looks right. | 0 |
+| S5+ Judge | `pipeline.py judge --verdict pass\|fail --notes` | A model or human reads the sheet against the checklist and records the verdict; `fail` exits 1 (hard gate). An S4 re-run invalidates a stale verdict. | 0 / 1 |
 
-## Supported Layer Types
+## Full-Video Gates (concat)
 
-Specifications (`spec/*.poster.json`) support 5 declarative layer types:
-1. **`ai`**: Image assets with geometric zoom/pan, blend mode (`multiply`, `screen`, `normal`), and key color.
-2. **`code`**: Procedural shapes and physics SVG simulations:
-   - `grid`, `dots`, `bar`: Structural backgrounds and panning accents.
-   - `trampoline`: 3D perspective spacetime mesh sinking under gravitational mass.
-   - `gravity-well`: Deep gravitational funnel with orbiting planet (marble trajectory).
-   - `light-deflection`: Ray tracer showing gravitational light bending + apparent ghost position shift.
-   - `spacetime-waves`: Binary compact masses radiating expanding quadrupole gravitational wave ripples.
-   - `blackhole-hero`: Relativistic accretion disk with Doppler-boosted photon ring and ISCO orbits.
-   - `time-dilation`: Dual observer perspective clocks with asymptotic freeze and gravitational redshift.
-   - `light-cone-tilt`: Minkowski light cone tilting 90° inside event horizon towards singularity.
-   - `spaghettification`: Tidal tensor stretching falling body into an atomic filament.
-3. **`text`**: Headings and titles with physical spring entrance animation and gradient glow.
-4. **`hud`**: Scientific HUD elements (`badge`, `telemetry`, `equalizer`, `progress`, `scanline`).
-5. **`card`**: Knowledge cards:
-   - `capsule`: Minimalist floating subtitle capsule for high-retention short videos.
-   - `formula`: Scientific formula breakdown with interactive parameter tags.
-   - `quote`: Highlighted quote with author attribution.
+`pipeline.py concat` runs post-assembly checks per-shot gates cannot see, writing
+`build/gates_full_{timeline_id}.json` (exit 1 on any red): timeline duration delta
+<= 250 ms, zero digital-black intervals, whole-track silence/loudness, AV alignment
+<= 250 ms, per-segment loudness jump <= 3 LU.
 
-## Audio Specification & QC Gates
+## Asset Transport (S1)
 
-Add voiceover narration and BGM directly to any shot:
-```json
-"audio": {
-  "voiceover": "你有没有想过，地球绕着太阳转，并不是因为太阳拉住了地球...",
-  "voice": "zh-CN-YunxiNeural",
-  "bgm": "ambient"
-}
-```
+`stages/01_generate.py` calls the `mcode-tools connector` where available. On
+machines without it, keep the manifest contract and substitute the transport:
+gradio_client -> HF Spaces (watch for webp bytes masquerading as .png — convert to
+true PNG before registering, data-URL MIME is not sniffed by Chromium), or
+public-domain sources (NASA SDO etc.) registered with `source=` and `credit=`.
+ZeroGPU anonymous quota is tiny and policy-drifts; a free account token is the
+reliable channel.
 
-### Audio QC Gates (in S4):
-- **`audio_silence`**: Verified via `volumedetect`. Max volume must be $> -45.0\text{ dB}$ (prevents silent / empty audio tracks).
-- **`audio_loudness`**: Measured via EBU R128 filter. Integrated loudness must fall within target $\pm 2.5\text{ LUFS}$ (`[-19.0, -13.0]` LUFS, targeting standard `-16.0 LUFS`).
-- **`audio_av_sync`**: Stream duration alignment. $\left|\text{duration}_{\text{video}} - \text{duration}_{\text{audio}}\right| \le 0.100\text{s}$ ($100\text{ms}$).
+## Layer Types
 
-## Visual Self-Audit (S5: `stages/05_inspect.py`)
+1. **`ai`** — prepared image layer; `blend`, `keyColor`, `motion.zoom`, `fit`, `plate`.
+2. **`code`** — `grid | dots | bar | field | path` (parameterized primitives) plus
+   legacy hero scenes (see vocabulary section).
+3. **`text`** — title/subtitle, spring or keyframe entrance, gradient or solid `color`.
+4. **`hud`** — `badge | telemetry | equalizer | progress | scanline`. Decorative:
+   use deliberately, not by default on every shot.
+5. **`card`** — `capsule | formula | quote`.
 
-Solves the blind spot of pure statistical pixel gates:
-- Extracts 9 or 12 evenly-spaced frames into a 3x3 or 4x3 contact sheet (`build/contact_sheet_{shot_id}.png`).
-- Generates a spec-derived checklist (`build/inspection_{shot_id}.json`) covering:
-  - Text legibility: No overlapping characters, clean hierarchy, no raw HTML/JSX tags.
-  - Subject fidelity: Visual subject matches declared AI asset / code draw type without aspect-ratio stretching.
-  - Motion coherence: Physical animation progresses logically across the frames.
-- Registers visual audit completion into `build/gates/<shot-id>.json`.
+## Quick Start
 
-## Narrative Timeline Format & Contract
-
-Multi-shot sequences are defined in `spec/timeline.json` with explicit narrative roles:
-```json
-{
-  "id": "blackhole-journey-1min",
-  "shots": [
-    {
-      "spec": "spec/blackhole-shot-01.poster.json",
-      "beat": "hook",
-      "reason": "以震撼的相对论吸积盘与光子球奇观抓住观众注意力，建立黑洞物理的宏大空间尺度"
-    },
-    {
-      "spec": "spec/blackhole-shot-02.poster.json",
-      "beat": "development",
-      "reason": "提出引力时间膨胀反常识现象：双参考系对比揭示远方同伴眼中探测器无限冻结与红移"
-    },
-    {
-      "spec": "spec/blackhole-shot-03.poster.json",
-      "beat": "climax",
-      "reason": "时空几何核心反转：视界内光锥倾倒90度，径向空间变为不可逃避的时间未来"
-    },
-    {
-      "spec": "spec/blackhole-shot-04.poster.json",
-      "beat": "resolution",
-      "reason": "潮汐力面条化与已知物理在奇点的崩溃，以哲学警句收束全篇"
-    }
-  ]
-}
-```
-
-Supported beats: `hook`, `development`, `climax`, `resolution`, `transition`, `intro`, `outro`.
-
-## Quick Start & CLI Usage
-
-### 1. Initialize a new shot
 ```bash
-python3 pipeline.py init-shot shot-02
-```
-
-### 2. Run full 5-stage pipeline on single shot
-```bash
-python3 pipeline.py run --spec spec/blackhole-shot-01.poster.json
-```
-
-### 3. Generate visual self-audit contact sheet (S5)
-```bash
-python3 pipeline.py inspect --spec spec/blackhole-shot-01.poster.json --grid 3x3
-```
-
-### 4. Concatenate narrative multi-shot sequence into 1-minute video
-```bash
-python3 pipeline.py concat --timeline spec/blackhole-timeline.json --output build/blackhole_full_1min.mp4
-```
-
-### 5. Run automated test suite
-```bash
-python3 pipeline.py test
+python3 pipeline.py init-shot shot-02                      # schema skeleton + design hints (no layout)
+python3 pipeline.py run --spec spec/my-shot.poster.json    # S1->S5 (visual verdict pending)
+python3 pipeline.py judge --spec spec/my-shot.poster.json --verdict pass --notes "..."   # close S5
+python3 pipeline.py concat --timeline spec/my-timeline.json --output build/full.mp4      # + full-video gates
+python3 pipeline.py test                                   # regression suite
 ```
