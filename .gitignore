@@ -4,4 +4,4 @@ node_modules
 .tmp/
 docs/.local/
 out/
-public/prepared/
+public/
