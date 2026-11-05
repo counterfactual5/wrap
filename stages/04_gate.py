@@ -77,11 +77,25 @@ def _video_hint(spec):
 
     A shot whose video layer is a still clip fails both gates, and the raw
     metrics ("changed_pixel_ratio 0.000000", "1 frozen segment") do not say
-    where to look. Name the layer and its clip length instead."""
+    where to look. Name the layer, and distinguish the two causes: footage
+    that is static, and footage that ran out before the shot ended."""
     vids = _video_layers(spec)
     if not vids:
         return ""
     names = ", ".join(f"{a}{d}" for a, _, d in vids)
+    # Did the clip run out before the shot ended (and is it not looping)?
+    ran_out = False
+    for L in spec["layers"]:
+        if L.get("type") != "video" or L.get("loop", True):
+            continue
+        row = manifest.verified("prepared", f"{spec.get('id', 'shot-01')}/{L['asset']}")
+        if row and row.get("shorter_than_shot"):
+            ran_out = True
+    if ran_out:
+        return (f"\n       -> the shot has a video layer ({names}) whose clip is "
+                f"shorter than the shot and loop is off: the footage RAN OUT "
+                f"before the shot ended, so the tail is frozen. Shorten the "
+                f"shot, lengthen the clip, or set \"loop\": true.")
     return (f"\n       -> the shot has a video layer ({names}); if the clip is "
             f"static, the motion and freeze gates fail on the SOURCE footage, "
             f"not on the composition.")

@@ -39,6 +39,50 @@ def _video_source_size(path):
     return None, None
 
 
+def _video_source_info(path):
+    """(width, height, frames, duration_seconds) of a media file.
+
+    A still image probed as media reports 0 frames — which is how a picture
+    used where a clip belongs gets caught."""
+    # JSON, not CSV: ffprobe orders CSV fields by its own rules and reports
+    # "N/A" for a container that has no frame count.
+    res = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height,nb_frames,duration",
+         "-of", "json", path],
+        capture_output=True, text=True)
+    w = h = frames = None
+    dur = 0.0
+    try:
+        import json as _json
+        streams = _json.loads(res.stdout).get("streams", [])
+        if streams:
+            s = streams[0]
+            w, h = s.get("width"), s.get("height")
+            frames = s.get("nb_frames")
+            if frames is not None:
+                try:
+                    frames = int(frames)
+                except (TypeError, ValueError):
+                    frames = None
+            try:
+                dur = float(s.get("duration"))
+            except (TypeError, ValueError):
+                dur = 0.0
+    except Exception:
+        pass
+    if not dur:
+        # Some containers report the duration on the format, not the stream.
+        res = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path], capture_output=True, text=True)
+        try:
+            dur = float(res.stdout.strip())
+        except ValueError:
+            dur = 0.0
+    return w, h, frames, dur
+
+
 def main():
     parser = argparse.ArgumentParser(description="S2: Prepare layers and verify key purity")
     parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
@@ -90,6 +134,22 @@ def main():
             src = os.path.join(ROOT, src_row["path"])
             lrect = L.get("rect", [0, 0, W, H])
             rw, rh = lrect[2], lrect[3]
+
+            # A video layer must point at actual footage. A picture probed
+            # as media reports 0 frames, and ffmpeg would happily "convert"
+            # it into a 1-frame mp4 — a still shot the motion and freeze
+            # gates would only catch much later, with the wrong reason.
+            src_w, src_h, src_frames, src_dur = _video_source_info(src)
+            # A picture has no frame count (None) or exactly one frame.
+            not_a_clip = src_w is None or src_frames is None or src_frames < 2
+            if not_a_clip:
+                print(f"{L['asset']}: the video layer points at {src_row['path']}, "
+                      f"which is not a moving clip"
+                      + (f" (a still image: {src_w}x{src_h})" if src_w else "")
+                      + ". Point it at a video asset, or use an \"ai\" layer for "
+                        "a picture.", file=sys.stderr)
+                sys.exit(2)
+
             rel = f"build/prepared/{shot_id}/{L['asset']}.mp4"
             out_path = os.path.join(ROOT, rel)
             vf = (f"scale={rw}:{rh}:force_original_aspect_ratio=increase:flags=lanczos,"
@@ -128,10 +188,23 @@ def main():
                       f"the {rw}x{rh} canvas — upscaled x{upscale:.2f}, detail "
                       f"will soften. Generate at a higher resolution "
                       f"(768P/2K) or reduce the canvas.")
+            # The clip vs the shot: a clip shorter than the shot runs out
+            # before the shot ends. With loop:true it repeats (fine); with
+            # loop:false the tail is frozen. Say which it is, so the S4 hint
+            # can tell "the footage is static" from "the footage ran out".
+            shot_seconds = spec["durationInFrames"] / max(1, FPS)
+            short = bool(src_dur) and src_dur < shot_seconds - 0.05
+            if short and not L.get("loop", True):
+                print(f"  {L['asset']}: the clip is {src_dur:.2f}s but the shot is "
+                      f"{shot_seconds:.2f}s and loop is off — the last "
+                      f"{shot_seconds - src_dur:.2f}s will be frozen.")
             manifest.register("prepared", f"{shot_id}/{L['asset']}", rel, source="video",
                               fps=FPS, has_audio=keep_audio,
                               source_size=[src_w, src_h] if src_w else None,
-                              upscale=round(upscale, 3) if src_w else None)
+                              upscale=round(upscale, 3) if src_w else None,
+                              source_duration=round(src_dur, 3) if src_dur else None,
+                              shot_duration=round(shot_seconds, 3),
+                              shorter_than_shot=short)
             print(f"prepared {rel} {rw}x{rh} @ {FPS}fps"
                   f"{' (with native audio)' if keep_audio else ''}{note}")
             continue

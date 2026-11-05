@@ -120,6 +120,9 @@ AUDIT_CRITERIA = [
     "prepared manifest row records source_size and upscale), judge whether the resulting "
     "softness is acceptable — a clip generated below the canvas resolution is enlarged, "
     "and the enlargement eats fine detail",
+    "source_duration: If the shot's clip is shorter or longer than the shot itself (the "
+    "prepared manifest row records source_duration and shot_duration), judge whether the "
+    "repetition or the cut is intentional — a short clip loops or freezes at the tail",
     "motion_coherence: Motion animates smoothly and logically across contact sheet frames",
     "composition_diversity: This shot's skeleton (layout zones, title/caption/HUD placement, "
     "entrance style) must differ from sibling shots in the same episode — an identical "
