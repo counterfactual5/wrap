@@ -8,7 +8,11 @@ import json
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-PATH = os.path.join(ROOT, "manifest.json")
+# POSTER_MANIFEST lets a caller point the ledger elsewhere. A test that runs
+# the real stages would otherwise write the project's frozen ledger while it
+# runs — and a working-tree snapshot taken during that window reads the write
+# as "the tree changed".
+PATH = os.environ.get("POSTER_MANIFEST") or os.path.join(ROOT, "manifest.json")
 LOCK_PATH = os.path.join(ROOT, ".tmp", "manifest.lock")
 
 

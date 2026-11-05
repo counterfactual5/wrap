@@ -19,7 +19,6 @@ sys.path.insert(0, ROOT)
 
 from core import metrics
 from core.schema import DRAWS
-from tests.helpers import preserve_manifest
 
 # grid and dots are backgrounds: S2 prepares them as PNGs and S3 composites
 # them. Every other draw is a Remotion component rendered in S3.
@@ -79,17 +78,32 @@ class TestDrawContract(unittest.TestCase):
     """One rendering test per draw value the spec accepts."""
 
     def setUp(self):
-        # The renders register prepared rows in the frozen ledger; snapshot it
-        # so the suite does not leave the working tree dirty.
-        self._manifest = preserve_manifest()
-        self._manifest.__enter__()
+        # The real stages write the frozen ledger while they run. Point them at
+        # a throwaway ledger (POSTER_MANIFEST) so a working-tree snapshot
+        # taken WHILE the test runs does not read those writes as "the tree
+        # changed" — and the project's own manifest stays untouched.
+        self._ledger = os.path.join(ROOT, ".tmp", "draw-contract-manifest.json")
+        os.makedirs(os.path.dirname(self._ledger), exist_ok=True)
+        self._env = {"POSTER_MANIFEST": self._ledger}
+        self._saved = {k: os.environ.get(k) for k in self._env}
+        os.environ.update(self._env)
+        self.addCleanup(self._restore_env)
+        self.addCleanup(_remove_if_present, self._ledger)
 
-    def tearDown(self):
-        self._manifest.__exit__(None, None, None)
+    def _restore_env(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def _render(self, draw):
         spec = _spec_for(draw)
-        spec_path = os.path.join(ROOT, "spec", f"{spec['id']}.poster.json")
+        # The temporary spec lives under .tmp/ (gitignored): a spec file in
+        # spec/ would be an untracked file, and a working-tree snapshot taken
+        # while the test runs would count it as a change.
+        spec_path = os.path.join(ROOT, ".tmp", f"{spec['id']}.poster.json")
+        os.makedirs(os.path.dirname(spec_path), exist_ok=True)
         with open(spec_path, "w") as f:
             json.dump(spec, f, indent=2)
         # Explicit cleanup: addCleanup runs when the test method ends, but a
@@ -98,7 +112,7 @@ class TestDrawContract(unittest.TestCase):
         self.addCleanup(_remove_if_present, spec_path)
         res = subprocess.run(
             [sys.executable, "stages/03_compose.py", "--spec", spec_path],
-            cwd=ROOT, capture_output=True, text=True)
+            cwd=ROOT, capture_output=True, text=True, env={**os.environ, **self._env})
         self.assertEqual(res.returncode, 0,
                          f"{draw} failed to render:\n{res.stdout}\n{res.stderr}")
         frames_dir = os.path.join(ROOT, "build", "frames", spec["id"])
@@ -142,13 +156,15 @@ class TestDrawContract(unittest.TestCase):
         for draw in BACKGROUND_DRAWS:
             with self.subTest(draw=draw):
                 spec = _spec_for(draw)
-                spec_path = os.path.join(ROOT, "spec", f"{spec['id']}.poster.json")
+                spec_path = os.path.join(ROOT, ".tmp", f"{spec['id']}.poster.json")
+                os.makedirs(os.path.dirname(spec_path), exist_ok=True)
                 with open(spec_path, "w") as f:
                     json.dump(spec, f, indent=2)
                 self.addCleanup(_remove_if_present, spec_path)
                 res = subprocess.run(
                     [sys.executable, "stages/02_prepare.py", "--spec", spec_path],
-                    cwd=ROOT, capture_output=True, text=True)
+                    cwd=ROOT, capture_output=True, text=True,
+                    env={**os.environ, **self._env})
                 self.assertEqual(res.returncode, 0,
                                  f"{draw} failed to prepare:\n{res.stderr}")
                 # S2 names the prepared file after the LAYER id.
