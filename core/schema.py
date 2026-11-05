@@ -105,6 +105,14 @@ def validate(spec):
             e(f"{lid}: rect must be [x,y,w,h] ints")
         elif r[2] <= 0 or r[3] <= 0:
             e(f"{lid}: rect w/h must be positive")
+        if L.get("type") in ("ai", "video"):
+            # plate is the card-chrome switch (false = full bleed). The
+            # renderer compares it strictly against false, so a non-boolean
+            # value would render the OPPOSITE of what the author wrote —
+            # "plate": "no" would draw the chrome the author asked to drop.
+            plate = L.get("plate")
+            if plate is not None and not isinstance(plate, bool):
+                e(f"{lid}: plate must be a boolean (true or false), got {plate!r}")
         if L.get("type") == "ai":
             if not L.get("asset"):
                 e(f"{lid}: ai layer needs 'asset'")
