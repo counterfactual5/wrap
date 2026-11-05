@@ -12,8 +12,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 # the real stages would otherwise write the project's frozen ledger while it
 # runs — and a working-tree snapshot taken during that window reads the write
 # as "the tree changed".
-PATH = os.environ.get("POSTER_MANIFEST") or os.path.join(ROOT, "manifest.json")
 LOCK_PATH = os.path.join(ROOT, ".tmp", "manifest.lock")
+
+
+def _ledger_path():
+    """Where the ledger lives, resolved on every call.
+
+    POSTER_MANIFEST is read at call time, not at import time: a caller that
+    sets the variable after importing this module would otherwise silently
+    write to the project's real ledger."""
+    return os.environ.get("POSTER_MANIFEST") or os.path.join(ROOT, "manifest.json")
+
+
+def __getattr__(name):
+    # PEP 562: PATH stays a module attribute (tests and callers use
+    # manifest.PATH) but is resolved on each access.
+    if name == "PATH":
+        return _ledger_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class _ledger_lock:
@@ -50,14 +66,15 @@ def _write_atomic(m):
     """Write the ledger via a temp file + rename: readers see old or new, never a partial document."""
     # POSTER_MANIFEST may point anywhere; make sure its directory exists so a
     # fresh ledger path does not fail on the first write.
-    parent = os.path.dirname(PATH)
+    path = _ledger_path()
+    parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    tmp = PATH + ".tmp"
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(m, f, indent=2, sort_keys=True)
         f.write("\n")
-    os.replace(tmp, PATH)
+    os.replace(tmp, path)
 
 
 def sha256(path):
@@ -80,9 +97,10 @@ def _migrate_video(v):
 
 def load():
     empty = {"assets": {}, "prepared": {}, "video": {}}
-    if not os.path.exists(PATH):
+    path = _ledger_path()
+    if not os.path.exists(path):
         return empty
-    with open(PATH) as f:
+    with open(path) as f:
         m = json.load(f)
     # Tolerate manifests written before a section existed (or hand-trimmed).
     for k, v in empty.items():

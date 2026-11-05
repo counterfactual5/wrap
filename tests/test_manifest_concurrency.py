@@ -37,12 +37,35 @@ for i in range({ROWS_PER_WORKER}):
 
 
 class TestConcurrentLedgerWrites(unittest.TestCase):
+    def setUp(self):
+        # The workers write through the real ledger. Point them at a throwaway
+        # one so the project's frozen manifest is not touched (and a working
+        # tree snapshot taken during the test does not read the write as "the
+        # tree changed").
+        self._ledger = os.path.join(ROOT, ".tmp", "concurrency-manifest.json")
+        os.makedirs(os.path.dirname(self._ledger), exist_ok=True)
+        self._saved = os.environ.get("POSTER_MANIFEST")
+        os.environ["POSTER_MANIFEST"] = self._ledger
+        self.addCleanup(self._restore)
+        self.addCleanup(self._remove_ledger)
+
+    def _restore(self):
+        if self._saved is None:
+            os.environ.pop("POSTER_MANIFEST", None)
+        else:
+            os.environ["POSTER_MANIFEST"] = self._saved
+
+    def _remove_ledger(self):
+        if os.path.exists(self._ledger):
+            os.remove(self._ledger)
+
     def test_00_concurrent_registrations_all_survive(self):
         with tempfile.TemporaryDirectory() as d:
             script = os.path.join(d, "worker.py")
             with open(script, "w") as f:
                 f.write(_worker_script())
-            procs = [subprocess.Popen([sys.executable, script, str(w)])
+            env = {**os.environ, "POSTER_MANIFEST": self._ledger}
+            procs = [subprocess.Popen([sys.executable, script, str(w)], env=env)
                      for w in range(2)]
             for p in procs:
                 p.wait()
@@ -65,7 +88,12 @@ class TestConcurrentLedgerWrites(unittest.TestCase):
             script = os.path.join(d, "worker.py")
             with open(script, "w") as f:
                 f.write(_worker_script())
-            proc = subprocess.Popen([sys.executable, script, "0"])
+            env = {**os.environ, "POSTER_MANIFEST": self._ledger}
+            # Start from an empty ledger so the reader below has a file to open
+            # before the writer creates it.
+            with open(self._ledger, "w") as f:
+                json.dump({"assets": {}, "prepared": {}, "video": {}}, f)
+            proc = subprocess.Popen([sys.executable, script, "0"], env=env)
             reads = 0
             try:
                 while proc.poll() is None:

@@ -70,6 +70,15 @@ def validate_anim(anim, lid, errs):
             prev_f = f
 
 
+# Names that end up in file paths (shot id, layer id, asset name) must not be
+# able to walk out of the directory they belong to.
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def valid_name(value):
+    return isinstance(value, str) and bool(NAME_RE.fullmatch(value))
+
+
 def hex_rgb(s):
     return tuple(int(s[i:i + 2], 16) for i in (1, 3, 5))
 
@@ -84,9 +93,9 @@ def validate(spec):
         return errs
     # The shot id names directories under build/ and public/ (prepared clips
     # are staged there), so it must not be able to walk out of them.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(spec["id"])):
-        e(f"id must be letters/digits/._- only (got {spec['id']!r}); it names "
-          f"directories under build/ and public/")
+    if not valid_name(spec["id"]):
+        e(f"id must be a letters/digits/._- string (got {spec['id']!r}); it "
+          f"names directories under build/ and public/")
     W, H = spec["canvas"].get("w"), spec["canvas"].get("h")
     if not (isinstance(W, int) and isinstance(H, int) and W > 0 and H > 0):
         e("canvas.w/h must be positive ints")
@@ -100,6 +109,15 @@ def validate(spec):
         if lid in ids:
             e(f"duplicate layer id {lid}")
         ids.add(lid)
+        # Layer ids and asset names reach file paths (build/prepared/{shot}/
+        # {layer}.png, assets/{asset}.png). The same rule as the shot id.
+        if not valid_name(lid):
+            e(f"{lid}: layer id must be a letters/digits/._- string — it names "
+              f"a file under build/prepared/")
+        asset = L.get("asset")
+        if asset is not None and not valid_name(asset):
+            e(f"{lid}: asset must be a letters/digits/._- string (got {asset!r}) "
+              f"— it names a file under assets/")
         if L.get("z") in zs:
             e(f"{lid}: duplicate z {L.get('z')}")
         zs.add(L.get("z"))
@@ -276,6 +294,9 @@ def validate_timeline(timeline):
         return ["timeline must be a dictionary"]
     if not timeline.get("id"):
         e("timeline missing 'id'")
+    elif not valid_name(timeline["id"]):
+        # The timeline id names build/gates_full_{id}.json.
+        e(f"timeline id must be a letters/digits/._- string (got {timeline['id']!r})")
     shots = timeline.get("shots")
     if not isinstance(shots, list) or len(shots) == 0:
         e("timeline 'shots' must be a non-empty list")

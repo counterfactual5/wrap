@@ -191,3 +191,64 @@ class TestVideoZoomValidation(unittest.TestCase):
                 errs = validate(self._spec(layer_type, [1.0, 1.1]))
                 self.assertTrue(any("zoom is only supported" in e for e in errs),
                                 f"{layer_type} accepted a zoom: {errs}")
+
+
+class TestNameValidation(unittest.TestCase):
+    """Names that reach file paths must not be able to walk out of their
+    directory: the shot id, the layer id, the asset name, the timeline id."""
+
+    def _spec(self, **over):
+        spec = {
+            "id": "names-test",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 60,
+            "layers": [{"id": "bg", "type": "code", "draw": "grid",
+                        "rect": [0, 0, 1080, 1920], "z": 0}],
+            "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                       "lo": 0.0001, "hi": 0.15}],
+        }
+        spec.update(over)
+        return spec
+
+    def test_00_layer_id_must_be_safe(self):
+        for lid in ("../../evil", "a/b", "..", "with space"):
+            with self.subTest(lid=lid):
+                spec = self._spec()
+                spec["layers"][0]["id"] = lid
+                errs = validate(spec)
+                self.assertTrue(any("layer id must be" in e for e in errs),
+                                f"layer id {lid!r} was accepted: {errs}")
+
+    def test_01_asset_name_must_be_safe(self):
+        for asset in ("../../evil", "a/b", ".."):
+            with self.subTest(asset=asset):
+                spec = self._spec()
+                spec["layers"][0] = {"id": "hero", "type": "ai", "asset": asset,
+                                      "keyColor": "#070512", "blend": "normal",
+                                      "rect": [0, 0, 1080, 1920], "z": 0}
+                errs = validate(spec)
+                self.assertTrue(any("asset must be" in e for e in errs),
+                                f"asset {asset!r} was accepted: {errs}")
+
+    def test_02_ordinary_layer_ids_and_assets_pass(self):
+        for lid, asset in (("bg", "city-silhouette"), ("Hero-1", "a.b_c")):
+            with self.subTest(lid=lid):
+                spec = self._spec()
+                spec["layers"][0] = {"id": lid, "type": "ai", "asset": asset,
+                                      "keyColor": "#070512", "blend": "normal",
+                                      "rect": [0, 0, 1080, 1920], "z": 0}
+                self.assertEqual(validate(spec), [])
+
+    def test_03_timeline_id_must_be_safe(self):
+        from core.schema import validate_timeline
+        for tid in ("../../evil", "a/b"):
+            with self.subTest(tid=tid):
+                errs = validate_timeline({"id": tid, "shots": ["spec/shot-01.poster.json"]})
+                self.assertTrue(any("timeline id must be" in e for e in errs), errs)
+
+    def test_04_an_ordinary_timeline_id_passes(self):
+        from core.schema import validate_timeline
+        self.assertEqual(
+            validate_timeline({"id": "full-sequence",
+                               "shots": ["spec/shot-01.poster.json"]}), [])

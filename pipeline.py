@@ -302,6 +302,13 @@ def main():
 
     elif args.command == "init-shot":
         shot_id = args.shot_id.strip()
+        # The shot id becomes the spec file name and every build/ path for
+        # that shot — it must not be able to walk out of spec/.
+        from core.schema import valid_name
+        if not valid_name(shot_id):
+            sys.exit(
+                f"shot id must be a letters/digits/._- string (got {shot_id!r}); "
+                f"it names spec/{shot_id}.poster.json and the build/ paths")
         os.makedirs(os.path.join(ROOT, "spec"), exist_ok=True)
         target = os.path.join(ROOT, "spec", f"{shot_id}.poster.json")
         if os.path.exists(target):
