@@ -350,25 +350,40 @@ def _clip_duration(shot_seconds, model="MiniMax-H3-Max"):
     return max(lo, min(hi, int(math.ceil(shot_seconds))))
 
 
-def _write_video_fixture(target_path, seconds=2, fps=30, w=270, h=480):
+def _write_video_fixture(target_path, seconds=2, fps=30, w=270, h=480,
+                         with_audio=False):
     """Build a small deterministic mp4 locally (fixture path spends no credits).
 
     A dark field with a band travelling vertically: every frame differs from
     its neighbour by a measurable amount, so the motion gate sees real motion
     and the freeze detector sees no frozen segment. The band moves over the
     clip's full height in ~3s, which keeps the per-frame change ratio inside
-    the gate's window instead of tripping its upper bound."""
+    the gate's window instead of tripping its upper bound.
+
+    with_audio=True adds a steady tone, so a fixture can exercise the
+    "the clip owns the audio" path (a native track that must survive S2,
+    be mastered in S3 and be measured by S4)."""
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-f", "lavfi", "-i", f"color=c=0x101830:s={w}x{h}:r={fps}",
         "-f", "lavfi", "-i", f"color=c=0xB84DFF:s={w}x{h // 8}:r={fps}",
         "-filter_complex",
         f"[0:v][1:v]overlay=x=0:y='(main_h-overlay_h)*t/3':shortest=1",
+    ]
+    if with_audio:
+        # A steady tone: silent enough to be a placeholder, loud enough that
+        # the silence gate can tell it apart from a dead track.
+        cmd.extend([
+            "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=44100:duration={seconds}",
+            "-map", "0:v", "-map", "2:a",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        ])
+    cmd.extend([
         "-frames:v", str(seconds * fps),
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-pix_fmt", "yuv420p", "-r", str(fps),
         "-movflags", "+faststart", target_path,
-    ]
+    ])
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT)
     if proc.returncode != 0:
         raise RuntimeError(

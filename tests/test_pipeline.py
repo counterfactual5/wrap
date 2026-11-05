@@ -10,9 +10,19 @@ sys.path.insert(0, ROOT)
 
 from core import manifest, metrics
 from core.schema import load_spec, validate
+from tests.helpers import preserve_manifest
 
 
 class TestPipeline(unittest.TestCase):
+    def setUp(self):
+        # The stages write to the frozen ledger (manifest.json); snapshot it
+        # so a test run leaves the working tree exactly as it found it.
+        self._manifest_ctx = preserve_manifest()
+        self._manifest_ctx.__enter__()
+
+    def tearDown(self):
+        self._manifest_ctx.__exit__(None, None, None)
+
     def test_00_spec_validation(self):
         spec = load_spec()
         self.assertEqual(len(validate(spec)), 0)

@@ -94,14 +94,65 @@ def render_remotion(spec, out_dir, shot_id):
     shutil.rmtree(os.path.join(out_dir, "rm"))
 
 
+def video_audio_source(spec):
+    """The prepared clip whose native track owns the soundtrack, if any.
+
+    Audio ownership is exclusive (SKILL.md "Audio ownership"):
+      - a video layer with muted:false keeps its native track, and that track
+        is the shot's soundtrack;
+      - otherwise the pipeline's TTS chain owns it.
+    Returns the prepared clip path, or None."""
+    shot_id = spec.get("id", "shot-01")
+    for L in spec["layers"]:
+        if L.get("type") != "video" or L.get("muted", True):
+            continue
+        row = manifest.verified("prepared", f"{shot_id}/{L['asset']}")
+        if row is None:
+            continue
+        return os.path.join(ROOT, row["path"])
+    return None
+
+
 def encode_mp4(spec, frames_dir, out_mp4):
     FPS = spec["fps"]
     audio_spec = spec.get("audio")
     audio_file = None
-    if audio_spec and (audio_spec.get("voiceover") or audio_spec.get("bgm")):
+
+    # Which track owns the soundtrack: the clip's native audio, the TTS chain,
+    # or neither. Declaring both is a spec error, not a style choice — the
+    # two would overlap and the S4 audio gates would flag the result.
+    clip_audio = video_audio_source(spec)
+    wants_tts = bool(audio_spec and (audio_spec.get("voiceover") or audio_spec.get("bgm")))
+    if clip_audio and wants_tts:
+        raise RuntimeError(
+            f"{spec.get('id')}: audio conflict — a video layer with muted:false "
+            f"keeps its native track, and audio.voiceover/bgm asks for the TTS "
+            f"chain as well. Pick one: set \"muted\": true on the video layer "
+            f"(TTS owns the audio) or drop audio.voiceover/bgm (the clip owns it).")
+
+    if clip_audio:
+        # The clip's native track has not been through the mastering chain, so
+        # its loudness is whatever the model produced (-22.9 LUFS measured on a
+        # real H3 clip — below the gate's -19 floor). Run the same loudnorm
+        # target the TTS chain uses so every shot lands in the same window.
+        audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_clip_audio.m4a")
+        mastered = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", clip_audio,
+             "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+             "-ar", "44100", "-ac", "2", "-c:a", "aac", "-b:a", "192k", audio_file],
+            capture_output=True, text=True)
+        if mastered.returncode != 0:
+            raise RuntimeError(
+                f"mastering the clip's native audio failed:\n{mastered.stderr}")
+        print(f"audio source: native track of {os.path.basename(clip_audio)} "
+              f"(mastered to -16 LUFS)")
+    elif wants_tts:
         from core.audio import prepare_shot_audio
         audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_audio.aac")
         prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
+        print("audio source: TTS chain (edge-tts + ambient drone + loudnorm)")
+    else:
+        print("audio source: none (silent shot)")
 
     cmd = [
         "ffmpeg", "-v", "error", "-y",

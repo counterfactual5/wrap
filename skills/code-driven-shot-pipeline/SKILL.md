@@ -154,8 +154,14 @@ one as the main track:
   leave `audio.voiceover` empty for that shot. The clip's own track is used;
   do not also request TTS for the same shot, or the two will overlap.
 
-Mixing both is a bug, not a style choice — the S4 audio gates (silence, LUFS,
-AV sync) will flag it.
+Mixing both is a bug, not a style choice — S3 rejects the spec with a
+readable "audio conflict" error, and the S4 audio gates (silence, LUFS, AV
+sync) would flag the overlap.
+
+A clip's native track is mastered to the same -16 LUFS target as the TTS
+chain, so a shot sounds the same whichever track owns it. The audio gates run
+whenever the *rendered* mp4 carries a track — not only when the spec declares
+an `audio` block — so a clip-owned soundtrack is measured too.
 
 ## Layer Types
 

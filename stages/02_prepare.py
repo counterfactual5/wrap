@@ -75,15 +75,26 @@ def main():
             out_path = os.path.join(ROOT, rel)
             vf = (f"scale={rw}:{rh}:force_original_aspect_ratio=increase:flags=lanczos,"
                   f"crop={rw}:{rh},format=yuv420p")
-            subprocess.run(
-                ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
-                 "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                 "-pix_fmt", "yuv420p", "-an", out_path],
-                check=True
-            )
+            # Audio: the clip's own track is kept only when the layer asks for
+            # it (muted: false) — the "the clip owns the audio" mode. A muted
+            # layer (the default) drops the track, so the pipeline's TTS chain
+            # is the only soundtrack.
+            keep_audio = not L.get("muted", True)
+            cmd = ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
+                   "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                   "-pix_fmt", "yuv420p"]
+            if keep_audio:
+                # Keep the native track, normalized to the mastering format the
+                # rest of the pipeline uses (44100 stereo, AAC).
+                cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"])
+            else:
+                cmd.append("-an")
+            cmd.append(out_path)
+            subprocess.run(cmd, check=True)
             manifest.register("prepared", f"{shot_id}/{L['asset']}", rel, source="video",
-                              fps=FPS)
-            print(f"prepared {rel} {rw}x{rh} @ {FPS}fps")
+                              fps=FPS, has_audio=keep_audio)
+            print(f"prepared {rel} {rw}x{rh} @ {FPS}fps"
+                  f"{' (with native audio)' if keep_audio else ''}")
             continue
 
         src_row = manifest.verified("assets", L["asset"])

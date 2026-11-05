@@ -136,9 +136,14 @@ def main():
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
 
-    # Audio QC Gates: silence, loudness (LUFS), and AV duration alignment
-    if spec.get("audio"):
-        from core import audio
+    # Audio QC Gates: silence, loudness (LUFS), and AV duration alignment.
+    # They run whenever the RENDERED mp4 actually carries an audio track —
+    # not merely when the spec declares one. A shot whose soundtrack comes
+    # from a video layer's native track has no `audio` block, and skipping
+    # the gates there would let an unmeasured soundtrack through.
+    from core import audio
+    av_probe = audio.measure_av_durations(mp4)
+    if av_probe.get("has_audio"):
         # 1. Silence check: non-silent audio track
         sil_res = audio.measure_audio_silence(mp4)
         sil_ok = not sil_res["is_silent"]
@@ -163,16 +168,14 @@ def main():
             print("WARN  loudness   integrated_loudness  could not measure")
 
         # 3. AV Duration sync check (diff <= 100ms)
-        av_res = audio.measure_av_durations(mp4)
-        if av_res.get("has_audio"):
-            delta = av_res["delta"]
-            sync_ok = (delta <= 0.10)
-            red |= not sync_ok
-            print(f"{'PASS' if sync_ok else 'FAIL'}  av_sync    duration_delta       {delta:.3f} s  [<= 0.100 s]")
-            results.append({
-                "id": "audio_av_sync", "metric": "duration_delta",
-                "value": delta, "hi": 0.10, "pass": sync_ok
-            })
+        delta = av_probe["delta"]
+        sync_ok = (delta <= 0.10)
+        red |= not sync_ok
+        print(f"{'PASS' if sync_ok else 'FAIL'}  av_sync    duration_delta       {delta:.3f} s  [<= 0.100 s]")
+        results.append({
+            "id": "audio_av_sync", "metric": "duration_delta",
+            "value": delta, "hi": 0.10, "pass": sync_ok
+        })
 
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.
