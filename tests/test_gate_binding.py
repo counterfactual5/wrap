@@ -76,6 +76,27 @@ class _ManifestState:
 
 
 class TestGateBinding(unittest.TestCase):
+    def _unrendered_shot(self):
+        """A spec that exists on disk but has no rendered mp4 and no manifest
+        video row — so S4 has no render bound to it and must refuse.
+
+        The spec is written by this test, so the scenario holds whatever else
+        has been rendered before: picking a fixed shot made the test pass
+        vacuously once that shot had been rendered by something else."""
+        from core import manifest
+        shot_id = "gate-unbound-shot"
+        spec_path = os.path.join(ROOT, "spec", f"{shot_id}.poster.json")
+        with open(os.path.join(ROOT, "spec", "shot-01.poster.json")) as f:
+            spec = json.load(f)
+        spec["id"] = shot_id
+        with open(spec_path, "w") as f:
+            json.dump(spec, f, indent=2)
+        self.addCleanup(lambda: os.path.exists(spec_path) and os.remove(spec_path))
+        # It must be genuinely unbound.
+        if manifest.verified("video", shot_id) is not None:
+            self.skipTest(f"{shot_id} unexpectedly has a manifest video row")
+        return shot_id
+
     def setUp(self):
         # Render FIRST, then snapshot: the render registers the manifest row
         # these tests bind to, and the snapshot must preserve it — restoring a
@@ -93,13 +114,18 @@ class TestGateBinding(unittest.TestCase):
 
     def test_gate_refuses_foreign_frames(self):
         """Gating a shot with no bound render must fail, name the shot in
-        stderr, and not write that shot's gates file."""
+        stderr, and not write that shot's gates file.
+
+        The foreign shot is one this test creates and never renders, so the
+        scenario does not depend on what happens to be rendered already —
+        picking a fixed shot-02 made the test pass vacuously once that shot
+        had been rendered by something else."""
         from core import manifest
         video = manifest.load().get("video") or {}
         bound = BOUND if BOUND in video else None
-        foreign = "shot-02" if bound != "shot-02" else "shot-01"
         if bound is None:
             self.skipTest("manifest has no video row for the bound shot; run S3 first")
+        foreign = self._unrendered_shot()
         gp = gates_path_for(foreign)
         before = None
         if os.path.exists(gp):

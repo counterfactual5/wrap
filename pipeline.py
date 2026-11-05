@@ -34,6 +34,25 @@ def run_stage(cmd_args, desc):
         sys.exit(res.returncode)
 
 
+def missing_assets(spec):
+    """The assets a spec needs that are not frozen in the manifest yet.
+
+    A shot's ai / video layers name their assets; the manifest records the
+    frozen ones. Anything missing would have to be GENERATED — which costs a
+    model call — so the caller must know before it happens, not after."""
+    from core import manifest
+    missing = []
+    for layer in spec.get("layers", []):
+        if layer.get("type") not in ("ai", "video"):
+            continue
+        asset = layer.get("asset")
+        if not asset:
+            continue
+        if manifest.verified("assets", asset) is None:
+            missing.append(asset)
+    return missing
+
+
 def concat_stream_problem(clips):
     """Describe why these clips cannot be concatenated, or None if they can.
 
@@ -375,12 +394,24 @@ def main():
 
             mp4_path = os.path.join(ROOT, "build", f"{sid}.mp4")
             # Contract: only verified rendered files are assembled. When one is
-            # missing, build it from the top: S1 (reuse or generate the
-            # assets), S2 (prepare them — S3 refuses to render without the
-            # prepared rows), S3 (render), S4 (gate). Running only S3+S4 left
-            # a fresh clone dead on "prepared '<shot>/<layer>' not
-            # manifest-verified; run S2 for this shot first".
+            # missing, build it from the top: S1 (reuse the frozen assets),
+            # S2 (prepare them — S3 refuses to render without the prepared
+            # rows), S3 (render), S4 (gate). Running only S3+S4 left a fresh
+            # clone dead on "prepared '<shot>/<layer>' not manifest-verified".
             if not os.path.exists(mp4_path):
+                # S1 can also GENERATE, which costs money. "Assemble what I
+                # have" must not silently become "generate what is missing":
+                # the assets have to be frozen already, or the author is told
+                # exactly which command to run.
+                missing = missing_assets(s_data)
+                if missing:
+                    rel_spec = os.path.relpath(shot_file, ROOT)
+                    sys.exit(
+                        f"Timeline {tl.get('id', 'sequence')}: the shot {sid} needs "
+                        f"asset(s) that are not frozen yet: {', '.join(missing)}.\n"
+                        f"  Generating them costs a model call — run it yourself:\n"
+                        f"    python3 pipeline.py generate --spec {rel_spec}\n"
+                        f"  then re-run this concat.")
                 print(f"      [Build Contract] MP4 missing for {sid}. Building and gating now...")
                 run_stage([os.path.join(STAGES, "01_generate.py"), "--spec", shot_file], f"Assets {sid}")
                 run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", shot_file], f"Prepare {sid}")
