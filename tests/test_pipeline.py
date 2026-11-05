@@ -146,9 +146,14 @@ class TestPipeline(unittest.TestCase):
             subprocess.run([sys.executable, "stages/02_prepare.py"], cwd=ROOT, capture_output=True)
 
     def test_07_manifest_tolerates_missing_sections(self):
-        """An old/hand-trimmed manifest without 'prepared' must not crash load()."""
-        backup = manifest.PATH + ".bak"
-        os.replace(manifest.PATH, backup)
+        """An old/hand-trimmed manifest without 'prepared' must not crash load().
+
+        The trimmed ledger is written IN PLACE (the file is never moved
+        aside): a tool that snapshots the working tree can catch the window
+        in which the file is missing and read that as "the tree changed".
+        The original bytes are restored afterwards."""
+        with open(manifest.PATH, "rb") as f:
+            saved = f.read()
         try:
             with open(manifest.PATH, "w") as f:
                 json.dump({"assets": {}}, f)
@@ -156,7 +161,8 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(m.get("prepared"), {})
             self.assertEqual(m.get("video"), {})
         finally:
-            os.replace(backup, manifest.PATH)
+            with open(manifest.PATH, "wb") as f:
+                f.write(saved)
 
 
 if __name__ == "__main__":

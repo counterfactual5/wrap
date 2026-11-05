@@ -21,7 +21,11 @@ MANIFEST_PATH = os.path.join(ROOT, "manifest.json")
 
 @contextlib.contextmanager
 def preserve_manifest():
-    """Restore manifest.json exactly as it was when the block ends."""
+    """Restore manifest.json exactly as it was when the block ends.
+
+    The restore is an atomic replace: the file is never absent from the
+    working tree, so a tool that snapshots the tree mid-test cannot read the
+    snapshot window as "the tree changed"."""
     backup = None
     if os.path.exists(MANIFEST_PATH):
         backup = MANIFEST_PATH + ".testbak"
@@ -29,22 +33,18 @@ def preserve_manifest():
     try:
         yield
     finally:
-        # The block may have moved or removed the file (a test that exercises
-        # manifest.load() on a hand-trimmed ledger does exactly that). Restore
-        # defensively: every step is guarded, so a missing intermediate file
-        # cannot abort the restore halfway and leave the tree broken.
         if backup is not None:
             try:
-                if os.path.exists(MANIFEST_PATH):
-                    os.remove(MANIFEST_PATH)
+                # os.replace is atomic within a filesystem: readers see
+                # either the old file or the restored one, never a gap.
+                shutil.copyfile(backup, MANIFEST_PATH + ".restore")
+                os.replace(MANIFEST_PATH + ".restore", MANIFEST_PATH)
             except OSError:
-                pass
-            try:
-                shutil.move(backup, MANIFEST_PATH)
-            except OSError:
-                # Last resort: copy the bytes back.
-                shutil.copyfile(backup, MANIFEST_PATH)
-                os.remove(backup)
+                if not os.path.exists(MANIFEST_PATH):
+                    shutil.copyfile(backup, MANIFEST_PATH)
+            finally:
+                if os.path.exists(backup):
+                    os.remove(backup)
         elif os.path.exists(MANIFEST_PATH):
             os.remove(MANIFEST_PATH)
 
@@ -71,15 +71,16 @@ def preserve_assets(*asset_names):
         for name, backup in backups.items():
             path = os.path.join(ROOT, "assets", name)
             try:
-                if os.path.exists(path):
-                    os.remove(path)
+                # Atomic replace: the file is never absent from the tree.
+                tmp = path + ".restore"
+                shutil.copyfile(backup, tmp)
+                os.replace(tmp, path)
             except OSError:
-                pass
-            try:
-                shutil.move(backup, path)
-            except OSError:
-                shutil.copyfile(backup, path)
-                os.remove(backup)
+                if not os.path.exists(path):
+                    shutil.copyfile(backup, path)
+            finally:
+                if os.path.exists(backup):
+                    os.remove(backup)
 
 
 @contextlib.contextmanager
@@ -110,19 +111,26 @@ def preserved_manifest_entry(asset_key, prepared_key=None):
 
 
 def ensure_rendered(shot_spec, shot_id, through_gate=False):
-    """Render a shot if its mp4 is not on disk; return the mp4 path.
+    """Render a shot if it is not on disk; return the mp4 path.
 
     Tests that consume a rendered shot (concat, S5 inspect) used to rely on
     build/ surviving from an earlier run. After `make clean` that artifact is
     gone, and the test failed for a reason unrelated to what it checks. The
     shot is rendered here so the dependency is explicit and self-contained.
 
+    The check covers BOTH the mp4 and the manifest row that binds it: a
+    previous test's manifest restore can leave the file on disk with no row
+    pointing at it, and then every gate refuses for the wrong reason.
+
     through_gate=True also runs S4, which writes build/gates/{shot_id}.json —
     S5 reads that file, so a contact-sheet test needs it.
     """
+    from core import manifest
     mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
     gates = os.path.join(ROOT, "build", "gates", f"{shot_id}.json")
-    if os.path.exists(mp4) and (not through_gate or os.path.exists(gates)):
+    bound = manifest.verified("video", shot_id) is not None
+    if (os.path.exists(mp4) and bound
+            and (not through_gate or os.path.exists(gates))):
         return mp4
     import subprocess
     import sys
