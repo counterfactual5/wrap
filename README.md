@@ -126,6 +126,60 @@ python3 pipeline.py judge --spec spec/shot-01.poster.json --verdict pass --notes
 make clean
 ```
 
+#### Using a generated video clip
+
+A spec layer of `"type": "video"` pulls in a generated clip:
+
+```json
+{
+  "id": "hero-clip",
+  "type": "video",
+  "asset": "h3-push-in",
+  "rect": [0, 0, 1080, 1920],
+  "z": 0,
+  "plate": false,
+  "model": "MiniMax-H3-Max",
+  "duration": 6,
+  "muted": true
+}
+```
+
+```bash
+python3 pipeline.py run --spec spec/my-shot.poster.json
+```
+
+S1 submits the clip, polls until the model finishes, downloads it and freezes
+it by sha256 — this is the slow, billed step (`MiniMax-H3-Max` ~20s,
+`MiniMax-H3` 15–30 min). Later runs reuse the frozen clip. `model`,
+`duration`, `resolution` and `ratio` are validated before the call, so a typo
+is rejected by `validate` rather than by a paid request. `muted` decides who
+owns the audio: `true` (default) leaves the clip silent and the spec's
+`audio.voiceover` owns the soundtrack; `false` keeps the clip's native track
+and `audio.voiceover` must then be left empty for that shot.
+
+#### Image-to-image
+
+An `ai` layer can derive from an already-frozen asset:
+
+```json
+{
+  "id": "hero-plate",
+  "type": "ai",
+  "asset": "snowy-skyline",
+  "input_asset": "city-silhouette",
+  "prompt": "a snowy version of the same skyline, cold blue light",
+  "keyColor": "#ffffff",
+  "blend": "multiply",
+  "rect": [0, 0, 1080, 1920],
+  "z": 0
+}
+```
+
+`input_asset` names a manifest asset. S1 uploads it, passes the temporary URL
+to the backend and freezes the derived image like any other asset. A layer's
+`prompt` replaces the style's `subject`/`composition`; `background` and
+`exclude` still apply as global constraints.
+
 ### 5. Concatenate Shots via Timeline
 ```bash
 python3 pipeline.py concat --timeline spec/timeline.json --output build/full.mp4

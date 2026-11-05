@@ -369,6 +369,12 @@ def main():
         if os.path.exists(b_dir):
             shutil.rmtree(b_dir)
             print("Removed build/ directory.")
+        # public/prepared/ holds the video clips S3 stages for Remotion's
+        # staticFile(). Nothing cleans it, so it grows with every render.
+        pub_dir = os.path.join(ROOT, "public", "prepared")
+        if os.path.exists(pub_dir):
+            shutil.rmtree(pub_dir)
+            print("Removed public/prepared/ directory.")
         print("Clean complete.")
 
 

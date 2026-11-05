@@ -188,3 +188,67 @@ python3 pipeline.py judge --spec spec/my-shot.poster.json --verdict pass --notes
 python3 pipeline.py concat --timeline spec/my-timeline.json --output build/full.mp4      # + full-video gates
 python3 pipeline.py test                                   # regression suite
 ```
+
+### Using a generated video clip
+
+A video layer is declared in the spec like any other layer:
+
+```json
+{
+  "id": "hero-clip",
+  "type": "video",
+  "asset": "h3-push-in",
+  "rect": [0, 0, 1080, 1920],
+  "z": 0,
+  "plate": false,
+  "model": "MiniMax-H3-Max",
+  "duration": 6,
+  "muted": true
+}
+```
+
+```bash
+python3 pipeline.py run --spec spec/my-shot.poster.json
+```
+
+What to expect:
+
+- **S1 is the slow step.** It submits the clip, polls until the model
+  finishes, downloads it and freezes it by sha256. `MiniMax-H3-Max` returns
+  in ~20s; `MiniMax-H3` (quality) takes 15–30 minutes. The run is billed
+  like any other generation call.
+- **The clip is frozen after the first run.** A second `run` reuses the
+  recorded asset — it does not generate a new clip. Pass `--force` to S1
+  explicitly if you really want a new one.
+- **`model` / `duration` / `resolution` / `ratio` are validated before the
+  call.** An unknown model or a duration outside the model's range is
+  rejected by `python3 pipeline.py validate`, so a typo never turns into a
+  paid call that fails.
+- **`muted` decides who owns the audio.** `true` (default) keeps the clip
+  silent and lets the spec's `audio.voiceover` own the soundtrack; `false`
+  keeps the clip's native track and `audio.voiceover` must be left empty for
+  that shot.
+
+### Image-to-image
+
+An `ai` layer can derive from an already-frozen asset:
+
+```json
+{
+  "id": "hero-plate",
+  "type": "ai",
+  "asset": "snowy-skyline",
+  "input_asset": "city-silhouette",
+  "prompt": "a snowy version of the same skyline, cold blue light",
+  "keyColor": "#ffffff",
+  "blend": "multiply",
+  "rect": [0, 0, 1080, 1920],
+  "z": 0
+}
+```
+
+`input_asset` names a manifest asset (not a path). S1 uploads that frozen
+file, hands the backend its temporary URL, and freezes the derived image the
+same way it freezes a fresh one. A layer's own `prompt` replaces the style's
+`subject`/`composition` — the style's `background` and `exclude` still apply
+as global constraints.

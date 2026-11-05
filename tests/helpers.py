@@ -62,3 +62,34 @@ def preserved_manifest_entry(asset_key, prepared_key=None):
             with open(MANIFEST_PATH, "w") as f:
                 json.dump(m, f, indent=2, sort_keys=True)
                 f.write("\n")
+
+
+def ensure_rendered(shot_spec, shot_id, through_gate=False):
+    """Render a shot if its mp4 is not on disk; return the mp4 path.
+
+    Tests that consume a rendered shot (concat, S5 inspect) used to rely on
+    build/ surviving from an earlier run. After `make clean` that artifact is
+    gone, and the test failed for a reason unrelated to what it checks. The
+    shot is rendered here so the dependency is explicit and self-contained.
+
+    through_gate=True also runs S4, which writes build/gates/{shot_id}.json —
+    S5 reads that file, so a contact-sheet test needs it.
+    """
+    mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
+    gates = os.path.join(ROOT, "build", "gates", f"{shot_id}.json")
+    if os.path.exists(mp4) and (not through_gate or os.path.exists(gates)):
+        return mp4
+    import subprocess
+    import sys
+    stages = ["01_generate.py", "02_prepare.py", "03_compose.py"]
+    if through_gate:
+        stages.append("04_gate.py")
+    for stage in stages:
+        res = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "stages", stage), "--spec", shot_spec],
+            cwd=ROOT, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"could not prepare {shot_id} ({stage} failed):\n"
+                f"{res.stdout}\n{res.stderr}")
+    return mp4

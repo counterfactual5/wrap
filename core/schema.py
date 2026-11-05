@@ -7,8 +7,17 @@ import sys
 # core/ lives one level below the repo root: ROOT is the project root, so
 # spec/, assets/, build/ and manifest.json resolve the same way from anywhere.
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+# This module is both a library (imported as core.schema) and a script
+# (`python core/schema.py spec.json`), so the package import needs the root
+# on sys.path in the script case.
+if __package__ in (None, ""):
+    sys.path.insert(0, ROOT)
+from core import models
+
 BLENDS = {"multiply", "screen", "normal"}
 LAYER_TYPES = {"code", "ai", "video", "text", "hud", "card"}
+# Aspect ratios the video backend accepts.
+VIDEO_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
 DRAWS = {
     "grid", "bar", "dots", "geodesic", "ripples",
     "trampoline", "gravity-well", "light-deflection", "spacetime-waves",
@@ -103,6 +112,20 @@ def validate(spec):
                 e(f"{lid}: blend is required, one of {sorted(BLENDS)}")
             if not HEX.match(L.get("keyColor", "")):
                 e(f"{lid}: keyColor must be #rrggbb")
+            p = L.get("prompt")
+            if p is not None and not isinstance(p, str):
+                e(f"{lid}: ai prompt must be a string")
+            src = L.get("input_asset")
+            if src is not None:
+                # Image-to-image: the source must be a frozen local asset, so
+                # S1 can upload it and hand the backend a reachable URL.
+                # The value names a manifest asset (not a file path), so it
+                # carries no extension.
+                if not isinstance(src, str) or not src.strip():
+                    e(f"{lid}: ai input_asset must be a non-empty string")
+                elif "/" in src or src.endswith(".png"):
+                    e(f"{lid}: ai input_asset must name a manifest asset "
+                      f"(got {src!r})")
         if L.get("type") == "video":
             # A video layer references a frozen video asset (mp4). It has no
             # key color: edge keying is a still-image concept, so the purity
@@ -121,6 +144,30 @@ def validate(spec):
                 e(f"{lid}: video loop must be a boolean")
             if L.get("muted") is not None and not isinstance(L.get("muted"), bool):
                 e(f"{lid}: video muted must be a boolean")
+            # Generation parameters are validated against the backend catalog
+            # (core/models.py) so a typo or an out-of-range duration is caught
+            # here — before a paid call, not after it.
+            model = L.get("model")
+            if model is not None:
+                if model not in models.VIDEO_MODELS:
+                    e(f"{lid}: video model {model!r} is unknown; "
+                      f"choose one of {sorted(models.VIDEO_MODELS)}")
+                else:
+                    res = L.get("resolution")
+                    if res is not None and res not in models.video_resolutions(model):
+                        e(f"{lid}: {model} resolution must be one of "
+                          f"{list(models.video_resolutions(model))}, got {res!r}")
+            dur = L.get("duration")
+            if dur is not None:
+                if not isinstance(dur, int) or dur <= 0:
+                    e(f"{lid}: video duration must be a positive int (seconds)")
+                elif model in models.VIDEO_MODELS:
+                    lo, hi = models.video_duration_range(model)
+                    if not (lo <= dur <= hi):
+                        e(f"{lid}: {model} duration must be {lo}-{hi}s, got {dur}")
+            ratio = L.get("ratio")
+            if ratio is not None and ratio not in VIDEO_RATIOS:
+                e(f"{lid}: video ratio must be one of {list(VIDEO_RATIOS)}, got {ratio!r}")
         if L.get("type") == "code":
             if L.get("draw") not in DRAWS:
                 e(f"{lid}: draw must be one of {sorted(DRAWS)}")

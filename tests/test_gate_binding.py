@@ -16,8 +16,17 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
 
+from tests.helpers import ensure_rendered, preserve_manifest
+
 MANIFEST = os.path.join(ROOT, "manifest.json")
 FRAMES_ROOT = os.path.join(ROOT, "build", "frames")
+
+# The shot these tests bind to. It is rendered by setUp: the binding checks
+# need a real render (frames + a manifest row that points at them), and
+# `make clean` removes build/, so relying on a leftover artifact made the
+# suite fail for a reason unrelated to what it verifies.
+BOUND = "shot-01"
+BOUND_SPEC = "spec/shot-01.poster.json"
 
 
 def gate(spec):
@@ -68,18 +77,26 @@ class _ManifestState:
 
 class TestGateBinding(unittest.TestCase):
     def setUp(self):
-        if not os.path.isdir(FRAMES_ROOT):
-            self.skipTest("run the pipeline first (build/frames missing)")
+        self._manifest = preserve_manifest()
+        self._manifest.__enter__()
+        try:
+            ensure_rendered(BOUND_SPEC, BOUND)
+        except Exception as ex:
+            self._manifest.__exit__(None, None, None)
+            self.skipTest(f"could not render {BOUND}: {ex}")
+
+    def tearDown(self):
+        self._manifest.__exit__(None, None, None)
 
     def test_gate_refuses_foreign_frames(self):
         """Gating a shot with no bound render must fail, name the shot in
         stderr, and not write that shot's gates file."""
         from core import manifest
         video = manifest.load().get("video") or {}
-        bound = next(iter(video), None)
+        bound = BOUND if BOUND in video else None
         foreign = "shot-02" if bound != "shot-02" else "shot-01"
         if bound is None:
-            self.skipTest("manifest has no video row; run S3 first")
+            self.skipTest("manifest has no video row for the bound shot; run S3 first")
         gp = gates_path_for(foreign)
         before = None
         if os.path.exists(gp):
@@ -101,9 +118,9 @@ class TestGateBinding(unittest.TestCase):
         """The shot whose render is bound in the manifest gates green."""
         from core import manifest
         video = manifest.load().get("video") or {}
-        bound = next(iter(video), None)
+        bound = BOUND if BOUND in video else None
         if bound is None:
-            self.skipTest("manifest has no video row; run S3 first")
+            self.skipTest("manifest has no video row for the bound shot; run S3 first")
         if not os.path.isdir(frames_dir_for(bound)):
             self.skipTest(f"run S3 for {bound} first (per-shot frames missing)")
         with _ManifestState(bound):
@@ -115,9 +132,9 @@ class TestGateBinding(unittest.TestCase):
         by the fingerprint branch (not by some other check)."""
         from core import manifest
         video = manifest.load().get("video") or {}
-        bound = next(iter(video), None)
+        bound = BOUND if BOUND in video else None
         if bound is None:
-            self.skipTest("manifest has no video row; run S3 first")
+            self.skipTest("manifest has no video row for the bound shot; run S3 first")
         frames_dir = frames_dir_for(bound)
         if not os.path.isdir(frames_dir):
             self.skipTest(f"run S3 for {bound} first (per-shot frames missing)")
@@ -145,9 +162,9 @@ class TestGateBinding(unittest.TestCase):
         refused with a pointer to re-run S3."""
         from core import manifest
         video = manifest.load().get("video") or {}
-        bound = next(iter(video), None)
+        bound = BOUND if BOUND in video else None
         if bound is None:
-            self.skipTest("manifest has no video row; run S3 first")
+            self.skipTest("manifest has no video row for the bound shot; run S3 first")
         with open(MANIFEST, "rb") as f:
             saved = f.read()
         try:

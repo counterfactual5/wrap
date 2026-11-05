@@ -31,7 +31,7 @@ import sys
 # importlib).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from core import manifest
+from core import manifest, models
 from core.schema import ROOT, load_spec
 
 # Every external call is bounded: a hung backend must fail the stage instead
@@ -108,31 +108,67 @@ def ensure_png(src, dst):
 
 
 def build_prompt(style, layer_prompt=None):
-    """Style-level prompt fields, plus an optional layer-level addition."""
+    """Build the generation prompt for one asset.
+
+    The style file describes the episode's look; a layer's own `prompt`
+    describes THIS asset. When a layer states a prompt, it replaces the
+    style's subject and composition — appending them would hand the backend
+    two conflicting descriptions of the same image ("quantum tunneling" plus
+    "a snowy skyline"). The style's background and exclude fields stay as
+    global constraints either way."""
     fields = style.get("promptFields", {})
     parts = []
-    for key in ("subject", "composition", "background", "exclude"):
-        if key in fields and fields[key].strip():
-            parts.append(fields[key].strip())
     if layer_prompt and layer_prompt.strip():
         parts.append(layer_prompt.strip())
+        keys = ("background", "exclude")
+    else:
+        keys = ("subject", "composition", "background", "exclude")
+    for key in keys:
+        if key in fields and fields[key].strip():
+            parts.append(fields[key].strip())
     return ", ".join(parts)
 
 
-def call_generate_image(prompt, asset_name, aspect_ratio="16:9", resolution="2K"):
+def upload_temp_url(file_path):
+    """Upload a local file and return its temporary URL.
+
+    The image backend takes references by URL only — it cannot read a local
+    path or a data URI. Image-to-image therefore needs this hop: upload the
+    frozen source asset, then hand the returned temp_url to the backend."""
+    cmd = ["mcode-tools", "upload-temp-url", str(file_path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"upload of {file_path} timed out after {CALL_TIMEOUT}s")
+    if proc.returncode != 0:
+        raise RuntimeError(f"mcode-tools upload-temp-url failed:\n{proc.stderr}")
+    try:
+        data = json.loads(proc.stdout)
+    except Exception as ex:
+        raise RuntimeError(
+            f"upload-temp-url returned non-JSON output:\n{proc.stdout}") from ex
+    url = data.get("temp_url") or data.get("url")
+    if not url:
+        raise RuntimeError(
+            f"upload-temp-url returned no temp_url (keys: {sorted(data.keys())})")
+    return url
+
+
+def call_generate_image(prompt, asset_name, aspect_ratio="16:9", resolution="2K",
+                        input_urls=None):
     tmp_dir = os.path.join(ROOT, ".tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     gen_file = os.path.join(tmp_dir, "gen.json")
-    payload = {
-        "requests": [
-            {
-                "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
-                "resolution": resolution,
-                "output_file": asset_name
-            }
-        ]
+    request = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "output_file": asset_name
     }
+    if input_urls:
+        # Image-to-image: the backend takes reference images by URL.
+        request["input_urls"] = list(input_urls)
+    payload = {"requests": [request]}
     with open(gen_file, "w") as f:
         json.dump(payload, f, indent=2)
 
@@ -232,11 +268,10 @@ def download_file(url, target_path, attempts=3):
 # ~20s (H3-Max) to ~30min (H3), so the poll window is generous but bounded.
 # ---------------------------------------------------------------------------
 
-VIDEO_MODELS = {
-    "MiniMax-H3": {"min_dur": 4, "max_dur": 15, "resolutions": ("768P", "2K"), "audio": True},
-    "MiniMax-H3-Max": {"min_dur": 5, "max_dur": 15, "resolutions": ("480P", "768P"), "audio": True},
-    "MiniMax-Hailuo-2.3": {"min_dur": 6, "max_dur": 10, "resolutions": ("768P", "1080P"), "audio": False},
-}
+# The capability table lives in core/models.py so the spec validator and this
+# transport read the same rules — two copies would drift and the mismatch
+# would only surface after a paid call.
+VIDEO_MODELS = models.VIDEO_MODELS
 
 VIDEO_POLL_INTERVAL = 15
 VIDEO_POLL_TIMEOUT = 2400  # 40 min — H3 quality renders can take ~30 min
@@ -462,8 +497,21 @@ def main():
 
         # Real generation via connector
         prompt = build_prompt(style, L.get("prompt"))
+        # Image-to-image: the source must already be a frozen local asset —
+        # the backend can only reference a URL, so it is uploaded first.
+        input_urls = None
+        src_asset = L.get("input_asset")
+        if src_asset:
+            src_row = manifest.verified("assets", src_asset)
+            if not src_row:
+                raise RuntimeError(
+                    f"{asset}: input_asset {src_asset!r} is not a verified asset "
+                    f"in the manifest (generate it first, then re-run)")
+            src_path = os.path.join(ROOT, src_row["path"])
+            print(f"  image-to-image from {src_row['path']} — uploading")
+            input_urls = [upload_temp_url(src_path)]
         node_id = call_generate_image(prompt, asset, aspect_ratio=aspect_ratio,
-                                      resolution=resolution)
+                                      resolution=resolution, input_urls=input_urls)
         url = fetch_asset_url(node_id)
         # Download to a sidecar first: the manifest may only ever record a
         # file whose bytes really are what its extension claims.
@@ -474,7 +522,8 @@ def main():
         # Register in manifest — after the true-format file exists.
         row = manifest.register("assets", asset, rel, source="ai-generated",
                                 node_id=node_id, prompt=prompt,
-                                aspect_ratio=aspect_ratio, resolution=resolution)
+                                aspect_ratio=aspect_ratio, resolution=resolution,
+                                input_asset=src_asset)
         print(f"Registered {rel} sha256={row['sha256'][:12]}")
 
     return 0

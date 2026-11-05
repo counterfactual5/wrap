@@ -14,6 +14,7 @@ sys.path.insert(0, ROOT)
 
 from core import audio
 from core.schema import VALID_BEATS, validate_timeline
+from tests.helpers import ensure_rendered
 
 
 class TestEvolveFeatures(unittest.TestCase):
@@ -87,7 +88,10 @@ class TestEvolveFeatures(unittest.TestCase):
             os.remove(tmp_wav)
 
     def test_03_visual_inspect_stage(self):
-        # Run 05_inspect.py on shot-01 (fixture)
+        # S5 inspects a rendered shot and reads the gates S4 wrote.
+        # `make clean` removes build/, so the shot is rendered here rather
+        # than relying on a leftover artifact.
+        ensure_rendered("spec/shot-01.poster.json", "shot-01", through_gate=True)
         res = subprocess.run([
             sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json"
         ], cwd=ROOT, capture_output=True, text=True)
