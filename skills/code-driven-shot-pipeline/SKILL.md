@@ -227,7 +227,17 @@ What to expect:
 - **`muted` decides who owns the audio.** `true` (default) keeps the clip
   silent and lets the spec's `audio.voiceover` own the soundtrack; `false`
   keeps the clip's native track and `audio.voiceover` must be left empty for
-  that shot.
+  that shot. A timeline whose shots disagree on this is refused by `concat`:
+  the concat demuxer would silently drop every audio track.
+- **Time window.** Without `trim`, the renderer takes the clip from its
+  start — a clip longer than the shot is cut at the shot's length, a shorter
+  one loops (`loop: true` by default). `trim: [startSec, endSec]` selects a
+  window of the clip instead; it is read in seconds at the shot's frame rate
+  (S2 re-encodes every clip to that rate, so a source clip's own rate never
+  applies).
+- **Waiting.** S1 polls the model until it finishes: `MiniMax-H3-Max`
+  ~20s, `MiniMax-H3` (quality) 15–30 minutes. Each poll prints the task
+  status, so a long wait is visible rather than silent.
 
 ### Image-to-image
 

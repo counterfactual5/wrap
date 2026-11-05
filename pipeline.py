@@ -34,6 +34,43 @@ def run_stage(cmd_args, desc):
         sys.exit(res.returncode)
 
 
+def concat_stream_problem(clips):
+    """Describe why these clips cannot be concatenated, or None if they can.
+
+    The concat demuxer with `-c copy` is sensitive to the inputs' stream
+    configuration: mixing a shot with an audio track and one without makes
+    it drop the audio of every shot that had one — with a zero exit code
+    and no warning. The native video models (H3 / H3-Max) render their own
+    audio track while the TTS chain produces a different one, so a timeline
+    that mixes them is a normal thing for an author to write.
+
+    Returns a readable message naming the shots involved, or None when the
+    clips agree."""
+    import json as _json
+    import subprocess as _subprocess
+
+    if len(clips) < 2:
+        return None
+    with_audio, without_audio = [], []
+    for shot_id, path in clips:
+        res = _subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "json", path], capture_output=True, text=True)
+        try:
+            streams = _json.loads(res.stdout).get("streams", [])
+        except Exception:
+            streams = []
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+        (with_audio if has_audio else without_audio).append(shot_id)
+    if with_audio and without_audio:
+        return (f"the shots disagree on audio: {', '.join(with_audio)} carry an "
+                f"audio track, {', '.join(without_audio)} do not. Concatenating "
+                f"them would silently drop every audio track. Give each shot the "
+                f"same audio source — a video layer with \"muted\": false and "
+                f"audio.voiceover (or vice versa) — before assembling.")
+    return None
+
+
 def gate_full_video(out_path, timeline_id, segments):
     """Post-assembly QC on the concatenated full video.
 
@@ -338,6 +375,15 @@ def main():
             dur = s_data["durationInFrames"] / s_data["fps"]
             segments.append((sid, cursor, dur))
             cursor += dur
+
+        # The concat demuxer drops the audio track of every shot that has one
+        # when the inputs disagree on whether they carry audio — silently, with
+        # a zero exit code. Refuse before assembling rather than shipping a
+        # film that lost its soundtrack.
+        problem = concat_stream_problem(list(zip(
+            [s for s, _, _ in segments], rendered_mp4s)))
+        if problem:
+            sys.exit(f"Timeline {tl.get('id', 'sequence')}: {problem}")
 
         out_path = os.path.join(ROOT, args.output)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)

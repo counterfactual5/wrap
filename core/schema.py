@@ -144,6 +144,12 @@ def validate(spec):
                 e(f"{lid}: video loop must be a boolean")
             if L.get("muted") is not None and not isinstance(L.get("muted"), bool):
                 e(f"{lid}: video muted must be a boolean")
+            if "sourceFps" in L:
+                # S2 re-encodes every clip to the SHOT's frame rate, so the
+                # renderer always sees the source at the canvas fps. A
+                # sourceFps here would only mis-convert trim's seconds.
+                e(f"{lid}: sourceFps is not accepted — clips are re-encoded to "
+                  f"the shot's frame rate, so trim is always read at that rate")
             # Generation parameters are validated against the backend catalog
             # (core/models.py) so a typo or an out-of-range duration is caught
             # here — before a paid call, not after it.

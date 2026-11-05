@@ -155,7 +155,14 @@ it by sha256 — this is the slow, billed step (`MiniMax-H3-Max` ~20s,
 is rejected by `validate` rather than by a paid request. `muted` decides who
 owns the audio: `true` (default) leaves the clip silent and the spec's
 `audio.voiceover` owns the soundtrack; `false` keeps the clip's native track
-and `audio.voiceover` must then be left empty for that shot.
+and `audio.voiceover` must then be left empty for that shot. A timeline whose
+shots disagree on that is refused by `concat`, because the concat demuxer
+would silently drop every audio track.
+
+**Time window.** Without `trim`, the renderer takes the clip from its start: a
+clip longer than the shot is cut at the shot's length, a shorter one loops.
+`trim: [startSec, endSec]` selects a window instead; the seconds are read at
+the shot's frame rate, since S2 re-encodes every clip to that rate.
 
 #### Image-to-image
 

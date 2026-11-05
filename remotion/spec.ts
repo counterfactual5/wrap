@@ -79,8 +79,6 @@ export type VideoLayer = {
   fit?: 'cover' | 'contain';
   /** [startSec, endSec] window into the source clip. */
   trim?: [number, number];
-  /** Frame rate of the source clip (trim is seconds -> source frames). */
-  sourceFps?: number;
   /** Playback speed multiplier for the clip. */
   playbackRate?: number;
   loop?: boolean;

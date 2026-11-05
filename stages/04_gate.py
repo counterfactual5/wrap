@@ -52,6 +52,41 @@ def _verify_measured_object(shot_id):
             f"before gating")
 
 
+def _video_layers(spec):
+    """The video layers of a shot: [(asset, muted, duration_seconds)]."""
+    out = []
+    for L in spec["layers"]:
+        if L.get("type") != "video":
+            continue
+        row = manifest.verified("prepared", f"{spec.get('id', 'shot-01')}/{L['asset']}")
+        dur = ""
+        if row:
+            path = os.path.join(ROOT, row["path"])
+            res = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", path], capture_output=True, text=True)
+            value = res.stdout.strip()
+            if value:
+                dur = f" ({value}s)"
+        out.append((L.get("asset", "?"), L.get("muted", True), dur))
+    return out
+
+
+def _video_hint(spec):
+    """A hint pointing at the video layer when motion/freeze fail.
+
+    A shot whose video layer is a still clip fails both gates, and the raw
+    metrics ("changed_pixel_ratio 0.000000", "1 frozen segment") do not say
+    where to look. Name the layer and its clip length instead."""
+    vids = _video_layers(spec)
+    if not vids:
+        return ""
+    names = ", ".join(f"{a}{d}" for a, _, d in vids)
+    return (f"\n       -> the shot has a video layer ({names}); if the clip is "
+            f"static, the motion and freeze gates fail on the SOURCE footage, "
+            f"not on the composition.")
+
+
 def _bar_band(spec):
     """Vertical band covering the accent bar's travel (rect y .. y+h, padded)."""
     for L in spec["layers"]:
@@ -126,6 +161,10 @@ def main():
             "lo": g.get("lo"), "hi": g.get("hi"), "pass": ok
         })
         print(f"{'PASS' if ok else 'FAIL'}  {g['id']:<10} {g['metric']:<20} {v:.6f}  [{g.get('lo')}, {g.get('hi')}]")
+        if not ok and g["metric"] in ("changed_pixel_ratio", "subject_motion_ratio"):
+            hint = _video_hint(spec)
+            if hint:
+                print(hint)
 
     fz = subprocess.run(
         ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.5", "-f", "null", "-"],
@@ -133,6 +172,10 @@ def main():
     ).stderr
     frozen = [l for l in fz.splitlines() if "freeze_start" in l]
     print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")
+    if frozen:
+        hint = _video_hint(spec)
+        if hint:
+            print(hint)
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
 

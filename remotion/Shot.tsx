@@ -199,11 +199,11 @@ const VideoLayerComp: React.FC<{layer: VideoLayer; src: string}> = ({layer, src}
   // layer, and defaults to on unless plate:false asks for full bleed.
   const plate = layer.plate !== false;
   const trim = layer.trim;
-  // trim is expressed in seconds; Remotion wants frames, at the SOURCE
-  // clip's frame rate — not the canvas fps. A source clip may be 24fps while
-  // the shot renders at 30fps.
-  const trimBefore = trim ? Math.round(trim[0] * (layer.sourceFps ?? fps)) : undefined;
-  const trimAfter = trim ? Math.round(trim[1] * (layer.sourceFps ?? fps)) : undefined;
+  // trim is expressed in seconds; Remotion wants frames. S2 re-encodes every
+  // clip to the SHOT's frame rate, so the source the renderer sees is always
+  // at the canvas fps — that is the rate the seconds must be converted with.
+  const trimBefore = trim ? Math.round(trim[0] * fps) : undefined;
+  const trimAfter = trim ? Math.round(trim[1] * fps) : undefined;
   return (
     <div
       style={{
