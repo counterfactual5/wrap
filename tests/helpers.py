@@ -29,10 +29,22 @@ def preserve_manifest():
     try:
         yield
     finally:
+        # The block may have moved or removed the file (a test that exercises
+        # manifest.load() on a hand-trimmed ledger does exactly that). Restore
+        # defensively: every step is guarded, so a missing intermediate file
+        # cannot abort the restore halfway and leave the tree broken.
         if backup is not None:
-            if os.path.exists(MANIFEST_PATH):
-                os.remove(MANIFEST_PATH)
-            shutil.move(backup, MANIFEST_PATH)
+            try:
+                if os.path.exists(MANIFEST_PATH):
+                    os.remove(MANIFEST_PATH)
+            except OSError:
+                pass
+            try:
+                shutil.move(backup, MANIFEST_PATH)
+            except OSError:
+                # Last resort: copy the bytes back.
+                shutil.copyfile(backup, MANIFEST_PATH)
+                os.remove(backup)
         elif os.path.exists(MANIFEST_PATH):
             os.remove(MANIFEST_PATH)
 
@@ -58,9 +70,16 @@ def preserve_assets(*asset_names):
     finally:
         for name, backup in backups.items():
             path = os.path.join(ROOT, "assets", name)
-            if os.path.exists(path):
-                os.remove(path)
-            shutil.move(backup, path)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+            try:
+                shutil.move(backup, path)
+            except OSError:
+                shutil.copyfile(backup, path)
+                os.remove(backup)
 
 
 @contextlib.contextmanager

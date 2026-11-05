@@ -213,49 +213,47 @@ class TestVideoEndToEnd(unittest.TestCase):
         with open(spec_path, "w") as f:
             json.dump(spec, f, indent=2)
 
-        try:
-            # --fixture: build the clip locally. The test must never call the
-            # generation backend — it would spend credits and be flaky.
-            for stage, extra in (("01_generate.py", ["--fixture"]),
-                                 ("02_prepare.py", []),
-                                 ("03_compose.py", [])):
+        from tests.helpers import preserve_manifest
+        with preserve_manifest():
+            try:
+                # --fixture: build the clip locally. The test must never call
+                # the generation backend — it would spend credits and be flaky.
+                for stage, extra in (("01_generate.py", ["--fixture"]),
+                                     ("02_prepare.py", []),
+                                     ("03_compose.py", [])):
+                    res = subprocess.run(
+                        [sys.executable, os.path.join("stages", stage),
+                         "--spec", spec_path] + extra,
+                        cwd=ROOT, capture_output=True, text=True)
+                    self.assertEqual(res.returncode, 0,
+                                     f"{stage} failed:\n{res.stdout}\n{res.stderr}")
+
                 res = subprocess.run(
-                    [sys.executable, os.path.join("stages", stage), "--spec", spec_path] + extra,
+                    [sys.executable, "stages/04_gate.py", "--spec", spec_path],
                     cwd=ROOT, capture_output=True, text=True)
                 self.assertEqual(res.returncode, 0,
-                                 f"{stage} failed:\n{res.stdout}\n{res.stderr}")
+                                 f"S4 rejected the video layer:\n{res.stdout}\n{res.stderr}")
 
-            res = subprocess.run(
-                [sys.executable, "stages/04_gate.py", "--spec", spec_path],
-                cwd=ROOT, capture_output=True, text=True)
-            self.assertEqual(res.returncode, 0,
-                             f"S4 rejected the video layer:\n{res.stdout}\n{res.stderr}")
+                with open(os.path.join(ROOT, "build", "gates", "video-e2e.json")) as f:
+                    gates = json.load(f)
+                for g in gates:
+                    self.assertTrue(g["pass"], f"gate {g['id']} failed: {g}")
 
-            with open(os.path.join(ROOT, "build", "gates", "video-e2e.json")) as f:
-                gates = json.load(f)
-            for g in gates:
-                self.assertTrue(g["pass"], f"gate {g['id']} failed: {g}")
-
-            # The clip must actually move: a rendered-but-static video layer
-            # would slip past a green gate only if the metric never ran.
-            motion = next((g for g in gates if g["id"] == "motion"), None)
-            self.assertIsNotNone(motion)
-            self.assertGreater(motion["value"], 0.0001,
-                               "video layer rendered a frozen image")
-        finally:
-            # Remove the asset file AND its manifest rows: the manifest is a
-            # frozen ledger, and a test that leaves rows behind makes the
-            # working tree dirty on every run (delivery then reads that as a
-            # changed tree rather than a green test).
-            for path in (spec_path,
-                         os.path.join(ROOT, "assets", "video-e2e-clip.mp4")):
-                if os.path.exists(path):
-                    os.remove(path)
-            from core import manifest
-            m = manifest.load()
-            m["assets"].pop("video-e2e-clip", None)
-            m["prepared"].pop("video-e2e/video-e2e-clip", None)
-            manifest.save(m)
+                # The clip must actually move: a rendered-but-static video
+                # layer would slip past a green gate only if the metric never
+                # ran.
+                motion = next((g for g in gates if g["id"] == "motion"), None)
+                self.assertIsNotNone(motion)
+                self.assertGreater(motion["value"], 0.0001,
+                                   "video layer rendered a frozen image")
+            finally:
+                # Remove the asset file; the ledger is restored wholesale by
+                # preserve_manifest (a row-by-row cleanup would leave the rows
+                # S2/S3 added for this shot behind, and the working tree dirty).
+                for path in (spec_path,
+                             os.path.join(ROOT, "assets", "video-e2e-clip.mp4")):
+                    if os.path.exists(path):
+                        os.remove(path)
 
 
 if __name__ == "__main__":
