@@ -366,9 +366,16 @@ def main():
             print(f"  [{idx+1}/{len(shots)}] [{beat.upper():<11}] {sid:<24} | {reason if reason else 'No reason specified'}")
 
             mp4_path = os.path.join(ROOT, "build", f"{sid}.mp4")
-            # Contract: only verified rendered files are assembled
+            # Contract: only verified rendered files are assembled. When one is
+            # missing, build it from the top: S1 (reuse or generate the
+            # assets), S2 (prepare them — S3 refuses to render without the
+            # prepared rows), S3 (render), S4 (gate). Running only S3+S4 left
+            # a fresh clone dead on "prepared '<shot>/<layer>' not
+            # manifest-verified; run S2 for this shot first".
             if not os.path.exists(mp4_path):
                 print(f"      [Build Contract] MP4 missing for {sid}. Building and gating now...")
+                run_stage([os.path.join(STAGES, "01_generate.py"), "--spec", shot_file], f"Assets {sid}")
+                run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", shot_file], f"Prepare {sid}")
                 run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", shot_file], f"Render {sid}")
                 run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", shot_file], f"Gate {sid}")
             rendered_mp4s.append(mp4_path)
