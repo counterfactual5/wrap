@@ -120,15 +120,58 @@ public-domain sources (NASA SDO etc.) registered with `source=` and `credit=`.
 ZeroGPU anonymous quota is tiny and policy-drifts; a free account token is the
 reliable channel.
 
+### Native Generation Backends
+
+The connector exposes native image and video generation. The pipeline is the
+consumer; these are the backends it can drive.
+
+**Image** — `connector__matrix__generate_image` (text-to-image, plus
+image-to-image via `input_urls`). Takes `aspect_ratio` (1:1 / 16:9 / 9:16 /
+4:3 / 3:4 / 21:9) and `resolution` (1K / 2K / 4K). S1 derives `aspect_ratio`
+from the spec canvas, so a 1080x1920 vertical shot asks for a vertical plate.
+The generator may return JPEG/WebP regardless of the requested format — S1
+normalizes every download to a true PNG before freezing it.
+
+**Video** — `connector__matrix__submit_video_generation` +
+`connector__matrix__query_video_generation`. Asynchronous: submit returns a
+`task_id`, the task is polled until it succeeds, then the clip is downloaded
+and frozen like any other asset.
+
+| Model | Duration | Resolution | Native audio | Use for |
+|---|---|---|---|---|
+| `MiniMax-H3` | 4–15s | 768P, 2K | yes | final quality; supports first/last frame + multimodal references (up to 9 images / 3 videos / 3 audios) |
+| `MiniMax-H3-Max` | 5–15s | 480P, 768P | yes | fast iteration (~20s); keyframes only |
+| `MiniMax-Hailuo-2.3` | 6/10s | 768P, 1080P | no | cheap drafts; silent, needs TTS on top |
+
+**Audio ownership is exclusive.** H3-family clips render a synchronized native
+audio track (dialogue, ambience, SFX). The pipeline's own audio chain
+(`core/audio.py`) is Edge TTS + ambient drone + `loudnorm` to -16 LUFS. Pick
+one as the main track:
+
+- **TTS owns the audio** (default): the video layer is muted
+  (`"muted": true`) and the spec's `audio.voiceover` drives the soundtrack.
+- **The clip owns the audio**: set `"muted": false` on the video layer and
+  leave `audio.voiceover` empty for that shot. The clip's own track is used;
+  do not also request TTS for the same shot, or the two will overlap.
+
+Mixing both is a bug, not a style choice — the S4 audio gates (silence, LUFS,
+AV sync) will flag it.
+
 ## Layer Types
 
 1. **`ai`** — prepared image layer; `blend`, `keyColor`, `motion.zoom`, `fit`, `plate`.
-2. **`code`** — `grid | dots | bar | field | path` (parameterized primitives) plus
+2. **`video`** — prepared video layer; `asset` (an mp4), `fit`, `trim`, `loop`,
+   `muted`, `motion.zoom`, `plate`. No `keyColor`: edge keying is a still-image
+   concept, so a video layer skips the purity gate and is scaled to cover its
+   rect instead. The clip is re-encoded at the shot's frame rate in S2 — a
+   source clip at a different rate would otherwise loop over a window longer
+   than itself and freeze on its last frame.
+3. **`code`** — `grid | dots | bar | field | path` (parameterized primitives) plus
    legacy hero scenes (see vocabulary section).
-3. **`text`** — title/subtitle, spring or keyframe entrance, gradient or solid `color`.
-4. **`hud`** — `badge | telemetry | equalizer | progress | scanline`. Decorative:
+4. **`text`** — title/subtitle, spring or keyframe entrance, gradient or solid `color`.
+5. **`hud`** — `badge | telemetry | equalizer | progress | scanline`. Decorative:
    use deliberately, not by default on every shot.
-5. **`card`** — `capsule | formula | quote`.
+6. **`card`** — `capsule | formula | quote`.
 
 ## Quick Start
 

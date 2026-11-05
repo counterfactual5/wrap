@@ -31,11 +31,18 @@ def build_props(spec):
     the manifest-verified bytes are the exact bytes the renderer sees, and re-renders
     are reproducible offline. Prepared rows are looked up through the manifest
     (namespaced per shot) so composing a shot whose S2 never ran fails fast
-    instead of picking up another shot's leftover assets."""
+    instead of picking up another shot's leftover assets.
+
+    Video layers cannot use a data: URL (an mp4 is orders of magnitude larger
+    than a PNG, and base64-inlining it would bloat every props file). They are
+    staged into public/prepared/{shot}/ and referenced through Remotion's
+    staticFile(), which resolves against the bundle's public folder."""
     shot_id = spec.get("id", "shot-01")
-    props = {"spec": spec, "prepared": {}}
+    props = {"spec": spec, "prepared": {}, "preparedVideos": {}}
     for L in spec["layers"]:
         if L["type"] == "ai":
+            key = f"{shot_id}/{L['asset']}"
+        elif L["type"] == "video":
             key = f"{shot_id}/{L['asset']}"
         elif L["type"] == "code" and L["draw"] in ("grid", "dots"):
             key = f"{shot_id}/{L['id']}"
@@ -46,6 +53,14 @@ def build_props(spec):
             raise RuntimeError(
                 f"prepared '{key}' not manifest-verified; run S2 (02_prepare.py) "
                 f"for this shot first")
+        if L["type"] == "video":
+            # Stage the clip where Remotion's staticFile() can find it.
+            public_rel = f"prepared/{shot_id}/{L['asset']}.mp4"
+            public_path = os.path.join(ROOT, "public", public_rel)
+            os.makedirs(os.path.dirname(public_path), exist_ok=True)
+            shutil.copyfile(os.path.join(ROOT, row["path"]), public_path)
+            props["preparedVideos"][L["id"]] = public_rel
+            continue
         with open(os.path.join(ROOT, row["path"]), "rb") as f:
             props["prepared"][L["id"]] = "data:image/png;base64," + base64.b64encode(f.read()).decode()
     return props

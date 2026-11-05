@@ -28,6 +28,7 @@ def main():
     spec = load_spec(args.spec)
     shot_id = spec.get("id", "shot-01")
     W, H = spec["canvas"]["w"], spec["canvas"]["h"]
+    FPS = spec.get("fps", 30)
     style_path = os.path.join(ROOT, spec.get("style", "spec/style.json"))
     palette = {}
     if os.path.exists(style_path):
@@ -49,8 +50,42 @@ def main():
             manifest.register("prepared", f"{shot_id}/{L['id']}", rel, source="code")
             print(f"drew {rel} ({L['draw']})")
 
-        if L["type"] != "ai":
+        if L["type"] not in ("ai", "video"):
             continue
+
+        if L["type"] == "video":
+            # A video layer is a frozen clip, not a keyed still: there is no
+            # key color to measure, so the purity gate does not apply. The
+            # clip is scaled to cover the layer rect (aspect preserved) and
+            # re-encoded at the SHOT's frame rate.
+            #
+            # The frame rate must match the shot: Remotion computes a video
+            # layer's loop period as mediaDuration * shotFps, so a 24fps clip
+            # rendered at 30fps would loop over a window longer than the clip
+            # itself and freeze on the last frame. Normalizing to the shot's
+            # fps here keeps the loop period correct.
+            src_row = manifest.verified("assets", L["asset"])
+            if not src_row:
+                print(f"{L['asset']}: no verified asset in manifest (run S1)", file=sys.stderr)
+                sys.exit(2)
+            src = os.path.join(ROOT, src_row["path"])
+            lrect = L.get("rect", [0, 0, W, H])
+            rw, rh = lrect[2], lrect[3]
+            rel = f"build/prepared/{shot_id}/{L['asset']}.mp4"
+            out_path = os.path.join(ROOT, rel)
+            vf = (f"scale={rw}:{rh}:force_original_aspect_ratio=increase:flags=lanczos,"
+                  f"crop={rw}:{rh},format=yuv420p")
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
+                 "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                 "-pix_fmt", "yuv420p", "-an", out_path],
+                check=True
+            )
+            manifest.register("prepared", f"{shot_id}/{L['asset']}", rel, source="video",
+                              fps=FPS)
+            print(f"prepared {rel} {rw}x{rh} @ {FPS}fps")
+            continue
+
         src_row = manifest.verified("assets", L["asset"])
         if not src_row:
             print(f"{L['asset']}: no verified asset in manifest (run S1)", file=sys.stderr)

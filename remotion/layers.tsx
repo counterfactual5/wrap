@@ -2326,8 +2326,8 @@ export const CaptionsComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const {rect, params = {}} = layer;
   const width = rect[2];
 
-  type Item = {frame: number; text: string; hl?: string};
-  const items: Item[] = Array.isArray(params.items) ? (params.items as Item[]) : [];
+  type Item = {frame: number; text: string; hl?: string; size?: number};
+  const items: Item[] = Array.isArray(params.items) ? (params.items as unknown as Item[]) : [];
   const size = num(params.size, 92);
   const hlColor = typeof params.hlColor === 'string' ? params.hlColor : '#FFB84D';
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import {Img, interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
+import {Img, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
+import {Video} from '@remotion/media';
 import {
   Bar,
   BlackHoleHeroComp,
@@ -21,7 +22,7 @@ import {
   PathComp,
   CaptionsComp,
 } from './layers';
-import type {AiLayer, Anim, CodeLayer, Ease, Keyframe, Layer, ShotSpec} from './spec';
+import type {AiLayer, Anim, CodeLayer, Ease, Keyframe, Layer, ShotSpec, VideoLayer} from './spec';
 
 // ---------------------------------------------------------------------------
 // Generic keyframe engine: expression lives in the spec (layer.anim), the
@@ -187,6 +188,67 @@ const PreparedLayer: React.FC<{
   );
 };
 
+const VideoLayerComp: React.FC<{layer: VideoLayer; src: string}> = ({layer, src}) => {
+  const frame = useCurrentFrame();
+  const {durationInFrames, fps} = useVideoConfig();
+  const {rect, motion} = layer;
+  const zoom = motion?.zoom ?? [1, 1];
+  const scale = interpolate(frame, [0, durationInFrames - 1], [zoom[0], zoom[1]]);
+  // A video layer has no key color to key out — it is placed as-is. The
+  // chrome (border/rounding/vignette) is a spec decision, same as for an ai
+  // layer, and defaults to on unless plate:false asks for full bleed.
+  const plate = layer.plate !== false;
+  const trim = layer.trim;
+  // trim is expressed in seconds; Remotion wants frames, at the SOURCE
+  // clip's frame rate — not the canvas fps. A source clip may be 24fps while
+  // the shot renders at 30fps.
+  const trimBefore = trim ? Math.round(trim[0] * (layer.sourceFps ?? fps)) : undefined;
+  const trimAfter = trim ? Math.round(trim[1] * (layer.sourceFps ?? fps)) : undefined;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: rect[0],
+        top: rect[1],
+        width: rect[2],
+        height: rect[3],
+        overflow: 'hidden',
+        borderRadius: plate ? 12 : 0,
+        backgroundColor: plate ? '#030509' : undefined,
+      }}
+    >
+      <Video
+        src={staticFile(src)}
+        trimBefore={trimBefore}
+        trimAfter={trimAfter}
+        loop={layer.loop ?? true}
+        muted={layer.muted ?? true}
+        playbackRate={layer.playbackRate ?? 1}
+        style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          width: '100%',
+          height: '100%',
+          objectFit: layer.fit ?? 'cover',
+          transform: `translate(-50%, -50%) scale(${scale})`,
+          transformOrigin: 'center',
+        }}
+      />
+      {plate && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            boxShadow: 'inset 0 0 70px 30px #030509',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
 const CodeLayerComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {durationInFrames} = useVideoConfig();
@@ -271,7 +333,8 @@ const CodeLayerComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
 export const Shot: React.FC<{
   spec: ShotSpec;
   prepared: Record<string, string>;
-}> = ({spec, prepared}) => {
+  preparedVideos?: Record<string, string>;
+}> = ({spec, prepared, preparedVideos}) => {
   const frame = useCurrentFrame();
   const layers = [...spec.layers].sort((a, b) => a.z - b.z);
   const isVerticalVibe = spec.canvas.w === 1080;
@@ -372,7 +435,9 @@ export const Shot: React.FC<{
 
       {layers.map((layer: Layer) => (
         <AnimatedLayer key={layer.id} layer={layer}>
-          {layer.type === 'ai' || (layer.type === 'code' && (layer.draw === 'grid' || layer.draw === 'dots')) ? (
+          {layer.type === 'video' ? (
+            <VideoLayerComp layer={layer} src={preparedVideos?.[layer.id] ?? ''} />
+          ) : layer.type === 'ai' || (layer.type === 'code' && (layer.draw === 'grid' || layer.draw === 'dots')) ? (
             <PreparedLayer layer={layer} src={prepared[layer.id]} isVerticalVibe={isVerticalVibe} />
           ) : layer.type === 'code' ? (
             <CodeLayerComp layer={layer} />

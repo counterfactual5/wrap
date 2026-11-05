@@ -5,15 +5,46 @@ A deterministic, code-driven video synthesis pipeline that compiles a structured
 2. **AI Subject** (City silhouette, blend: multiply, edge keying)
 3. **Code Foreground** (Animated geometric accent `bar`)
 
+AI subject layers may be still images or video clips. The pipeline drives native generation backends through `mcode-tools connector` — see [Native Generation Backends](#native-generation-backends).
+
+---
+
+## Native Generation Backends
+
+The pipeline calls native image and video models through the connector, then
+freezes the result into `manifest.json` by sha256 — the same lockfile contract
+as any other asset. Once frozen, a clip is reused forever; re-renders stay
+bit-exact.
+
+**Images** — `connector__matrix__generate_image` (text-to-image, image-to-image
+via `input_urls`). S1 derives the request's aspect ratio from the spec canvas
+and normalizes the download to a true PNG before registering it.
+
+**Video** — `connector__matrix__submit_video_generation` +
+`connector__matrix__query_video_generation`. Asynchronous: submit returns a
+`task_id`, the task is polled until it succeeds, the clip is downloaded and
+frozen. A `type: "video"` layer in the spec consumes it.
+
+| Model | Duration | Resolution | Native audio |
+|---|---|---|---|
+| `MiniMax-H3` | 4–15s | 768P, 2K | yes |
+| `MiniMax-H3-Max` | 5–15s | 480P, 768P | yes (~20s turnaround) |
+| `MiniMax-Hailuo-2.3` | 6/10s | 768P, 1080P | no |
+
+A video layer renders through Remotion's `Video` component; the clip is scaled
+to cover its rect and re-encoded at the shot's frame rate in S2. Audio
+ownership is exclusive — either the clip's native track or the pipeline's TTS
+chain is the main track, never both (see the Skill's "Audio ownership" rule).
+
 ---
 
 ## Architecture & Stages
 
 ```
-spec/*.json ───► [ S1: Generate ] ───► assets/*.png ───► (manifest lockfile)
+spec/*.json ───► [ S1: Generate ] ───► assets/*.png | *.mp4 ───► (manifest lockfile)
                          │
                          ▼
-                 [ S2: Prepare  ] ───► build/prepared/{shot}/*.png (Fail-fast: key purity >= 0.98)
+                 [ S2: Prepare  ] ───► build/prepared/{shot}/*.png | *.mp4 (Fail-fast: key purity >= 0.98; video layers skip keying)
                          │
                          ▼
                  [ S3: Compose  ] ───► build/frames/{shot}/*.png + build/*.mp4 (Remotion render engine)

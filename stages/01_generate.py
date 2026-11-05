@@ -16,6 +16,7 @@ Asset transport notes (mcode-tools connector):
 """
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -223,6 +224,157 @@ def download_file(url, target_path, attempts=3):
         raise RuntimeError(f"asset download produced an empty file: {target_path}")
 
 
+# ---------------------------------------------------------------------------
+# Video generation (native video models, e.g. MiniMax-H3 family).
+#
+# Video generation is asynchronous: submit returns a task_id, the task is
+# polled until it succeeds, and the finished clip is downloaded. H3 renders
+# ~20s (H3-Max) to ~30min (H3), so the poll window is generous but bounded.
+# ---------------------------------------------------------------------------
+
+VIDEO_MODELS = {
+    "MiniMax-H3": {"min_dur": 4, "max_dur": 15, "resolutions": ("768P", "2K"), "audio": True},
+    "MiniMax-H3-Max": {"min_dur": 5, "max_dur": 15, "resolutions": ("480P", "768P"), "audio": True},
+    "MiniMax-Hailuo-2.3": {"min_dur": 6, "max_dur": 10, "resolutions": ("768P", "1080P"), "audio": False},
+}
+
+VIDEO_POLL_INTERVAL = 15
+VIDEO_POLL_TIMEOUT = 2400  # 40 min — H3 quality renders can take ~30 min
+
+
+def _connector_call(tool, payload, timeout=CALL_TIMEOUT):
+    """Call one connector tool with a JSON payload, returning parsed JSON."""
+    tmp_dir = os.path.join(ROOT, ".tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    args_file = os.path.join(tmp_dir, f"{tool.replace('__', '_')}.json")
+    with open(args_file, "w") as f:
+        json.dump(payload, f, indent=2)
+    cmd = ["mcode-tools", "connector", "call", tool, "--args-file", args_file]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{tool} timed out after {timeout}s")
+    if proc.returncode != 0:
+        raise RuntimeError(f"{tool} failed (exit {proc.returncode}):\n{proc.stderr}")
+    try:
+        return json.loads(proc.stdout)
+    except Exception as ex:
+        raise RuntimeError(f"{tool} returned non-JSON output:\n{proc.stdout}") from ex
+
+
+def submit_video_generation(prompt, model="MiniMax-H3-Max", duration=6,
+                            ratio="9:16", resolution="768P"):
+    """Submit one asynchronous video task; returns (task_id, model)."""
+    spec = VIDEO_MODELS.get(model)
+    if spec is None:
+        raise RuntimeError(
+            f"unknown video model {model!r}; known: {sorted(VIDEO_MODELS)}")
+    if not (spec["min_dur"] <= duration <= spec["max_dur"]):
+        raise RuntimeError(
+            f"{model} duration must be {spec['min_dur']}-{spec['max_dur']}s, got {duration}")
+    if resolution not in spec["resolutions"]:
+        raise RuntimeError(
+            f"{model} resolution must be one of {list(spec['resolutions'])}, got {resolution}")
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "duration": duration,
+        "ratio": ratio,
+        "resolution": resolution,
+    }
+    print(f"Submitting video generation: model={model} duration={duration}s "
+          f"ratio={ratio} resolution={resolution}")
+    data = _connector_call("connector__matrix__submit_video_generation", payload)
+    task_id = data.get("task_id")
+    if not task_id:
+        raise RuntimeError(f"video submission returned no task_id:\n{json.dumps(data, indent=2)}")
+    print(f"Video task submitted: task_id={task_id}")
+    return task_id, model
+
+
+def query_video_generation(task_id, model="MiniMax-H3-Max"):
+    """Poll one video task; returns the task payload (status + node_id/url)."""
+    data = _connector_call(
+        "connector__matrix__query_video_generation",
+        {"task_id": task_id, "model": model})
+    return data
+
+
+def wait_for_video(task_id, model="MiniMax-H3-Max", timeout=VIDEO_POLL_TIMEOUT,
+                   interval=VIDEO_POLL_INTERVAL):
+    """Poll until the task succeeds, fails, or the window runs out."""
+    deadline = time.time() + timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        data = query_video_generation(task_id, model)
+        status = data.get("status")
+        if status == "succeeded":
+            print(f"Video task {task_id} succeeded after {attempt} poll(s)")
+            return data
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(
+                f"video generation {status} for task {task_id}:\n{json.dumps(data, indent=2)}")
+        if time.time() > deadline:
+            raise RuntimeError(
+                f"video generation for task {task_id} did not finish within {timeout}s "
+                f"(last status: {status})")
+        print(f"  video task {task_id} status={status} — polling again in {interval}s")
+        time.sleep(interval)
+
+
+def download_video(data, target_path):
+    """Fetch the finished clip: the query result carries video_url + node_id."""
+    url = data.get("video_url")
+    if not url and data.get("node_id"):
+        url = fetch_asset_url(data["node_id"])
+    if not url:
+        raise RuntimeError(
+            f"finished video task carries no URL (keys: {sorted(data.keys())})")
+    download_file(url, target_path)
+    return target_path
+
+
+def _clip_duration(shot_seconds, model="MiniMax-H3-Max"):
+    """How long to ask the video model for, given the shot's length.
+
+    The model only accepts a bounded duration range (H3: 4-15s, H3-Max:
+    5-15s, Hailuo: 6-10s), and a shot may be shorter than the minimum (a
+    2s shot cannot be rendered as a 2s clip). Round the shot length UP into
+    the model's range: a longer clip is trimmed to the shot by the renderer,
+    while a shorter one would leave the shot's tail frozen."""
+    spec = VIDEO_MODELS.get(model, VIDEO_MODELS["MiniMax-H3-Max"])
+    lo, hi = spec["min_dur"], spec["max_dur"]
+    if shot_seconds <= 0:
+        return lo
+    return max(lo, min(hi, int(math.ceil(shot_seconds))))
+
+
+def _write_video_fixture(target_path, seconds=2, fps=30, w=270, h=480):
+    """Build a small deterministic mp4 locally (fixture path spends no credits).
+
+    A dark field with a band travelling vertically: every frame differs from
+    its neighbour by a measurable amount, so the motion gate sees real motion
+    and the freeze detector sees no frozen segment. The band moves over the
+    clip's full height in ~3s, which keeps the per-frame change ratio inside
+    the gate's window instead of tripping its upper bound."""
+    cmd = [
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", f"color=c=0x101830:s={w}x{h}:r={fps}",
+        "-f", "lavfi", "-i", f"color=c=0xB84DFF:s={w}x{h // 8}:r={fps}",
+        "-filter_complex",
+        f"[0:v][1:v]overlay=x=0:y='(main_h-overlay_h)*t/3':shortest=1",
+        "-frames:v", str(seconds * fps),
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-r", str(fps),
+        "-movflags", "+faststart", target_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"video fixture creation failed (ffmpeg exit {proc.returncode}):\n{proc.stderr}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="S1: Generate assets")
     parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
@@ -240,23 +392,57 @@ def main():
     canvas = spec.get("canvas", {})
     aspect_ratio = aspect_for_canvas(canvas.get("w", 16), canvas.get("h", 9))
     resolution = style.get("resolution", "2K")
+    shot_seconds = spec.get("durationInFrames", 0) / max(1, spec.get("fps", 30))
 
     for L in spec["layers"]:
-        if L["type"] != "ai":
+        ltype = L.get("type")
+        if ltype not in ("ai", "video"):
             continue
         asset = L["asset"]
-        rel = f"assets/{asset}.png"
-        target_path = os.path.join(ROOT, rel)
+        is_video = ltype == "video"
+
+        if is_video:
+            rel = f"assets/{asset}.mp4"
+            target_path = os.path.join(ROOT, rel)
+        else:
+            rel = f"assets/{asset}.png"
+            target_path = os.path.join(ROOT, rel)
 
         if not args.force and manifest.verified("assets", asset):
             print(f"reuse {asset} (frozen in manifest, sha256 verified)")
             continue
 
         if args.fixture:
-            from core.draw import write_fixture
-            write_fixture(target_path)
+            if is_video:
+                # A tiny deterministic clip: the fixture path must not spend
+                # generation credits, so it builds a real (tiny) mp4 locally.
+                _write_video_fixture(target_path)
+            else:
+                from core.draw import write_fixture
+                write_fixture(target_path)
             row = manifest.register("assets", asset, rel, source="fixture")
             print(f"Registered fixture {rel} sha256={row['sha256'][:12]}")
+            continue
+
+        if is_video:
+            prompt = build_prompt(style, L.get("prompt"))
+            model = L.get("model", style.get("videoModel", "MiniMax-H3-Max"))
+            duration = int(L.get("duration") or _clip_duration(shot_seconds, model))
+            video_ratio = L.get("ratio") or aspect_ratio
+            video_res = L.get("resolution") or style.get("videoResolution", "768P")
+            task_id, model = submit_video_generation(
+                prompt, model=model, duration=duration,
+                ratio=video_ratio, resolution=video_res)
+            data = wait_for_video(task_id, model)
+            raw_path = os.path.join(ROOT, ".tmp", f"{asset}.download.mp4")
+            download_video(data, raw_path)
+            os.replace(raw_path, target_path)
+            row = manifest.register(
+                "assets", asset, rel, source="ai-generated", task_id=task_id,
+                prompt=prompt, model=model, duration=duration,
+                ratio=video_ratio, resolution=video_res,
+                native_audio=VIDEO_MODELS.get(model, {}).get("audio", False))
+            print(f"Registered {rel} sha256={row['sha256'][:12]}")
             continue
 
         # Real generation via connector

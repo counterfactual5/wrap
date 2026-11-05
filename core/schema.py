@@ -8,7 +8,7 @@ import sys
 # spec/, assets/, build/ and manifest.json resolve the same way from anywhere.
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 BLENDS = {"multiply", "screen", "normal"}
-LAYER_TYPES = {"code", "ai", "text", "hud", "card"}
+LAYER_TYPES = {"code", "ai", "video", "text", "hud", "card"}
 DRAWS = {
     "grid", "bar", "dots", "geodesic", "ripples",
     "trampoline", "gravity-well", "light-deflection", "spacetime-waves",
@@ -103,6 +103,24 @@ def validate(spec):
                 e(f"{lid}: blend is required, one of {sorted(BLENDS)}")
             if not HEX.match(L.get("keyColor", "")):
                 e(f"{lid}: keyColor must be #rrggbb")
+        if L.get("type") == "video":
+            # A video layer references a frozen video asset (mp4). It has no
+            # key color: edge keying is a still-image concept, so the purity
+            # gate does not apply to it.
+            if not L.get("asset"):
+                e(f"{lid}: video layer needs 'asset'")
+            if L.get("fit") and L["fit"] not in ("cover", "contain"):
+                e(f"{lid}: video fit must be 'cover' or 'contain'")
+            trim = L.get("trim")
+            if trim is not None:
+                if not (isinstance(trim, list) and len(trim) == 2
+                        and all(isinstance(v, (int, float)) for v in trim)
+                        and trim[0] >= 0 and trim[1] > trim[0]):
+                    e(f"{lid}: video trim must be [startSec, endSec] with endSec > startSec >= 0")
+            if L.get("loop") is not None and not isinstance(L.get("loop"), bool):
+                e(f"{lid}: video loop must be a boolean")
+            if L.get("muted") is not None and not isinstance(L.get("muted"), bool):
+                e(f"{lid}: video muted must be a boolean")
         if L.get("type") == "code":
             if L.get("draw") not in DRAWS:
                 e(f"{lid}: draw must be one of {sorted(DRAWS)}")

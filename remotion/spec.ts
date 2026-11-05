@@ -20,8 +20,11 @@ export type Keyframe = [number, number] | [number, number, Ease];
 /** Generic choreography: expression lives in the spec, the renderer only interpolates. */
 export type Anim = Partial<Record<'x' | 'y' | 'scale' | 'opacity' | 'rotate', Keyframe[]>>;
 
-/** Free parameter bag for primitive draws (field, path, ...). */
-export type Params = Record<string, string | number | boolean | number[] | string[]>;
+/** Free parameter bag for primitive draws (field, path, captions, ...). */
+export type Params = Record<
+  string,
+  string | number | boolean | number[] | string[] | Array<Record<string, unknown>>
+>;
 
 export type CodeLayer = {
   id: string;
@@ -43,7 +46,8 @@ export type CodeLayer = {
     | 'tunnel-hero'
     | 'wavefunction-hero'
     | 'field'
-    | 'path';
+    | 'path'
+    | 'captions';
   rect: Rect;
   z: number;
   color?: string;
@@ -62,6 +66,28 @@ export type AiLayer = {
   motion?: GeometricMotion;
   fit?: 'cover' | 'contain';
   /** false = full-bleed presentation, no card chrome (border/rounding/vignette). */
+  plate?: boolean;
+};
+
+export type VideoLayer = {
+  id: string;
+  type: 'video';
+  /** Frozen clip asset (assets/<asset>.mp4) — an mp4, never a still. */
+  asset: string;
+  rect: Rect;
+  z: number;
+  fit?: 'cover' | 'contain';
+  /** [startSec, endSec] window into the source clip. */
+  trim?: [number, number];
+  /** Frame rate of the source clip (trim is seconds -> source frames). */
+  sourceFps?: number;
+  /** Playback speed multiplier for the clip. */
+  playbackRate?: number;
+  loop?: boolean;
+  /** true = the clip's own audio track is dropped (the TTS chain owns audio). */
+  muted?: boolean;
+  motion?: GeometricMotion;
+  /** false = full-bleed presentation, no card chrome. */
   plate?: boolean;
 };
 
@@ -108,7 +134,7 @@ export type AudioSpec = {
   bgm?: string;
 };
 
-export type Layer = (CodeLayer | AiLayer | TextLayer | HudLayer | CardLayer) & {
+export type Layer = (CodeLayer | AiLayer | VideoLayer | TextLayer | HudLayer | CardLayer) & {
   /** Spec-driven keyframe channels applied by the renderer to ANY layer. */
   anim?: Anim;
 };
