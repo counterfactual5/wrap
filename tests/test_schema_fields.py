@@ -155,3 +155,39 @@ class TestVibeValidation(unittest.TestCase):
         spec = self._spec(True)
         del spec["vibe"]
         self.assertEqual(validate(spec), [])
+
+
+class TestVideoZoomValidation(unittest.TestCase):
+    """The renderer interpolates motion.zoom for video layers as well as ai
+    layers; the validator must not refuse what the renderer can do."""
+
+    def _spec(self, layer_type, zoom):
+        return {
+            "id": "zoom-test",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 60,
+            "layers": [{"id": "l", "type": layer_type, "rect": [0, 0, 1080, 1920],
+                        "z": 0, "asset": "a", "keyColor": "#070512",
+                        "blend": "normal", "motion": {"type": "geometric",
+                                                      "zoom": zoom}}],
+            "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                       "lo": 0.0001, "hi": 0.15}],
+        }
+
+    def test_00_video_layer_zoom_is_accepted(self):
+        self.assertEqual(validate(self._spec("video", [1.0, 1.1])), [])
+
+    def test_01_ai_layer_zoom_still_accepted(self):
+        self.assertEqual(validate(self._spec("ai", [1.0, 1.1])), [])
+
+    def test_02_the_numeric_bounds_apply_to_video_too(self):
+        errs = validate(self._spec("video", [0.5, 1.5]))
+        self.assertTrue(any("zoom must be" in e for e in errs), errs)
+
+    def test_03_zoom_is_still_refused_on_other_layer_kinds(self):
+        for layer_type in ("code", "text", "hud", "card"):
+            with self.subTest(layer_type=layer_type):
+                errs = validate(self._spec(layer_type, [1.0, 1.1]))
+                self.assertTrue(any("zoom is only supported" in e for e in errs),
+                                f"{layer_type} accepted a zoom: {errs}")

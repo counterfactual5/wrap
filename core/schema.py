@@ -215,8 +215,11 @@ def validate(spec):
             p = m.get("pan")
             if p is not None and not (len(p) == 2 and all(isinstance(v, (int, float)) for v in p)):
                 e(f"{lid}: pan must be [xFrom,xTo] numbers")
-            if z is not None and L.get("type") != "ai":
-                e(f"{lid}: zoom only supported on ai layers")
+            if z is not None and L.get("type") not in ("ai", "video"):
+                # Both layer kinds implement the zoom (the renderer
+                # interpolates motion.zoom for ai and video alike), so the
+                # validator must not refuse what the renderer can do.
+                e(f"{lid}: zoom is only supported on ai and video layers")
             if p is not None and L.get("draw") != "bar":
                 e(f"{lid}: pan only supported on 'bar' layers")
     punches = spec.get("punches")
