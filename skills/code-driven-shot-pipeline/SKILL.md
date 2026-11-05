@@ -66,6 +66,7 @@ Two specs sharing four or more rolled values is a re-roll. The dice constrain
 | `anim` | any layer | Keyframe channels `x/y/scale/opacity/rotate`; frames strictly increasing; optional ease per keyframe (`linear/in/out/inout`) on the segment END. Entrances, camera moves, exits — all data. |
 | `field` (code draw) | `params` | Parameterized particle field: `count, seed, colors, dir, spread, speed, size, glow`. Atmosphere on demand, not baked in. |
 | `path` (code draw) | `params` | SVG path with `reveal` (dash draw-on) or `flow` (drifting dashes), `stroke/width/opacity`. Guide lines, orbits, energy tracks. |
+| `captions` (code draw) | `params` | Subtitle track: `items` = list of `{frame, text, hl?, size?}` — each appears from its own `frame` onward; `hl` marks the substring to highlight; `size` (px) and `hlColor` set the styling. No `items` = no subtitles. |
 | `vibe: false` | spec root | Opts out of the baked vertical ambience (particle rain, scanline, blueprint grid). Bring your own atmosphere via layers. |
 | `plate: false` | ai layer | Full-bleed presentation — no card chrome (border/rounding/vignette). |
 | `color` | text layer | Solid color + scrim instead of the default white-cyan gradient. |
@@ -74,7 +75,9 @@ Hero draws (`trampoline`, `gravity-well`, `blackhole-hero`, `time-dilation`,
 `light-cone-tilt`, `spaghettification`, `light-deflection`, `spacetime-waves`,
 `tunnel-hero`, `wavefunction-hero`) are **legacy hardcoded scenes**: reuse where the
 subject matches, never build new episodes around their fixed layouts, and prefer
-composing from primitives + `anim` for new content. (Planned: a `three` layer type
+composing from primitives + `anim` for new content. `geodesic` (a lit sphere with
+drawn-on light rays) and `ripples` (concentric wave rings) are hardcoded scenes
+too. (Planned: a `three` layer type
 via `@remotion/three` — true 3D scenes, frame-driven for determinism.)
 
 ## Core Invariants
@@ -172,8 +175,8 @@ an `audio` block — so a clip-owned soundtrack is measured too.
    rect instead. The clip is re-encoded at the shot's frame rate in S2 — a
    source clip at a different rate would otherwise loop over a window longer
    than itself and freeze on its last frame.
-3. **`code`** — `grid | dots | bar | field | path` (parameterized primitives) plus
-   legacy hero scenes (see vocabulary section).
+3. **`code`** — `grid | dots | bar | field | path | captions` (parameterized primitives)
+   plus legacy hero scenes (see vocabulary section).
 4. **`text`** — title/subtitle, spring or keyframe entrance, gradient or solid `color`.
 5. **`hud`** — `badge | telemetry | equalizer | progress | scanline`. Decorative:
    use deliberately, not by default on every shot.
