@@ -38,6 +38,32 @@ def preserve_manifest():
 
 
 @contextlib.contextmanager
+def preserve_assets(*asset_names):
+    """Restore tracked asset files that a test may rewrite.
+
+    S1's --fixture path writes the asset file. A fixture written for one
+    spec's canvas would otherwise overwrite a frozen asset with different
+    bytes — the file is tracked, so the working tree ends up dirty and a
+    delivery check reads that as "the tree changed" instead of "the tests
+    passed"."""
+    backups = {}
+    for name in asset_names:
+        path = os.path.join(ROOT, "assets", name)
+        if os.path.exists(path):
+            backup = path + ".testbak"
+            shutil.copyfile(path, backup)
+            backups[name] = backup
+    try:
+        yield
+    finally:
+        for name, backup in backups.items():
+            path = os.path.join(ROOT, "assets", name)
+            if os.path.exists(path):
+                os.remove(path)
+            shutil.move(backup, path)
+
+
+@contextlib.contextmanager
 def preserved_manifest_entry(asset_key, prepared_key=None):
     """Like preserve_manifest, but also drops the named rows afterwards.
 

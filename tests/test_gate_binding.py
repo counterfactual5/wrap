@@ -77,13 +77,16 @@ class _ManifestState:
 
 class TestGateBinding(unittest.TestCase):
     def setUp(self):
-        self._manifest = preserve_manifest()
-        self._manifest.__enter__()
+        # Render FIRST, then snapshot: the render registers the manifest row
+        # these tests bind to, and the snapshot must preserve it — restoring a
+        # pre-render manifest would leave the shot unbound and every gate
+        # would refuse for the wrong reason.
         try:
             ensure_rendered(BOUND_SPEC, BOUND)
         except Exception as ex:
-            self._manifest.__exit__(None, None, None)
             self.skipTest(f"could not render {BOUND}: {ex}")
+        self._manifest = preserve_manifest()
+        self._manifest.__enter__()
 
     def tearDown(self):
         self._manifest.__exit__(None, None, None)
