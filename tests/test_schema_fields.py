@@ -252,3 +252,82 @@ class TestNameValidation(unittest.TestCase):
         self.assertEqual(
             validate_timeline({"id": "full-sequence",
                                "shots": ["spec/shot-01.poster.json"]}), [])
+
+
+class TestFieldTypeValidation(unittest.TestCase):
+    """Every field the renderer reads must be checked: the contract used to
+    cover only half of them, so a typo in the unchecked half reached the
+    renderer unnoticed."""
+
+    def _spec(self, layer):
+        return {
+            "id": "fields-test",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 60,
+            "layers": [layer],
+            "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                       "lo": 0.0001, "hi": 0.15}],
+        }
+
+    def test_00_playback_rate_must_be_a_positive_number(self):
+        layer = {"id": "clip", "type": "video", "asset": "a",
+                 "rect": [0, 0, 1080, 1920], "z": 0}
+        for bad in ("2", 0, -1, True, None):
+            with self.subTest(value=bad):
+                if bad is None:
+                    continue
+                errs = validate(self._spec({**layer, "playbackRate": bad}))
+                self.assertTrue(any("playbackRate" in e for e in errs),
+                                f"playbackRate={bad!r} was accepted: {errs}")
+        self.assertEqual(validate(self._spec({**layer, "playbackRate": 2})), [])
+
+    def test_01_text_field_types(self):
+        base = {"id": "t", "type": "text", "text": "x", "rect": [0, 0, 10, 10], "z": 0}
+        errs = validate(self._spec({**base, "fontSize": "big"}))
+        self.assertTrue(any("fontSize" in e for e in errs), errs)
+        errs = validate(self._spec({**base, "fontWeight": []}))
+        self.assertTrue(any("fontWeight" in e for e in errs), errs)
+        errs = validate(self._spec({**base, "subtext": 5}))
+        self.assertTrue(any("subtext" in e for e in errs), errs)
+        self.assertEqual(validate(self._spec({**base, "fontSize": 54,
+                                              "fontWeight": 800,
+                                              "subtext": "hi"})), [])
+
+    def test_02_card_and_hud_types_are_enumerated(self):
+        errs = validate(self._spec({"id": "c", "type": "card",
+                                    "cardType": "timeline",
+                                    "rect": [0, 0, 10, 10], "z": 0}))
+        self.assertTrue(any("cardType must be one of" in e for e in errs), errs)
+        errs = validate(self._spec({"id": "h", "type": "hud",
+                                    "hudType": "unknown",
+                                    "rect": [0, 0, 10, 10], "z": 0}))
+        self.assertTrue(any("hudType must be one of" in e for e in errs), errs)
+        for card in ("capsule", "formula", "quote"):
+            with self.subTest(card=card):
+                self.assertEqual(validate(self._spec(
+                    {"id": "c", "type": "card", "cardType": card,
+                     "rect": [0, 0, 10, 10], "z": 0})), [])
+        # "scanline" was in the docs and the TS type but had no renderer
+        # branch — it is not a drawable hud type.
+        for hud in ("badge", "telemetry", "equalizer", "progress"):
+            with self.subTest(hud=hud):
+                self.assertEqual(validate(self._spec(
+                    {"id": "h", "type": "hud", "hudType": hud,
+                     "rect": [0, 0, 10, 10], "z": 0})), [])
+
+    def test_03_scanline_is_not_a_hud_type(self):
+        """It was listed in the docs and the TS type but had no renderer
+        branch, so a spec using it drew nothing."""
+        errs = validate(self._spec({"id": "h", "type": "hud",
+                                    "hudType": "scanline",
+                                    "rect": [0, 0, 10, 10], "z": 0}))
+        self.assertTrue(any("hudType must be one of" in e for e in errs), errs)
+
+    def test_04_card_details_must_be_a_list_of_objects(self):
+        base = {"id": "c", "type": "card", "cardType": "quote",
+                "rect": [0, 0, 10, 10], "z": 0}
+        errs = validate(self._spec({**base, "details": "两行"}))
+        self.assertTrue(any("details must be" in e for e in errs), errs)
+        self.assertEqual(validate(self._spec(
+            {**base, "details": [{"label": "a", "desc": "b"}]})), [])

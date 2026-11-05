@@ -18,6 +18,11 @@ BLENDS = {"multiply", "screen", "normal"}
 LAYER_TYPES = {"code", "ai", "video", "text", "hud", "card"}
 # Aspect ratios the video backend accepts.
 VIDEO_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+# The values the renderer dispatches on (remotion/layers.tsx). "scanline" was
+# listed in the docs and the TS type but had no branch in the renderer, so a
+# spec using it drew nothing — it is not in the enum.
+HUD_TYPES = {"badge", "telemetry", "equalizer", "progress"}
+CARD_TYPES = {"capsule", "formula", "quote"}
 DRAWS = {
     "grid", "bar", "dots", "geodesic", "ripples",
     "trampoline", "gravity-well", "light-deflection", "spacetime-waves",
@@ -175,6 +180,13 @@ def validate(spec):
                 e(f"{lid}: video loop must be a boolean")
             if L.get("muted") is not None and not isinstance(L.get("muted"), bool):
                 e(f"{lid}: video muted must be a boolean")
+            rate = L.get("playbackRate")
+            if rate is not None and not (isinstance(rate, (int, float))
+                                         and not isinstance(rate, bool) and rate > 0):
+                # The renderer feeds this into the clip's timeline
+                # (unloopedTimeInSeconds * playbackRate * fps), so a wrong
+                # type makes the whole shot's timing wrong.
+                e(f"{lid}: video playbackRate must be a positive number (got {rate!r})")
             if "sourceFps" in L:
                 # S2 re-encodes every clip to the SHOT's frame rate, so the
                 # renderer always sees the source at the canvas fps. A
@@ -217,12 +229,35 @@ def validate(spec):
         if L.get("type") == "text":
             if not L.get("text"):
                 e(f"{lid}: text layer needs 'text'")
+            size = L.get("fontSize")
+            if size is not None and not (isinstance(size, (int, float))
+                                         and not isinstance(size, bool) and size > 0):
+                e(f"{lid}: text fontSize must be a positive number (got {size!r})")
+            weight = L.get("fontWeight")
+            if weight is not None and not (isinstance(weight, (str, int, float))
+                                           and not isinstance(weight, bool)):
+                e(f"{lid}: text fontWeight must be a string or number (got {weight!r})")
+            if "subtext" in L and not isinstance(L["subtext"], str):
+                e(f"{lid}: text subtext must be a string")
         if L.get("type") == "hud":
             if not L.get("hudType"):
                 e(f"{lid}: hud layer needs 'hudType'")
+            elif L["hudType"] not in HUD_TYPES:
+                # The renderer dispatches on this value; an unknown one draws
+                # nothing while the spec still claims the layer exists.
+                e(f"{lid}: hudType must be one of {sorted(HUD_TYPES)} "
+                  f"(got {L['hudType']!r})")
         if L.get("type") == "card":
             if not L.get("cardType"):
                 e(f"{lid}: card layer needs 'cardType'")
+            elif L["cardType"] not in CARD_TYPES:
+                e(f"{lid}: cardType must be one of {sorted(CARD_TYPES)} "
+                  f"(got {L['cardType']!r})")
+            details = L.get("details")
+            if details is not None and not (
+                    isinstance(details, list)
+                    and all(isinstance(d, dict) for d in details)):
+                e(f"{lid}: card details must be a list of objects")
         m = L.get("motion")
         if m is not None:
             if m.get("type") != "geometric":

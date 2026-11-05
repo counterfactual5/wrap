@@ -70,6 +70,10 @@ Two specs sharing four or more rolled values is a re-roll. The dice constrain
 | `vibe: false` | spec root | Opts out of the baked vertical ambience (particle rain, scanline, blueprint grid). Bring your own atmosphere via layers. |
 | `plate: false` | ai layer | Full-bleed presentation — no card chrome (border/rounding/vignette). |
 | `color` | text layer | Solid color + scrim instead of the default white-cyan gradient. |
+| `fontSize` / `fontWeight` / `subtext` | text layer | Title size (px), weight (`string` or number), and the smaller line under the title. |
+| `playbackRate` | video layer | Clip speed multiplier (positive number). `1` is real time; `0.5` is half speed. The clip's own audio is not time-stretched to match. |
+| `cardType` / `hudType` | card / hud layer | Which card or instrument to draw: card `capsule \| formula \| quote`, hud `badge \| telemetry \| equalizer \| progress`. |
+| `details` | card layer | Rows under a formula card: a list of `{label, desc, color?}`. |
 
 Hero draws (`trampoline`, `gravity-well`, `blackhole-hero`, `time-dilation`,
 `light-cone-tilt`, `spaghettification`, `light-deflection`, `spacetime-waves`,
@@ -178,7 +182,7 @@ an `audio` block — so a clip-owned soundtrack is measured too.
 3. **`code`** — `grid | dots | bar | field | path | captions` (parameterized primitives)
    plus legacy hero scenes (see vocabulary section).
 4. **`text`** — title/subtitle, spring or keyframe entrance, gradient or solid `color`.
-5. **`hud`** — `badge | telemetry | equalizer | progress | scanline`. Decorative:
+5. **`hud`** — `badge | telemetry | equalizer | progress`. Decorative:
    use deliberately, not by default on every shot.
 6. **`card`** — `capsule | formula | quote`.
 

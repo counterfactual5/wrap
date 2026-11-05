@@ -105,7 +105,7 @@ export type TextLayer = {
 export type HudLayer = {
   id: string;
   type: 'hud';
-  hudType: 'badge' | 'telemetry' | 'equalizer' | 'progress' | 'scanline';
+  hudType: 'badge' | 'telemetry' | 'equalizer' | 'progress';
   rect: Rect;
   z: number;
   text?: string;
