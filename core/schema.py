@@ -31,6 +31,26 @@ DRAWS = {
 }
 METRICS = {"changed_pixel_ratio", "red_pixel_ratio", "edge_key_purity", "subject_motion_ratio", "accent_color_ratio"}
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+# The code layers S2 prepares as an image (grid, dots). The renderer draws
+# them through PreparedLayer — the same component that interpolates
+# motion.zoom for ai layers — so a zoom on them is a camera push-in.
+ZOOMABLE_CODE_DRAWS = {"grid", "dots"}
+
+
+def zoom_supported(layer):
+    """Whether the renderer actually interpolates motion.zoom for this layer.
+
+    The renderer does it in PreparedLayer (ai layers, and the code layers
+    drawn as grid / dots, which S2 prepares as an image) and in
+    VideoLayerComp. CodeLayerComp reads only motion.pan, and the text / hud /
+    card layers scale through the anim "scale" channel — promising a
+    motion.zoom there would promise something the renderer never draws.
+    """
+    ltype = layer.get("type")
+    if ltype in ("ai", "video"):
+        return True
+    return ltype == "code" and layer.get("draw") in ZOOMABLE_CODE_DRAWS
+
 # Generic choreography channels: every layer may declare keyframes per channel.
 # Expression lives in the spec, not in component code — the renderer only
 # interpolates. A keyframe is [frame, value] or [frame, value, ease]; ease
@@ -268,11 +288,18 @@ def validate(spec):
             p = m.get("pan")
             if p is not None and not (len(p) == 2 and all(isinstance(v, (int, float)) for v in p)):
                 e(f"{lid}: pan must be [xFrom,xTo] numbers")
-            if z is not None and L.get("type") not in ("ai", "video"):
-                # Both layer kinds implement the zoom (the renderer
-                # interpolates motion.zoom for ai and video alike), so the
-                # validator must not refuse what the renderer can do.
-                e(f"{lid}: zoom is only supported on ai and video layers")
+            if z is not None and not zoom_supported(L):
+                # The validator must not refuse what the renderer can do — and
+                # must not promise what it cannot. The message names the layer
+                # kind so the author knows which channel to use instead.
+                if L.get("type") == "code":
+                    e(f"{lid}: zoom is not supported on code layers drawn as "
+                      f"{L.get('draw')!r} — only {sorted(ZOOMABLE_CODE_DRAWS)} "
+                      f"go through the prepared-image path; use the anim "
+                      f"'scale' channel for the other draws")
+                else:
+                    e(f"{lid}: zoom is not supported on {L.get('type')} layers "
+                      f"— scale them with the anim 'scale' channel instead")
             if p is not None and L.get("draw") != "bar":
                 e(f"{lid}: pan only supported on 'bar' layers")
     punches = spec.get("punches")

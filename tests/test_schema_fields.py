@@ -158,19 +158,23 @@ class TestVibeValidation(unittest.TestCase):
 
 
 class TestVideoZoomValidation(unittest.TestCase):
-    """The renderer interpolates motion.zoom for video layers as well as ai
-    layers; the validator must not refuse what the renderer can do."""
+    """The renderer interpolates motion.zoom for video layers, for ai layers and
+    for the code layers it prepares as an image (grid, dots); the validator must
+    not refuse what the renderer can do — and must still refuse the layers whose
+    renderer ignores it."""
 
-    def _spec(self, layer_type, zoom):
+    def _spec(self, layer_type, zoom, draw=None):
+        layer = {"id": "l", "type": layer_type, "rect": [0, 0, 1080, 1920],
+                 "z": 0, "asset": "a", "keyColor": "#070512",
+                 "blend": "normal", "motion": {"type": "geometric", "zoom": zoom}}
+        if draw is not None:
+            layer["draw"] = draw
         return {
             "id": "zoom-test",
             "canvas": {"w": 1080, "h": 1920},
             "fps": 30,
             "durationInFrames": 60,
-            "layers": [{"id": "l", "type": layer_type, "rect": [0, 0, 1080, 1920],
-                        "z": 0, "asset": "a", "keyColor": "#070512",
-                        "blend": "normal", "motion": {"type": "geometric",
-                                                      "zoom": zoom}}],
+            "layers": [layer],
             "gates": [{"id": "m", "metric": "changed_pixel_ratio",
                        "lo": 0.0001, "hi": 0.15}],
         }
@@ -186,11 +190,33 @@ class TestVideoZoomValidation(unittest.TestCase):
         self.assertTrue(any("zoom must be" in e for e in errs), errs)
 
     def test_03_zoom_is_still_refused_on_other_layer_kinds(self):
-        for layer_type in ("code", "text", "hud", "card"):
+        for layer_type in ("text", "hud", "card"):
             with self.subTest(layer_type=layer_type):
                 errs = validate(self._spec(layer_type, [1.0, 1.1]))
-                self.assertTrue(any("zoom is only supported" in e for e in errs),
+                self.assertTrue(any("zoom is not supported" in e for e in errs),
                                 f"{layer_type} accepted a zoom: {errs}")
+
+    def test_04_code_layer_zoom_is_accepted_for_the_draws_the_renderer_prepares(self):
+        # grid and dots go through PreparedLayer (remotion/Shot.tsx) — the same
+        # component that interpolates motion.zoom for ai layers.
+        for draw in ("grid", "dots"):
+            with self.subTest(draw=draw):
+                self.assertEqual(validate(self._spec("code", [1.0, 1.1], draw=draw)), [])
+
+    def test_05_code_layer_zoom_is_refused_for_the_draws_the_renderer_ignores(self):
+        # CodeLayerComp reads only motion.pan; a zoom there would be silently
+        # dropped, so the validator has to keep refusing it.
+        for draw in ("bar", "field", "path", "captions"):
+            with self.subTest(draw=draw):
+                errs = validate(self._spec("code", [1.0, 1.1], draw=draw))
+                self.assertTrue(any("zoom is not supported" in e for e in errs),
+                                f"code/{draw} accepted a zoom: {errs}")
+                self.assertTrue(any("code" in e for e in errs),
+                                f"the message does not name the layer kind: {errs}")
+
+    def test_06_the_numeric_bounds_apply_to_code_layers_too(self):
+        errs = validate(self._spec("code", [0.5, 1.5], draw="grid"))
+        self.assertTrue(any("zoom must be" in e for e in errs), errs)
 
 
 class TestNameValidation(unittest.TestCase):

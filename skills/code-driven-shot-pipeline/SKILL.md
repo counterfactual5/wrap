@@ -180,7 +180,9 @@ an `audio` block — so a clip-owned soundtrack is measured too.
    source clip at a different rate would otherwise loop over a window longer
    than itself and freeze on its last frame.
 3. **`code`** — `grid | dots | bar | field | path | captions` (parameterized primitives)
-   plus legacy hero scenes (see vocabulary section).
+   plus legacy hero scenes (see vocabulary section). `grid` and `dots` are
+   prepared as an image, so they take `motion.zoom` (a camera push-in on the
+   background); every other draw scales through the `anim` `scale` channel.
 4. **`text`** — title/subtitle, spring or keyframe entrance, gradient or solid `color`.
 5. **`hud`** — `badge | telemetry | equalizer | progress`. Decorative:
    use deliberately, not by default on every shot.
