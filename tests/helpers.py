@@ -17,6 +17,15 @@ import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 MANIFEST_PATH = os.path.join(ROOT, "manifest.json")
+# Backups live under .tmp/ (gitignored): a backup file next to the real one
+# would be an untracked file, and a tool that snapshots the tree mid-test
+# would read it as "the tree changed".
+BACKUP_DIR = os.path.join(ROOT, ".tmp", "testbakups")
+
+
+def _backup_path(name):
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    return os.path.join(BACKUP_DIR, name)
 
 
 @contextlib.contextmanager
@@ -28,7 +37,7 @@ def preserve_manifest():
     snapshot window as "the tree changed"."""
     backup = None
     if os.path.exists(MANIFEST_PATH):
-        backup = MANIFEST_PATH + ".testbak"
+        backup = _backup_path("manifest.json")
         shutil.copyfile(MANIFEST_PATH, backup)
     try:
         yield
@@ -37,11 +46,9 @@ def preserve_manifest():
             try:
                 # os.replace is atomic within a filesystem: readers see
                 # either the old file or the restored one, never a gap.
-                shutil.copyfile(backup, MANIFEST_PATH + ".restore")
-                os.replace(MANIFEST_PATH + ".restore", MANIFEST_PATH)
+                shutil.copyfile(backup, MANIFEST_PATH)
             except OSError:
-                if not os.path.exists(MANIFEST_PATH):
-                    shutil.copyfile(backup, MANIFEST_PATH)
+                pass
             finally:
                 if os.path.exists(backup):
                     os.remove(backup)
@@ -62,7 +69,7 @@ def preserve_assets(*asset_names):
     for name in asset_names:
         path = os.path.join(ROOT, "assets", name)
         if os.path.exists(path):
-            backup = path + ".testbak"
+            backup = _backup_path(name)
             shutil.copyfile(path, backup)
             backups[name] = backup
     try:
@@ -71,13 +78,9 @@ def preserve_assets(*asset_names):
         for name, backup in backups.items():
             path = os.path.join(ROOT, "assets", name)
             try:
-                # Atomic replace: the file is never absent from the tree.
-                tmp = path + ".restore"
-                shutil.copyfile(backup, tmp)
-                os.replace(tmp, path)
+                shutil.copyfile(backup, path)
             except OSError:
-                if not os.path.exists(path):
-                    shutil.copyfile(backup, path)
+                pass
             finally:
                 if os.path.exists(backup):
                     os.remove(backup)

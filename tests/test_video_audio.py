@@ -154,7 +154,10 @@ class TestVideoAudioEndToEnd(unittest.TestCase):
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                        "lo": 0.0001, "hi": 0.3}],
         }
-        spec_path = os.path.join(ROOT, "spec", "audio-e2e.poster.json")
+        # The temp spec lives under .tmp/ (gitignored): a spec file in spec/ would
+        # be an untracked file, and a tree snapshot taken while it exists
+        # would read the file's removal as "the tree changed".
+        spec_path = os.path.join(ROOT, ".tmp", "audio-e2e.poster.json")
         with open(spec_path, "w") as f:
             json.dump(spec, f, indent=2)
 
