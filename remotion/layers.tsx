@@ -421,7 +421,13 @@ export const CardComp: React.FC<{layer: CardLayer}> = ({layer}) => {
 export const GeodesicComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {durationInFrames} = useVideoConfig();
-  const progress = interpolate(frame, [10, durationInFrames - 20], [0, 1], {
+  // The draw-on window is [10, durationInFrames - 20]; on a short shot that
+  // end lands BEFORE the start and interpolate() rejects the non-monotonic
+  // input range ("inputRange must be strictly monotonically increasing").
+  // Keep the window ordered (and non-empty) for any shot length.
+  const start = 10;
+  const end = Math.max(start + 1, durationInFrames - 20);
+  const progress = interpolate(frame, [start, end], [0, 1], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });

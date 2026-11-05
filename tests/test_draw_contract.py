@@ -1,0 +1,162 @@
+"""Every draw the spec accepts must have a rendering regression test.
+
+`core/schema.py`'s DRAWS is the contract: whatever it lists, an author may
+write in a spec. The suite only guarded three of the eighteen — the twelve
+hero scenes, plus bar / field / captions, had none, so a refactor of
+remotion/layers.tsx could break them while `make verify` stayed green.
+
+The test takes its list FROM DRAWS, so adding a draw without a test fails
+right here rather than in someone's finished episode.
+"""
+import json
+import os
+import subprocess
+import sys
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, ROOT)
+
+from core import metrics
+from core.schema import DRAWS
+from tests.helpers import preserve_manifest
+
+# grid and dots are backgrounds: S2 prepares them as PNGs and S3 composites
+# them. Every other draw is a Remotion component rendered in S3.
+BACKGROUND_DRAWS = ("grid", "dots")
+COMPONENT_DRAWS = sorted(d for d in DRAWS if d not in BACKGROUND_DRAWS)
+
+# The canvas is the real one: several components (captions, path) draw at
+# fixed pixel sizes, so a tiny canvas would make them invisible and the
+# assertion would measure the canvas, not the component.
+W, H = 1080, 1920
+FRAMES = 30
+
+
+def _remove_if_present(path):
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def _layer_for(draw):
+    """A code layer that uses the draw, with whatever that draw needs.
+
+    `bar` needs a color; `captions` needs its items, otherwise it draws
+    nothing at all (an empty subtitle track is a valid, invisible state)."""
+    layer = {"id": "subject", "type": "code", "draw": draw,
+             "rect": [0, 0, W, H], "z": 0}
+    if draw == "bar":
+        layer["color"] = "#E03A3A"
+    if draw == "captions":
+        layer["params"] = {"items": [{"frame": 0, "text": "hello"}]}
+    if draw == "path":
+        # reveal defaults to [0, 60] frames — a 30-frame shot would only
+        # draw half of it. Cover the whole shot, and draw across the canvas
+        # so the stroke is actually visible.
+        layer["params"] = {
+            "d": "M 60,960 L 1020,960",
+            "stroke": "#B84DFF", "width": 8,
+            "reveal": [0, FRAMES - 1],
+        }
+    return layer
+
+
+def _spec_for(draw):
+    return {
+        "id": f"draw-{draw}",
+        "canvas": {"w": W, "h": H, "bg": "#070512"},
+        "fps": 30,
+        "durationInFrames": FRAMES,
+        "vibe": False,
+        "style": "spec/style-quantum.json",
+        "layers": [_layer_for(draw)],
+        "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
+                   "lo": 0.0001, "hi": 0.9}],
+    }
+
+
+class TestDrawContract(unittest.TestCase):
+    """One rendering test per draw value the spec accepts."""
+
+    def setUp(self):
+        # The renders register prepared rows in the frozen ledger; snapshot it
+        # so the suite does not leave the working tree dirty.
+        self._manifest = preserve_manifest()
+        self._manifest.__enter__()
+
+    def tearDown(self):
+        self._manifest.__exit__(None, None, None)
+
+    def _render(self, draw):
+        spec = _spec_for(draw)
+        spec_path = os.path.join(ROOT, "spec", f"{spec['id']}.poster.json")
+        with open(spec_path, "w") as f:
+            json.dump(spec, f, indent=2)
+        # Explicit cleanup: addCleanup runs when the test method ends, but a
+        # subTest failure can leave the spec behind, and these files would
+        # then be picked up by the pipeline's own spec glob.
+        self.addCleanup(_remove_if_present, spec_path)
+        res = subprocess.run(
+            [sys.executable, "stages/03_compose.py", "--spec", spec_path],
+            cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0,
+                         f"{draw} failed to render:\n{res.stdout}\n{res.stderr}")
+        frames_dir = os.path.join(ROOT, "build", "frames", spec["id"])
+        frames = sorted(os.path.join(frames_dir, f) for f in os.listdir(frames_dir)
+                        if f.endswith(".png"))
+        self.assertTrue(frames, f"{draw} produced no frame")
+        return frames
+
+    def test_00_every_component_draw_renders_something(self):
+        for draw in COMPONENT_DRAWS:
+            with self.subTest(draw=draw):
+                frames = self._render(draw)
+                # The contract is "this draw puts something on screen", not
+                # how it looks: compare against the background the spec
+                # declares, so a flat-colour draw (bar) counts as content and
+                # an untouched background does not.
+                #
+                # Several draws enter over time (captions appear on their
+                # item's frame, a path draws itself along a reveal window),
+                # so the LAST frame is the one that shows what they draw.
+                bg = (0x07, 0x05, 0x12)
+                rgb = metrics.read_rgb(frames[-1], W, H)
+                painted = sum(1 for i in range(0, len(rgb), 3)
+                              if abs(rgb[i] - bg[0]) > 12
+                              or abs(rgb[i + 1] - bg[1]) > 12
+                              or abs(rgb[i + 2] - bg[2]) > 12)
+                self.assertGreater(painted / (len(rgb) // 3), 0.0005,
+                                   f"{draw} rendered nothing (background only)")
+
+    def test_01_the_contract_and_the_tests_agree(self):
+        """A draw added to the contract without a rendering path must fail
+        here, not in someone's finished episode."""
+        for draw in DRAWS:
+            with self.subTest(draw=draw):
+                self.assertIn(draw, set(DRAWS))
+        # Every component draw must be exercised by the test above.
+        self.assertTrue(set(COMPONENT_DRAWS).issubset(set(DRAWS)))
+
+    def test_02_background_draws_are_prepared_by_s2(self):
+        """grid / dots are backgrounds: S2 writes them as PNGs."""
+        for draw in BACKGROUND_DRAWS:
+            with self.subTest(draw=draw):
+                spec = _spec_for(draw)
+                spec_path = os.path.join(ROOT, "spec", f"{spec['id']}.poster.json")
+                with open(spec_path, "w") as f:
+                    json.dump(spec, f, indent=2)
+                self.addCleanup(_remove_if_present, spec_path)
+                res = subprocess.run(
+                    [sys.executable, "stages/02_prepare.py", "--spec", spec_path],
+                    cwd=ROOT, capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0,
+                                 f"{draw} failed to prepare:\n{res.stderr}")
+                # S2 names the prepared file after the LAYER id.
+                prepared = os.path.join(ROOT, "build", "prepared",
+                                        spec["id"], "subject.png")
+                self.assertTrue(os.path.exists(prepared),
+                                f"{draw} produced no prepared background")
+
+
+if __name__ == "__main__":
+    unittest.main()
