@@ -17,8 +17,64 @@ import {
   TrampolineComp,
   TunnelHeroComp,
   WavefunctionHeroComp,
+  FieldComp,
+  PathComp,
+  CaptionsComp,
 } from './layers';
-import type {AiLayer, CodeLayer, Layer, ShotSpec} from './spec';
+import type {AiLayer, Anim, CodeLayer, Ease, Keyframe, Layer, ShotSpec} from './spec';
+
+// ---------------------------------------------------------------------------
+// Generic keyframe engine: expression lives in the spec (layer.anim), the
+// renderer only interpolates. Channels: x/y translate, scale, opacity, rotate.
+// ---------------------------------------------------------------------------
+const applyEase = (t: number, ease: Ease): number => {
+  switch (ease) {
+    case 'in':
+      return t * t;
+    case 'out':
+      return 1 - (1 - t) * (1 - t);
+    case 'inout':
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    default:
+      return t;
+  }
+};
+
+const channelValue = (kfs: Keyframe[], frame: number, fallback: number): number => {
+  const first = kfs[0];
+  const last = kfs[kfs.length - 1];
+  if (frame <= (first as [number, number])[0]) return (first as [number, number])[1];
+  if (frame >= (last as [number, number])[0]) return (last as [number, number])[1];
+  for (let i = 0; i < kfs.length - 1; i++) {
+    const k0 = kfs[i] as [number, number, Ease?];
+    const k1 = kfs[i + 1] as [number, number, Ease?];
+    if (frame >= k0[0] && frame <= k1[0]) {
+      const t = (frame - k0[0]) / (k1[0] - k0[0]);
+      return k0[1] + (k1[1] - k0[1]) * applyEase(t, k1[2] ?? 'linear');
+    }
+  }
+  return fallback;
+};
+
+const AnimatedLayer: React.FC<{layer: Layer; children: React.ReactNode}> = ({layer, children}) => {
+  const anim: Anim | undefined = layer.anim;
+  if (!anim) return <>{children}</>;
+  const frame = useCurrentFrame();
+  const x = anim.x ? channelValue(anim.x, frame, 0) : 0;
+  const y = anim.y ? channelValue(anim.y, frame, 0) : 0;
+  const scale = anim.scale ? channelValue(anim.scale, frame, 1) : 1;
+  const rotate = anim.rotate ? channelValue(anim.rotate, frame, 0) : 0;
+  const opacity = anim.opacity ? channelValue(anim.opacity, frame, 1) : 1;
+  const transform =
+    x === 0 && y === 0 && scale === 1 && rotate === 0
+      ? undefined
+      : `translate(${x.toFixed(2)}px, ${y.toFixed(2)}px) scale(${scale.toFixed(4)}) rotate(${rotate.toFixed(2)}deg)`;
+  return (
+    <div style={{position: 'absolute', inset: 0, transform, opacity, willChange: 'transform, opacity'}}>
+      {children}
+    </div>
+  );
+};
 
 const FloatingParticles: React.FC<{count?: number}> = ({count = 32}) => {
   const frame = useCurrentFrame();
@@ -76,6 +132,9 @@ const PreparedLayer: React.FC<{
   );
 
   const isAi = layer.type === 'ai';
+  // plate=false: full-bleed presentation — no card chrome (border, rounding,
+  // inner bg, vignette). The chrome is a spec decision, not a renderer default.
+  const plate = !(isAi && (layer as {plate?: boolean}).plate === false);
   const blendMode =
     isAi && layer.blend === 'multiply'
       ? 'multiply'
@@ -92,10 +151,10 @@ const PreparedLayer: React.FC<{
         width: rect[2],
         height: rect[3],
         overflow: 'hidden',
-        borderRadius: isAi && isVerticalVibe ? 20 : 0,
-        border: isAi && isVerticalVibe ? '1px solid rgba(0, 240, 255, 0.3)' : undefined,
-        boxShadow: isAi && isVerticalVibe ? '0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(0, 240, 255, 0.12)' : undefined,
-        backgroundColor: isAi && isVerticalVibe ? '#030509' : undefined,
+        borderRadius: plate && isAi && isVerticalVibe ? 20 : 0,
+        border: plate && isAi && isVerticalVibe ? '1px solid rgba(0, 240, 255, 0.3)' : undefined,
+        boxShadow: plate && isAi && isVerticalVibe ? '0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(0, 240, 255, 0.12)' : undefined,
+        backgroundColor: plate && isAi && isVerticalVibe ? '#030509' : undefined,
       }}
     >
       <Img
@@ -110,11 +169,11 @@ const PreparedLayer: React.FC<{
           transform: `translate(-50%, -50%) scale(${scale})`,
           transformOrigin: 'center',
           mixBlendMode: blendMode,
-          filter: isAi && isVerticalVibe ? 'contrast(1.08) brightness(1.02)' : undefined,
+          filter: plate && isAi && isVerticalVibe ? 'contrast(1.08) brightness(1.02)' : undefined,
         }}
       />
       {/* Soft edge vignette to integrate smoothly into dark border */}
-      {isAi && isVerticalVibe && (
+      {plate && isAi && isVerticalVibe && (
         <div
           style={{
             position: 'absolute',
@@ -185,6 +244,18 @@ const CodeLayerComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
     return <WavefunctionHeroComp layer={layer} />;
   }
 
+  if (layer.draw === 'field') {
+    return <FieldComp layer={layer} />;
+  }
+
+  if (layer.draw === 'path') {
+    return <PathComp layer={layer} />;
+  }
+
+  if (layer.draw === 'captions') {
+    return <CaptionsComp layer={layer} />;
+  }
+
   // bar
   const pan = motion?.pan ?? [rect[0], rect[0]];
   const x = interpolate(frame, [0, durationInFrames - 1], [pan[0], pan[1]]);
@@ -204,7 +275,24 @@ export const Shot: React.FC<{
   const frame = useCurrentFrame();
   const layers = [...spec.layers].sort((a, b) => a.z - b.z);
   const isVerticalVibe = spec.canvas.w === 1080;
+  // vibe=false: the shot opts out of the baked vertical-vibe ambience
+  // (floating particles, scanline, blueprint grid, radial glow). Atmosphere
+  // should come from spec layers (field/path), not renderer defaults.
+  const vibe = isVerticalVibe && (spec as {vibe?: boolean}).vibe !== false;
   const bgColor = (spec.canvas as any).bg || (isVerticalVibe ? '#06080F' : '#fff');
+
+  // Zoom punches: whole-canvas scale spike at each spec'd frame — the beat hit.
+  const punches = spec.punches ?? [];
+  let punchScale = 1;
+  let punchFlash = 0;
+  for (const f of punches) {
+    if (frame >= f && frame <= f + 9) {
+      punchScale = Math.max(punchScale, 1 + 0.13 * Math.sin((Math.PI * (frame - f)) / 9));
+    }
+    if (frame >= f && frame < f + 5) {
+      punchFlash = Math.max(punchFlash, 0.32 * (1 - (frame - f) / 5));
+    }
+  }
 
   return (
     <div
@@ -218,8 +306,18 @@ export const Shot: React.FC<{
           '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif',
       }}
     >
-      {/* Dynamic atmospheric layer for vertical vibe video */}
-      {isVerticalVibe && (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          transform: punchScale !== 1 ? `scale(${punchScale.toFixed(4)})` : undefined,
+        }}
+      >
+      {punchFlash > 0 && (
+        <div style={{position: 'absolute', inset: 0, backgroundColor: '#FFFFFF', opacity: punchFlash, pointerEvents: 'none'}} />
+      )}
+      {/* Dynamic atmospheric layer for vertical vibe video (spec may opt out) */}
+      {vibe && (
         <>
           {/* 1. Deep space ambient radial glow centered on visual region */}
           <div
@@ -272,24 +370,22 @@ export const Shot: React.FC<{
         </>
       )}
 
-      {layers.map((layer: Layer) => {
-        if (layer.type === 'ai' || (layer.type === 'code' && (layer.draw === 'grid' || layer.draw === 'dots'))) {
-          return <PreparedLayer key={layer.id} layer={layer} src={prepared[layer.id]} isVerticalVibe={isVerticalVibe} />;
-        }
-        if (layer.type === 'code') {
-          return <CodeLayerComp key={layer.id} layer={layer} />;
-        }
-        if (layer.type === 'text') {
-          return <TextComp key={layer.id} layer={layer} />;
-        }
-        if (layer.type === 'hud') {
-          return <HudComp key={layer.id} layer={layer} />;
-        }
-        if (layer.type === 'card') {
-          return <CardComp key={layer.id} layer={layer} />;
-        }
-        return null;
-      })}
+      {layers.map((layer: Layer) => (
+        <AnimatedLayer key={layer.id} layer={layer}>
+          {layer.type === 'ai' || (layer.type === 'code' && (layer.draw === 'grid' || layer.draw === 'dots')) ? (
+            <PreparedLayer layer={layer} src={prepared[layer.id]} isVerticalVibe={isVerticalVibe} />
+          ) : layer.type === 'code' ? (
+            <CodeLayerComp layer={layer} />
+          ) : layer.type === 'text' ? (
+            <TextComp layer={layer} />
+          ) : layer.type === 'hud' ? (
+            <HudComp layer={layer} />
+          ) : layer.type === 'card' ? (
+            <CardComp layer={layer} />
+          ) : null}
+        </AnimatedLayer>
+      ))}
+      </div>
     </div>
   );
 };

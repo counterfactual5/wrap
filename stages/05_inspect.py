@@ -117,7 +117,21 @@ AUDIT_CRITERIA = [
     "text_legibility: All title/subtitle/quote texts readable without character corruption or overlap",
     "subject_fidelity: Visual subject matches declared AI asset or Code draw type without stretch",
     "motion_coherence: Motion animates smoothly and logically across contact sheet frames",
+    "composition_diversity: This shot's skeleton (layout zones, title/caption/HUD placement, "
+    "entrance style) must differ from sibling shots in the same episode — an identical "
+    "badge/title/box/capsule stack repeated across sheets is a FAIL even when every frame is clean",
 ]
+
+
+def sibling_sheets(shot_id):
+    """Contact sheets of other shots in build/ — evidence for the diversity criterion."""
+    import glob as _glob
+    build = os.path.join(ROOT, "build")
+    return sorted(
+        os.path.relpath(p, ROOT)
+        for p in _glob.glob(os.path.join(build, "contact_sheet_*.png"))
+        if os.path.basename(p) != f"contact_sheet_{shot_id}.png"
+    )
 
 
 def upsert_gate_entry(shot_id, pass_, status, sheet_rel, checklist_items, notes=None):
@@ -150,10 +164,14 @@ def judge_instructions(shot_id, sheet_rel, checklist):
     """The prompt a driving agent (or human) consumes to judge the sheet."""
     items = {k: [e.get("text") or e.get("title") or e.get("asset") or e.get("draw") or e.get("hudType") or e.get("id") for e in v]
              for k, v in checklist.items()}
+    siblings = sibling_sheets(shot_id)
+    sib_line = (f"  sibling sheets (compare skeletons against these):\n"
+                + "".join(f"    - {s}\n" for s in siblings) if siblings else "")
     return (
         f"\n[S5 judge] shot={shot_id}\n"
         f"  sheet: {sheet_rel}\n"
         f"  declared elements: {json.dumps(items, ensure_ascii=False)}\n"
+        f"{sib_line}"
         f"  criteria:\n"
         + "".join(f"    - {c}\n" for c in AUDIT_CRITERIA) +
         f"  record: python3 pipeline.py judge --spec <spec> --verdict pass|fail --notes \"...\"\n"

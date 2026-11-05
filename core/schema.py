@@ -13,10 +13,52 @@ DRAWS = {
     "grid", "bar", "dots", "geodesic", "ripples",
     "trampoline", "gravity-well", "light-deflection", "spacetime-waves",
     "blackhole-hero", "time-dilation", "light-cone-tilt", "spaghettification",
-    "tunnel-hero", "wavefunction-hero"
+    "tunnel-hero", "wavefunction-hero", "field", "path", "captions"
 }
 METRICS = {"changed_pixel_ratio", "red_pixel_ratio", "edge_key_purity", "subject_motion_ratio", "accent_color_ratio"}
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+# Generic choreography channels: every layer may declare keyframes per channel.
+# Expression lives in the spec, not in component code — the renderer only
+# interpolates. A keyframe is [frame, value] or [frame, value, ease]; ease
+# applies to the segment ENDING at that keyframe.
+ANIM_CHANNELS = {"x", "y", "scale", "opacity", "rotate"}
+ANIM_EASES = {"linear", "in", "out", "inout"}
+
+
+def validate_anim(anim, lid, errs):
+    e = errs.append
+    if not isinstance(anim, dict) or not anim:
+        e(f"{lid}: anim must be a non-empty object of channel -> keyframes")
+        return
+    for ch, kfs in anim.items():
+        if ch not in ANIM_CHANNELS:
+            e(f"{lid}: anim channel '{ch}' must be one of {sorted(ANIM_CHANNELS)}")
+            continue
+        if not (isinstance(kfs, list) and len(kfs) >= 2):
+            e(f"{lid}: anim.{ch} needs >= 2 keyframes")
+            continue
+        prev_f = None
+        for kf in kfs:
+            if not (isinstance(kf, list) and len(kf) in (2, 3)):
+                e(f"{lid}: anim.{ch} keyframe must be [frame, value(, ease)]")
+                break
+            f, v = kf[0], kf[1]
+            if not isinstance(f, int) or f < 0:
+                e(f"{lid}: anim.{ch} frame must be a non-negative int")
+                break
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                e(f"{lid}: anim.{ch} value must be a number")
+                break
+            if ch == "opacity" and not (0 <= v <= 1):
+                e(f"{lid}: anim.opacity values must be within [0, 1]")
+                break
+            if len(kf) == 3 and kf[2] not in ANIM_EASES:
+                e(f"{lid}: anim.{ch} ease must be one of {sorted(ANIM_EASES)}")
+                break
+            if prev_f is not None and f <= prev_f:
+                e(f"{lid}: anim.{ch} frames must be strictly increasing")
+                break
+            prev_f = f
 
 
 def hex_rgb(s):
@@ -66,6 +108,10 @@ def validate(spec):
                 e(f"{lid}: draw must be one of {sorted(DRAWS)}")
             if L.get("draw") == "bar" and not HEX.match(L.get("color", "")):
                 e(f"{lid}: bar needs color #rrggbb")
+            if "params" in L and not isinstance(L["params"], dict):
+                e(f"{lid}: params must be an object (primitive parameters)")
+        if "anim" in L:
+            validate_anim(L["anim"], lid, errs)
         if L.get("type") == "text":
             if not L.get("text"):
                 e(f"{lid}: text layer needs 'text'")
@@ -89,6 +135,12 @@ def validate(spec):
                 e(f"{lid}: zoom only supported on ai layers")
             if p is not None and L.get("draw") != "bar":
                 e(f"{lid}: pan only supported on 'bar' layers")
+    punches = spec.get("punches")
+    if punches is not None:
+        if not (isinstance(punches, list) and all(isinstance(v, int) and 0 <= v for v in punches)):
+            e("punches must be a list of non-negative frame ints")
+    if "vibe_grade" in spec and not isinstance(spec["vibe_grade"], bool):
+        e("vibe_grade must be a boolean")
     if "audio" in spec and spec["audio"] is not None:
         if not isinstance(spec["audio"], dict):
             e("audio must be a dictionary")

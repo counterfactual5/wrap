@@ -12,6 +12,17 @@ export type GeometricMotion = {
   pan?: [number, number];
 };
 
+export type Ease = 'linear' | 'in' | 'out' | 'inout';
+
+/** [frame, value] or [frame, value, ease]; ease applies to the segment ending at this keyframe. */
+export type Keyframe = [number, number] | [number, number, Ease];
+
+/** Generic choreography: expression lives in the spec, the renderer only interpolates. */
+export type Anim = Partial<Record<'x' | 'y' | 'scale' | 'opacity' | 'rotate', Keyframe[]>>;
+
+/** Free parameter bag for primitive draws (field, path, ...). */
+export type Params = Record<string, string | number | boolean | number[] | string[]>;
+
 export type CodeLayer = {
   id: string;
   type: 'code';
@@ -30,11 +41,14 @@ export type CodeLayer = {
     | 'light-cone-tilt'
     | 'spaghettification'
     | 'tunnel-hero'
-    | 'wavefunction-hero';
+    | 'wavefunction-hero'
+    | 'field'
+    | 'path';
   rect: Rect;
   z: number;
   color?: string;
   motion?: GeometricMotion;
+  params?: Params;
 };
 
 export type AiLayer = {
@@ -47,6 +61,8 @@ export type AiLayer = {
   z: number;
   motion?: GeometricMotion;
   fit?: 'cover' | 'contain';
+  /** false = full-bleed presentation, no card chrome (border/rounding/vignette). */
+  plate?: boolean;
 };
 
 export type TextLayer = {
@@ -92,7 +108,10 @@ export type AudioSpec = {
   bgm?: string;
 };
 
-export type Layer = CodeLayer | AiLayer | TextLayer | HudLayer | CardLayer;
+export type Layer = (CodeLayer | AiLayer | TextLayer | HudLayer | CardLayer) & {
+  /** Spec-driven keyframe channels applied by the renderer to ANY layer. */
+  anim?: Anim;
+};
 
 export type Gate = {
   id: string;
@@ -117,6 +136,12 @@ export type ShotSpec = {
   durationInFrames: number;
   style?: string;
   audio?: AudioSpec;
+  /** false = opt out of baked vertical-vibe ambience; bring your own via layers. */
+  vibe?: boolean;
+  /** Frame numbers for whole-canvas zoom punches (beat/keyword hits). */
+  punches?: number[];
+  /** Cinema grade pass on encode (grain + vignette + contrast). */
+  vibe_grade?: boolean;
   layers: Layer[];
   gates: Gate[];
 };

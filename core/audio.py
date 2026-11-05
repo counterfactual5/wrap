@@ -141,7 +141,14 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path):
 
     has_voice = False
     if voiceover_text and voiceover_text.strip():
-        synthesize_voiceover(voiceover_text, voice=voice, out_path=tmp_voice)
+        if os.path.exists(voiceover_text):
+            # Pre-built narration track (e.g. per-phrase TTS concat + SFX mix).
+            # Copy, don't reference: tmp_voice is remixed below and reused runs
+            # must not read a file another stage could overwrite mid-flight.
+            import shutil
+            shutil.copyfile(voiceover_text, tmp_voice)
+        else:
+            synthesize_voiceover(voiceover_text, voice=voice, out_path=tmp_voice)
         has_voice = True
 
     if bgm_type == "ambient":

@@ -95,6 +95,12 @@ def encode_mp4(spec, frames_dir, out_mp4):
     if audio_file and os.path.exists(audio_file):
         cmd.extend(["-i", audio_file])
 
+    # vibe_grade: cinema texture on encode (deterministic filters — same spec
+    # still yields the same mp4). Gates measure the ungraded S3 frames; this is
+    # presentation layered on top.
+    if spec.get("vibe_grade"):
+        cmd.extend(["-vf", "split[a][b];[b]gblur=sigma=14[bl];[a][bl]blend=all_mode=screen:all_opacity=0.22,noise=alls=12:allf=t,vignette=PI/3.8,eq=contrast=1.1:saturation=1.16"])
+
     cmd.extend([
         "-frames:v", str(spec["durationInFrames"]), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-threads", "1", "-r", str(FPS),
