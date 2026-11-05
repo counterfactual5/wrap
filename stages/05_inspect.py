@@ -5,8 +5,8 @@ Two modes:
 1. Evidence generation (default):
    Generates a tiled contact sheet from the rendered shot video and extracts an
    inspection checklist against the spec's declared layers (texts, cards, AI
-   assets, draw types, HUD). Writes build/contact_sheet_{shot_id}.png and
-   build/inspection_{shot_id}.json, and registers a *pending* visual audit
+   assets, video clips, draw types, HUD). Writes build/contact_sheet_{shot_id}.png
+   and build/inspection_{shot_id}.json, and registers a *pending* visual audit
    entry in build/gates/{shot_id}.json (pass=null, status=pending_judge). Nothing here
    claims the shot looks right — that verdict belongs to a judge (model or
    human) reading the sheet, recorded via --record.
@@ -32,6 +32,7 @@ import sys
 # importlib).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
+from core import manifest
 from core.schema import ROOT, load_spec
 
 
@@ -41,7 +42,9 @@ def extract_checklist(spec):
     ai_assets = []
     code_draws = []
     hud_types = []
+    video_assets = []
 
+    shot_id = spec.get("id", "shot-01")
     for layer in spec.get("layers", []):
         ltype = layer.get("type")
         if ltype == "text":
@@ -60,13 +63,31 @@ def extract_checklist(spec):
             code_draws.append({"id": layer.get("id"), "draw": layer.get("draw")})
         elif ltype == "hud":
             hud_types.append({"id": layer.get("id"), "hudType": layer.get("hudType")})
+        elif ltype == "video":
+            # The clip's own facts live in the prepared manifest row S2 wrote
+            # (source_duration / shot_duration / upscale). Reading them here
+            # gives the reviewer what the material IS and whether it was
+            # enlarged — without them the shot's subject is invisible in the
+            # review material.
+            entry = {"id": layer.get("id"), "asset": layer.get("asset")}
+            row = None
+            try:
+                row = manifest.verified("prepared", f"{shot_id}/{layer.get('asset')}")
+            except Exception:
+                row = None
+            if row:
+                for field in ("source_duration", "shot_duration", "upscale"):
+                    if row.get(field) is not None:
+                        entry[field] = row[field]
+            video_assets.append(entry)
 
     return {
         "texts": texts,
         "cards": cards,
         "ai_assets": ai_assets,
         "code_draws": code_draws,
-        "hud_types": hud_types
+        "hud_types": hud_types,
+        "video_assets": video_assets
     }
 
 
@@ -115,7 +136,8 @@ def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"
 
 AUDIT_CRITERIA = [
     "text_legibility: All title/subtitle/quote texts readable without character corruption or overlap",
-    "subject_fidelity: Visual subject matches declared AI asset or Code draw type without stretch",
+    "subject_fidelity: Visual subject matches the declared asset of its layer — an AI image, "
+    "a video clip, or a Code draw — without stretch",
     "source_resolution: If the shot's asset was upscaled to reach the canvas size (the "
     "prepared manifest row records source_size and upscale), judge whether the resulting "
     "softness is acceptable — a clip generated below the canvas resolution is enlarged, "
