@@ -82,6 +82,11 @@ def validate(spec):
             e(f"missing '{k}'")
     if errs:
         return errs
+    # The shot id names directories under build/ and public/ (prepared clips
+    # are staged there), so it must not be able to walk out of them.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(spec["id"])):
+        e(f"id must be letters/digits/._- only (got {spec['id']!r}); it names "
+          f"directories under build/ and public/")
     W, H = spec["canvas"].get("w"), spec["canvas"].get("h")
     if not (isinstance(W, int) and isinstance(H, int) and W > 0 and H > 0):
         e("canvas.w/h must be positive ints")
@@ -220,6 +225,10 @@ def validate(spec):
             e("punches must be a list of non-negative frame ints")
     if "vibe_grade" in spec and not isinstance(spec["vibe_grade"], bool):
         e("vibe_grade must be a boolean")
+    if "vibe" in spec and not isinstance(spec["vibe"], bool):
+        # The renderer opts out with a strict `vibe !== false`, so a
+        # non-boolean value would run the opposite of what the author wrote.
+        e("vibe must be a boolean")
     if "audio" in spec and spec["audio"] is not None:
         if not isinstance(spec["audio"], dict):
             e("audio must be a dictionary")

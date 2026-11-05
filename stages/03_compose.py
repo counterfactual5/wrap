@@ -56,7 +56,20 @@ def build_props(spec):
         if L["type"] == "video":
             # Stage the clip where Remotion's staticFile() can find it.
             public_rel = f"prepared/{shot_id}/{L['asset']}.mp4"
-            public_path = os.path.join(ROOT, "public", public_rel)
+            # public_rel is relative to public/ — the renderer reads
+            # staticFile("prepared/<shot>/<asset>.mp4").
+            public_root = os.path.abspath(os.path.join(ROOT, "public"))
+            public_path = os.path.join(public_root, public_rel)
+            # The staged path must stay inside public/prepared/ — that is the
+            # only part the renderer reads. A shot id or asset name with ../
+            # would otherwise write outside it.
+            prepared_root = os.path.abspath(os.path.join(public_root, "prepared"))
+            resolved = os.path.abspath(public_path)
+            if not (resolved == prepared_root
+                    or resolved.startswith(prepared_root + os.sep)):
+                raise RuntimeError(
+                    f"video layer {L['id']!r} would stage its clip outside "
+                    f"public/prepared/: {public_rel} -> {resolved}")
             os.makedirs(os.path.dirname(public_path), exist_ok=True)
             shutil.copyfile(os.path.join(ROOT, row["path"]), public_path)
             props["preparedVideos"][L["id"]] = public_rel

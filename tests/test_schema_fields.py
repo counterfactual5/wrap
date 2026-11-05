@@ -86,3 +86,72 @@ class TestOtherFieldsStillChecked(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestShotIdSafety(unittest.TestCase):
+    """The shot id names directories under build/ and public/, so it must not
+    be able to walk out of them."""
+
+    def _spec(self, shot_id):
+        return {
+            "id": shot_id,
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 60,
+            "layers": [{"id": "bg", "type": "code", "draw": "grid",
+                        "rect": [0, 0, 1080, 1920], "z": 0}],
+            "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                       "lo": 0.0001, "hi": 0.15}],
+        }
+
+    def test_00_ordinary_ids_are_accepted(self):
+        for sid in ("shot-01", "real-h3-test", "a.b_c", "X9"):
+            with self.subTest(sid=sid):
+                self.assertEqual(validate(self._spec(sid)), [])
+
+    def test_01_traversal_ids_are_rejected(self):
+        for sid in ("../escape", "a/b", "..", "/abs", "with space"):
+            with self.subTest(sid=sid):
+                errs = validate(self._spec(sid))
+                self.assertTrue(any("id must be" in e for e in errs),
+                                f"{sid!r} was accepted: {errs}")
+
+    def test_02_the_message_explains_why(self):
+        errs = validate(self._spec("../escape"))
+        self.assertTrue(any("build/" in e and "public/" in e for e in errs), errs)
+
+
+class TestVibeValidation(unittest.TestCase):
+    """`vibe: false` opts out of the baked ambience. The renderer compares it
+    strictly against false, so a non-boolean would run the opposite of what
+    the author wrote — the same class of bug as `plate`."""
+
+    def _spec(self, vibe):
+        return {
+            "id": "vibe-test",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 60,
+            "layers": [{"id": "bg", "type": "code", "draw": "grid",
+                        "rect": [0, 0, 1080, 1920], "z": 0}],
+            "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                       "lo": 0.0001, "hi": 0.15}],
+            "vibe": vibe,
+        }
+
+    def test_00_booleans_are_accepted(self):
+        for vibe in (True, False):
+            with self.subTest(vibe=vibe):
+                self.assertEqual(validate(self._spec(vibe)), [])
+
+    def test_01_non_booleans_are_rejected(self):
+        for vibe in ("no", "false", 0, 1, []):
+            with self.subTest(vibe=vibe):
+                errs = validate(self._spec(vibe))
+                self.assertTrue(any("vibe must be" in e for e in errs),
+                                f"vibe={vibe!r} was accepted: {errs}")
+
+    def test_02_an_absent_vibe_is_accepted(self):
+        spec = self._spec(True)
+        del spec["vibe"]
+        self.assertEqual(validate(spec), [])

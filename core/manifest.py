@@ -48,6 +48,11 @@ class _ledger_lock:
 
 def _write_atomic(m):
     """Write the ledger via a temp file + rename: readers see old or new, never a partial document."""
+    # POSTER_MANIFEST may point anywhere; make sure its directory exists so a
+    # fresh ledger path does not fail on the first write.
+    parent = os.path.dirname(PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp = PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(m, f, indent=2, sort_keys=True)
