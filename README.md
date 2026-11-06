@@ -99,6 +99,11 @@ S5 splits evidence from verdict: the pipeline never claims a shot *looks* right 
 - `ffmpeg` (version >= 5.0 recommended, with `x264`, `freezedetect`)
 - `python3` (version >= 3.10, standard library only)
 - `node` (version >= 18.0) and `npm` (run `npm install` for Remotion dependencies)
+- `mcode-tools` — the CLI the native generation backends are driven through
+  (image: `connector__matrix__generate_image`; video:
+  `connector__matrix__submit_video_generation`). Without it the pipeline can
+  still run end to end on assets you register yourself — see
+  [Native Generation Backends](#native-generation-backends).
 
 ### 2. Verify and Test
 ```bash
@@ -114,6 +119,12 @@ python3 pipeline.py init-shot shot-02
 
 ### 4. Run Pipeline
 ```bash
+# Rehearse the whole pipeline for free first: --fixture writes deterministic
+# placeholder assets instead of calling a (billed) model. The placeholders
+# are registered in the ledger, so a later real run reuses them — pass
+# --force to S1 when you want the generated asset instead.
+python3 pipeline.py run --spec spec/shot-01.poster.json --fixture
+
 # Full execution (validate -> S1 -> S2 -> S3 -> S4 -> S5)
 make run
 # or

@@ -40,6 +40,32 @@ CALL_TIMEOUT = 180
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
+# The native backends are driven through the `mcode-tools` CLI. A missing CLI
+# is the most common first-run failure, and the raw errno ("No such file or
+# directory: 'mcode-tools'") tells the newcomer nothing — so the failure says
+# what the CLI is, how to rehearse the whole pipeline for free, and how to
+# substitute the transport.
+CONNECTOR_MISSING_HELP = (
+    "the connector CLI `mcode-tools` is not on PATH — the native generation "
+    "backends (image / video) are driven through it.\n"
+    "  * install it (it ships with the MCode runtime), or\n"
+    "  * rehearse the whole pipeline for free: pass `--fixture` to S1 — it "
+    "writes deterministic placeholder assets instead of calling a model, or\n"
+    "  * substitute the transport and register the asset by hand: see the "
+    "Skill's 'Asset Transport' section (HF Spaces, public-domain sources; "
+    "register with source= and credit=)."
+)
+
+
+def _run_connector(cmd, timeout=CALL_TIMEOUT):
+    """Run one `mcode-tools` call. A missing CLI must say what to do next."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as ex:
+        raise RuntimeError(
+            f"mcode-tools not found: {ex}\n{CONNECTOR_MISSING_HELP}") from ex
+
+
 # canvas ratio -> generator aspect_ratio. The generator offers a fixed set;
 # anything else falls back to the closest match rather than distorting.
 ASPECTS = {
@@ -137,7 +163,7 @@ def upload_temp_url(file_path):
     frozen source asset, then hand the returned temp_url to the backend."""
     cmd = ["mcode-tools", "upload-temp-url", str(file_path)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+        proc = _run_connector(cmd)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"upload of {file_path} timed out after {CALL_TIMEOUT}s")
     if proc.returncode != 0:
@@ -175,7 +201,7 @@ def call_generate_image(prompt, asset_name, aspect_ratio="16:9", resolution="2K"
     print(f"Calling connector__matrix__generate_image with prompt:\n  {prompt}")
     cmd = ["mcode-tools", "connector", "call", "connector__matrix__generate_image", "--args-file", gen_file]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+        proc = _run_connector(cmd)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"image generation timed out after {CALL_TIMEOUT}s — the backend did "
@@ -206,7 +232,7 @@ def fetch_asset_url(node_id, attempts=3):
     last = ""
     for i in range(attempts):
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+            proc = _run_connector(cmd)
         except subprocess.TimeoutExpired:
             last = f"timed out after {CALL_TIMEOUT}s"
             continue
@@ -294,7 +320,7 @@ def _connector_call(tool, payload, timeout=CALL_TIMEOUT, attempts=3):
     last = ""
     for i in range(attempts):
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            proc = _run_connector(cmd, timeout=timeout)
         except subprocess.TimeoutExpired:
             last = f"timed out after {timeout}s"
             proc = None
@@ -472,8 +498,20 @@ def main():
             rel = f"assets/{asset}.png"
             target_path = os.path.join(ROOT, rel)
 
-        if not args.force and manifest.verified("assets", asset):
-            print(f"reuse {asset} (frozen in manifest, sha256 verified)")
+        row = manifest.verified("assets", asset)
+        if not args.force and row:
+            if row.get("source") == "fixture":
+                # The ledger is authoritative, so a row written by a --fixture
+                # rehearsal satisfies the request and the run would ship the
+                # placeholder as if it were generated content. Say so — and say
+                # how to get the real asset. (No silent regeneration: that
+                # would spend credits on a run that did not ask for them.)
+                print(f"reuse {asset} — PLACEHOLDER (a --fixture asset — from a "
+                      f"rehearsal or a shipped placeholder — not a generated "
+                      f"one; this run ships the placeholder)")
+                print(f"  pass --force to S1 to generate {asset} for real")
+            else:
+                print(f"reuse {asset} (frozen in manifest, sha256 verified)")
             continue
 
         if args.fixture:

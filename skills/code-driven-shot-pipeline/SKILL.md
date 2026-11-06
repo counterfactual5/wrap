@@ -192,11 +192,18 @@ an `audio` block — so a clip-owned soundtrack is measured too.
 
 ```bash
 python3 pipeline.py init-shot shot-02                      # schema skeleton + design hints (no layout)
+python3 pipeline.py run --spec spec/my-shot.poster.json --fixture   # free rehearsal: placeholder assets, no model call
 python3 pipeline.py run --spec spec/my-shot.poster.json    # S1->S5 (visual verdict pending)
 python3 pipeline.py judge --spec spec/my-shot.poster.json --verdict pass --notes "..."   # close S5
 python3 pipeline.py concat --timeline spec/my-timeline.json --output build/full.mp4      # + full-video gates
 python3 pipeline.py test                                   # regression suite
 ```
+
+`--fixture` writes deterministic placeholder assets instead of calling a
+(billed) model — rehearse the whole pipeline for free before spending. The
+placeholders are registered in the ledger, so a later real run reuses them; S1
+says so when it does, and `--force` makes it generate the real asset instead.
+A placeholder is not a deliverable — never ship one.
 
 ### Using a generated video clip
 
