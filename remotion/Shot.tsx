@@ -318,16 +318,31 @@ const CodeLayerComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
     return <CaptionsComp layer={layer} />;
   }
 
-  // bar
-  const pan = motion?.pan ?? [rect[0], rect[0]];
-  const x = interpolate(frame, [0, durationInFrames - 1], [pan[0], pan[1]]);
-  return (
-    <div style={{position: 'absolute', left: 0, top: 0, width: '100%', height: '100%'}}>
-      <div style={{position: 'absolute', left: x, top: rect[1]}}>
-        <Bar color={color ?? '#E03A3A'} width={rect[2]} height={rect[3]} />
+  // bar. The chain above names every draw it handles; bar gets its own
+  // branch so that the contract's draw list and the renderer's branches
+  // line up one to one — a draw that only the fallback can draw would
+  // satisfy "the contract accepts a draw the renderer can draw" while
+  // nothing in the renderer actually handles it.
+  const renderBar = () => {
+    const pan = motion?.pan ?? [rect[0], rect[0]];
+    const x = interpolate(frame, [0, durationInFrames - 1], [pan[0], pan[1]]);
+    return (
+      <div style={{position: 'absolute', left: 0, top: 0, width: '100%', height: '100%'}}>
+        <div style={{position: 'absolute', left: x, top: rect[1]}}>
+          <Bar color={color ?? '#E03A3A'} width={rect[2]} height={rect[3]} />
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
+
+  if (layer.draw === 'bar') {
+    return renderBar();
+  }
+
+  // Fallback: a draw the chain does not name is still drawn as a bar, so
+  // a typo shows something instead of nothing. (It must never be the only
+  // implementation of a draw the contract names.)
+  return renderBar();
 };
 
 export const Shot: React.FC<{

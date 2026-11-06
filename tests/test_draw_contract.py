@@ -19,6 +19,14 @@ sys.path.insert(0, ROOT)
 
 from core import metrics
 from core.schema import DRAWS
+from tests.contract_agreement import (
+    classify_missing,
+    missing_draws,
+    parser_fresh_or_fail,
+    renderer_dispatch_names,
+    renderer_draws,
+    renderer_fallback_draws,
+)
 
 # grid and dots are backgrounds: S2 prepares them as PNGs and S3 composites
 # them. Every other draw is a Remotion component rendered in S3.
@@ -144,10 +152,64 @@ class TestDrawContract(unittest.TestCase):
 
     def test_01_the_contract_and_the_tests_agree(self):
         """A draw added to the contract without a rendering path must fail
-        here, not in someone's finished episode."""
-        for draw in DRAWS:
-            with self.subTest(draw=draw):
-                self.assertIn(draw, set(DRAWS))
+        here, not in someone's finished episode.
+
+        Two directions, both machine-checked:
+          * the contract must not accept a draw the renderer never draws —
+            the renderer side is parsed from the renderer's own source, so
+            it cannot drift away from the renderer the way a copied list
+            would;
+          * every component draw must be exercised by the render test
+            above.
+
+        If this check complains that a draw has no rendering path, the fix
+        belongs in the renderer (or in the parser, tests/contract_agreement.py)
+        — never by removing the draw from the contract.
+        """
+        # The canary first: if the parser no longer sees the renderer the
+        # way it used to, the checks below would narrow their own idea of
+        # the renderer — and a sub-set check cannot complain about that.
+        # The message comes from one place, so a stale parser always says
+        # the same thing: fix the parser, not the contract.
+        self.assertTrue(parser_fresh_or_fail(),
+                        "the parser went stale — fix "
+                        "tests/contract_agreement.py, not the contract")
+        # The fallback is not an implementation: a draw that only the
+        # fallback can draw is not handled by the renderer at all.
+        fallback_only = ((set(DRAWS) & renderer_fallback_draws())
+                         - renderer_draws())
+        self.assertEqual(
+            fallback_only, set(),
+            f"the contract names draws that only the chain's fallback draws: "
+            f"{sorted(fallback_only)} — give them their own branch in the "
+            f"renderer (rendering exactly the same thing); do not remove the "
+            f"draw from the contract")
+        # The out-of-bounds verdict keeps its old meaning: the renderer
+        # cannot draw this draw at all — not even by falling back to
+        # something else. (The assertion above is the sharper one: the
+        # contract names a draw that only the fallback could draw.)
+        out_of_bounds, parser_drift = classify_missing(
+            set(DRAWS), renderer_draws() | renderer_fallback_draws(),
+            renderer_dispatch_names())
+        # The classification splits the raw difference the cross-layer check
+        # reports: missing_draws is the whole set, the two parts say WHY.
+        self.assertEqual(
+            missing_draws(set(DRAWS), renderer_draws()),
+            out_of_bounds | parser_drift)
+        self.assertEqual(
+            out_of_bounds, set(),
+            f"the contract accepts draws the renderer never draws: "
+            f"{sorted(out_of_bounds)}"
+            + ("  (if the renderer recently changed how it dispatches on "
+               "draw, fix the parser in tests/contract_agreement.py first — "
+               "the contract must not shrink to make a check green)"
+               if out_of_bounds else ""))
+        self.assertEqual(
+            parser_drift, set(),
+            f"the renderer dispatches on these draws but the parser did not "
+            f"catch a branch for them — the renderer changed how it "
+            f"dispatches; fix tests/contract_agreement.py, not the contract: "
+            f"{sorted(parser_drift)}")
         # Every component draw must be exercised by the test above.
         self.assertTrue(set(COMPONENT_DRAWS).issubset(set(DRAWS)))
 
