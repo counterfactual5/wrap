@@ -98,6 +98,17 @@ via `@remotion/three` — true 3D scenes, frame-driven for determinism.)
    talk alone is never completed state, only verified `build/` artifacts count.
 6. **Honest gating** — deterministic gates say "not broken"; the S5 judge says
    "looks right and says something". Neither substitutes for the other.
+7. **The renderer may not lead the contract** — every draw the renderer has an
+   explicit branch for must be in the contract's `DRAWS`. The safe direction
+   (the contract may not name a draw the renderer cannot draw) is checked by
+   `tests/test_draw_contract.py`; the reverse is checked by
+   `tests/test_contract_weakening.py`, because narrowing the contract
+   otherwise shrinks both sides together and stays green — measured: removing
+   one entry from `DRAWS` and touching nothing else left `make verify` green.
+   Two gaps that check does not cover, said out loud: a draw removed from
+   BOTH the contract and the renderer stays green, and the renderer side is
+   read from the source, so a branch that is present but unreachable still
+   counts as implemented.
 
 ## The 5 Stages + Judge Loop
 

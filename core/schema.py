@@ -23,6 +23,16 @@ VIDEO_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
 # spec using it drew nothing — it is not in the enum.
 HUD_TYPES = {"badge", "telemetry", "equalizer", "progress"}
 CARD_TYPES = {"capsule", "formula", "quote"}
+# The draws an author may write in a spec.
+#
+# The renderer may not lead the contract: a draw the renderer draws but the
+# contract does not accept means the contract was narrowed — and narrowing
+# it is invisible: every check that iterates FROM this list shrinks with it
+# (measured: removing one entry left the whole suite green), so the
+# capability disappears without a word. `tests/test_contract_weakening.py`
+# guards that direction. Fix a narrowing by adding the draw (the renderer
+# already draws it) or by removing the branch from the renderer; never by
+# shrinking this list without saying so.
 DRAWS = {
     "grid", "bar", "dots", "geodesic", "ripples",
     "trampoline", "gravity-well", "light-deflection", "spacetime-waves",

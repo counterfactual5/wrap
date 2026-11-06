@@ -30,6 +30,11 @@ Scope — what is machine-checked and what is not:
 
   * CHECKED: the draw-NAME axis. The contract must not accept a draw the
     renderer has no path for.
+  * CHECKED (the other direction, in `tests/test_contract_weakening.py`):
+    the renderer must not draw a draw the contract does not accept. This file
+    owns the parser both directions use (`renderer_draws`, `contract_draws`);
+    the second direction's check lives next door because it is a separate
+    module with its own counter-proof.
   * NOT CHECKED: the capability axis — which motion channels each layer kind
     gets (the per-draw table of `motion.zoom` support lives in
     `core/schema.py` and is read by a human; the tests here pin the
@@ -226,6 +231,33 @@ def contract_draws():
 def missing_draws(accepted, implemented):
     """The accepted names the implementation has no path for."""
     return set(accepted) - set(implemented)
+
+
+def contract_leads_renderer():
+    """The draws the renderer has a branch for but the contract does not accept.
+
+    The other direction of `missing_draws`, and the one that catches a QUIET
+    narrowing of the contract: delete an entry from `core.schema.DRAWS` and
+    both sides shrink together — the cross-layer check and the documentation
+    contract test both iterate FROM the contract, so they see a smaller
+    contract and stay green. Measured: with one draw removed from DRAWS and
+    nothing else touched, the full suite still passed. The capability is gone
+    and nobody said so; the author's spec is refused with "draw must be one
+    of [...]" and no hint that the draw existed yesterday.
+
+    Today this set is empty — the renderer has an explicit branch for exactly
+    the draws the contract names — so the invariant costs nothing and needs
+    no exemption list. An exemption list would be an escape hatch with zero
+    coverage, and it would open the very back door this closes: shrink the
+    contract and record the difference as "exempt", and everything is green
+    again.
+
+    Both sides are read live: the renderer side from the renderer's own
+    source, the contract side from `core.schema.DRAWS` at call time. Neither
+    is copied here — a copy is a second implementation, and it drifts
+    exactly when the first one changes.
+    """
+    return set(renderer_draws()) - set(contract_draws())
 
 
 def parser_stale(src=None):
