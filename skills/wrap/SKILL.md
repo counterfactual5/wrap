@@ -1,5 +1,5 @@
 ---
-name: code-driven-shot-pipeline
+name: wrap
 description: >-
   Design, synthesize, and verify code-driven short-video knowledge shots.
   5-stage deterministic build (Generate, Prepare, Compose, Gate, Inspect) with

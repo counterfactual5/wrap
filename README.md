@@ -215,7 +215,7 @@ repo) that the engine renders. Point the pipeline at a project with
 
 ```bash
 cd /path/to/my-project          # contains spec/, assets/, manifest.json
-POSTER_ROOT=$PWD python3 /path/to/poster-pipeline/pipeline.py run --spec spec/my-shot.poster.json
+POSTER_ROOT=$PWD python3 /path/to/wrap/pipeline.py run --spec spec/my-shot.poster.json
 ```
 
 ```
@@ -226,7 +226,7 @@ core/                  Shared runtime: schema (spec contract), manifest (frozen-
                        draw / png (procedural layers), rig (sprite rigging & IK)
 remotion/              TypeScript renderer (React) — the S3 render engine
 tests/                 Regression suite (make verify); fixtures live in tests/fixtures/
-skills/                The packaged Agent Skill (skills/code-driven-shot-pipeline/)
+skills/                The packaged Agent Skill (skills/wrap/)
 ```
 
 A project directory holds `spec/` (shot specs, styles, timelines), `assets/`
@@ -244,5 +244,5 @@ python3 stages/03_compose.py --spec spec/my-shot.poster.json
 ## Reusable Agent Skill
 
 This pipeline is packaged as a reusable Agent Skill located at:
-- Repository source: `skills/code-driven-shot-pipeline/`
-- Installed agent skill: `/Users/kelen/.agents/skills/code-driven-shot-pipeline/`
+- Repository source: `skills/wrap/`
+- Installed agent skill: `/Users/kelen/.agents/skills/wrap/`

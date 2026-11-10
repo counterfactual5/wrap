@@ -36,7 +36,7 @@ _spec.loader.exec_module(s1)
 from core import manifest  # noqa: E402
 
 README = os.path.join(ROOT, "README.md")
-SKILL = os.path.join(ROOT, "skills", "code-driven-shot-pipeline", "SKILL.md")
+SKILL = os.path.join(ROOT, "skills", "wrap", "SKILL.md")
 PROBE_DIR = os.path.join(ROOT, ".tmp", "first-run-probe")
 
 

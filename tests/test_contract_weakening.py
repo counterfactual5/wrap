@@ -113,7 +113,7 @@ class TestPolicyIsDocumented(unittest.TestCase):
     """
 
     SCHEMA = os.path.join(ROOT, "core", "schema.py")
-    SKILL = os.path.join(ROOT, "skills", "code-driven-shot-pipeline",
+    SKILL = os.path.join(ROOT, "skills", "wrap",
                          "SKILL.md")
 
     def _text(self, path):

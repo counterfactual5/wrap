@@ -20,7 +20,7 @@ if sys_path not in sys.path:
 
 from core.schema import DRAWS  # noqa: E402
 
-SKILL = os.path.join(ROOT, "skills", "code-driven-shot-pipeline", "SKILL.md")
+SKILL = os.path.join(ROOT, "skills", "wrap", "SKILL.md")
 
 
 def _skill_text():
