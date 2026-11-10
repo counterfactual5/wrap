@@ -1,0 +1,18 @@
+{
+  "assets": {
+    "city-silhouette": {
+      "bytes": 54873,
+      "path": "tests/fixtures/assets/city-silhouette.png",
+      "sha256": "7da4e603b9931684bfeb5356964a6f938c97eaf3baa94e82f219c417f303806e",
+      "source": "fixture"
+    },
+    "shot-02-subject": {
+      "bytes": 54873,
+      "path": "tests/fixtures/assets/shot-02-subject.png",
+      "sha256": "7da4e603b9931684bfeb5356964a6f938c97eaf3baa94e82f219c417f303806e",
+      "source": "fixture"
+    }
+  },
+  "prepared": {},
+  "video": {}
+}
