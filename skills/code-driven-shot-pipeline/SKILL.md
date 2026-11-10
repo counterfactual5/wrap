@@ -28,13 +28,11 @@ Design each shot's composition from its narrative role before writing layers.
 Three verified composition languages (read them as specs, not as templates to copy):
 - **Full-bleed poster (hook)** — `plate: false` AI image covering the whole canvas,
   oversized title in the lower third via `anim` keyframes, a `path` accent stroke,
-  `field` particles. See `skills/code-driven-shot-pipeline/references/reference_hook_poster.json`.
+  `field` particles.
 - **Pure diagram (development)** — no AI layer at all; dot-grid ground, a physics
   diagram draw, a formula card entering exactly when the narration states it.
-  See `skills/code-driven-shot-pipeline/references/reference_development_diagram.json`.
 - **Full-bleed documentary (resolution)** — real public-domain footage/stills,
   slow zoom-out reveal, orbit `path` lines, restrained captions.
-  See `skills/code-driven-shot-pipeline/references/reference_resolution_documentary.json`.
 
 Vary between them *within* an episode. If two shots in one timeline share the same
 skeleton, that is a bug in the authoring, not a style.
@@ -202,7 +200,7 @@ an `audio` block — so a clip-owned soundtrack is measured too.
 ## Quick Start
 
 ```bash
-python3 pipeline.py init-shot shot-02                      # schema skeleton + design hints (no layout)
+python3 pipeline.py init-shot my-shot                      # schema skeleton + design hints (no layout)
 python3 pipeline.py run --spec spec/my-shot.poster.json --fixture   # free rehearsal: placeholder assets, no model call
 python3 pipeline.py run --spec spec/my-shot.poster.json    # S1->S5 (visual verdict pending)
 python3 pipeline.py judge --spec spec/my-shot.poster.json --verdict pass --notes "..."   # close S5
@@ -275,7 +273,7 @@ An `ai` layer can derive from an already-frozen asset:
   "id": "hero-plate",
   "type": "ai",
   "asset": "snowy-skyline",
-  "input_asset": "city-silhouette",
+  "input_asset": "my-base-asset",
   "prompt": "a snowy version of the same skyline, cold blue light",
   "keyColor": "#ffffff",
   "blend": "multiply",

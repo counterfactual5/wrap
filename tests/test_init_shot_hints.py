@@ -60,8 +60,8 @@ class TestInitShotHints(unittest.TestCase):
         hints = self._hints("hints-kept")
         for phrase in ("no layout by design",
                        "ROLL THE DICE",
-                       "Verified examples",
-                       "reference_hook_poster.json"):
+                       "Three composition languages",
+                       "articulated skeletal rig"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, hints)
 

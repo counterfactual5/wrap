@@ -20,7 +20,7 @@ from tests.helpers import ensure_rendered
 class TestEvolveFeatures(unittest.TestCase):
     def test_01_timeline_validation(self):
         # 1. Valid string shots (backward compatibility)
-        tl_str = {"id": "test-seq", "shots": ["spec/shot-01.poster.json"]}
+        tl_str = {"id": "test-seq", "shots": ["tests/fixtures/shot-01.poster.json"]}
         self.assertEqual(len(validate_timeline(tl_str)), 0)
 
         # 2. Valid structured shots with beat and reason
@@ -28,12 +28,12 @@ class TestEvolveFeatures(unittest.TestCase):
             "id": "test-narrative",
             "shots": [
                 {
-                    "spec": "spec/shot-01.poster.json",
+                    "spec": "tests/fixtures/shot-01.poster.json",
                     "beat": "hook",
                     "reason": "Dramatic visual introduction"
                 },
                 {
-                    "spec": "spec/shot-02.poster.json",
+                    "spec": "tests/fixtures/shot-02.poster.json",
                     "beat": "climax",
                     "reason": "Core physical inversion"
                 }
@@ -44,7 +44,7 @@ class TestEvolveFeatures(unittest.TestCase):
         # 3. Invalid beat should fail
         tl_bad_beat = {
             "id": "bad-beat",
-            "shots": [{"spec": "spec/shot-01.poster.json", "beat": "invalid_beat", "reason": "test"}]
+            "shots": [{"spec": "tests/fixtures/shot-01.poster.json", "beat": "invalid_beat", "reason": "test"}]
         }
         errs = validate_timeline(tl_bad_beat)
         self.assertGreater(len(errs), 0)
@@ -91,9 +91,9 @@ class TestEvolveFeatures(unittest.TestCase):
         # S5 inspects a rendered shot and reads the gates S4 wrote.
         # `make clean` removes build/, so the shot is rendered here rather
         # than relying on a leftover artifact.
-        ensure_rendered("spec/shot-01.poster.json", "shot-01", through_gate=True)
+        ensure_rendered("tests/fixtures/shot-01.poster.json", "shot-01", through_gate=True)
         res = subprocess.run([
-            sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json"
+            sys.executable, "stages/05_inspect.py", "--spec", "tests/fixtures/shot-01.poster.json"
         ], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"05_inspect.py failed:\n{res.stderr}")
 
@@ -122,7 +122,7 @@ class TestEvolveFeatures(unittest.TestCase):
 
         # Recording a fail verdict must flip the gate entry and exit non-zero
         res = subprocess.run([
-            sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json",
+            sys.executable, "stages/05_inspect.py", "--spec", "tests/fixtures/shot-01.poster.json",
             "--record", "fail", "--notes", "unit-test fail recording"
         ], cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(res.returncode, 0, "record fail must exit non-zero")
@@ -138,7 +138,7 @@ class TestEvolveFeatures(unittest.TestCase):
 
         # Recording a pass verdict exits zero and flips the entry back
         res = subprocess.run([
-            sys.executable, "stages/05_inspect.py", "--spec", "spec/shot-01.poster.json",
+            sys.executable, "stages/05_inspect.py", "--spec", "tests/fixtures/shot-01.poster.json",
             "--record", "pass", "--notes", "unit-test pass recording"
         ], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)

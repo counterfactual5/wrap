@@ -85,14 +85,14 @@ def _video_source_info(path):
 
 def main():
     parser = argparse.ArgumentParser(description="S2: Prepare layers and verify key purity")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
     shot_id = spec.get("id", "shot-01")
     W, H = spec["canvas"]["w"], spec["canvas"]["h"]
     FPS = spec.get("fps", 30)
-    style_path = os.path.join(ROOT, spec.get("style", "spec/style.json"))
+    style_path = os.path.join(ROOT, spec.get("style", "tests/fixtures/style.json"))
     palette = {}
     if os.path.exists(style_path):
         with open(style_path) as f:
@@ -209,32 +209,31 @@ def main():
                   f"{' (with native audio)' if keep_audio else ''}{note}")
             continue
 
-        src_row = manifest.verified("assets", L["asset"])
-        if not src_row:
-            print(f"{L['asset']}: no verified asset in manifest (run S1)", file=sys.stderr)
-            sys.exit(2)
-        src = os.path.join(ROOT, src_row["path"])
-        sw, sh = read_size(src)
-
-        g = gate_of(spec, "edge_key_purity")
-        if g is not None:
-            purity = edge_key_purity(
-                read_rgb(src, sw, sh), sw, sh, hex_rgb(L["keyColor"]),
-                ring=g.get("ring", 8), tol=g.get("tol", 12)
-            )
-            lo = g.get("lo", 0.98)
-            verdict = "PASS" if purity >= lo else "BLOCKED"
-            print(f"{L['asset']}: edge_key_purity={purity:.4f} (>= {lo}) {verdict}")
-            if purity < lo:
-                blocked = True
-                continue
-        else:
-            purity = 1.0
+        ai_assets = [L["asset"]]
+        for p in L.get("poses") or []:
+            pa = p.get("asset")
+            if pa and pa not in ai_assets:
+                ai_assets.append(pa)
 
         zmax = max((L.get("motion") or {}).get("zoom", [1, 1]))
         lrect = L.get("rect", [0, 0, W, H])
         rw, rh = lrect[2], lrect[3]
-        if rw == W and rh == H:
+        cutout = bool(L.get("cutout"))
+        if cutout:
+            # Foreground cutout sprite: key out keyColor to true RGBA transparency
+            # and scale with decrease + transparent pad so limbs/weapons are never cropped.
+            pw = math.ceil(rw * zmax * 1.04 / 2) * 2
+            ph = math.ceil(rh * zmax * 1.04 / 2) * 2
+            key_hex = L.get("keyColor", "#000000").lstrip("#")
+            sim = L.get("cutoutSimilarity", 0.14)
+            blend = L.get("cutoutBlend", 0.06)
+            vf = (
+                f"format=rgba,"
+                f"colorkey=0x{key_hex}:{sim}:{blend},"
+                f"scale={pw}:{ph}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
+            )
+        elif rw == W and rh == H:
             pw = math.ceil(W * zmax * 1.04 / 2) * 2          # headroom so zoom never exposes an edge
             ph = round(pw * H / W / 2) * 2
             vf = f"scale={pw}:{ph}:flags=lanczos,format=rgb24"
@@ -244,14 +243,45 @@ def main():
             ph = math.ceil(rh * zmax * 1.04 / 2) * 2
             vf = f"scale={pw}:{ph}:force_original_aspect_ratio=increase:flags=lanczos,crop={pw}:{ph},format=rgb24"
 
-        rel = f"build/prepared/{shot_id}/{L['asset']}.png"
-        subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
-             os.path.join(ROOT, rel)],
-            check=True
+        is_opaque_backdrop = (
+            L.get("plate") is False
+            and L.get("blend") == "normal"
+            and not L.get("cutout")
         )
-        manifest.register("prepared", f"{shot_id}/{L['asset']}", rel, source="scaled", purity=purity, size=[pw, ph])
-        print(f"prepared {rel} {pw}x{ph}")
+
+        for asset_name in ai_assets:
+            src_row = manifest.verified("assets", asset_name)
+            if not src_row:
+                print(f"{asset_name}: no verified asset in manifest (run S1)", file=sys.stderr)
+                sys.exit(2)
+            src = os.path.join(ROOT, src_row["path"])
+            sw, sh = read_size(src)
+
+            g = gate_of(spec, "edge_key_purity")
+            if g is not None and not is_opaque_backdrop:
+                purity = edge_key_purity(
+                    read_rgb(src, sw, sh), sw, sh, hex_rgb(L["keyColor"]),
+                    ring=g.get("ring", 8), tol=g.get("tol", 12)
+                )
+                lo = g.get("lo", 0.98)
+                verdict = "PASS" if purity >= lo else "BLOCKED"
+                print(f"{asset_name}: edge_key_purity={purity:.4f} (>= {lo}) {verdict}")
+                if purity < lo:
+                    blocked = True
+                    continue
+            else:
+                purity = 1.0
+                if g is not None and is_opaque_backdrop:
+                    print(f"{asset_name}: full-bleed opaque backdrop (plate:false, blend:normal) — edge_key_purity exempt")
+
+            rel = f"build/prepared/{shot_id}/{asset_name}.png"
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
+                 os.path.join(ROOT, rel)],
+                check=True
+            )
+            manifest.register("prepared", f"{shot_id}/{asset_name}", rel, source="scaled", purity=purity, size=[pw, ph])
+            print(f"prepared {rel} {pw}x{ph}")
 
     return 1 if blocked else 0
 

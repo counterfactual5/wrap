@@ -1,6 +1,6 @@
 """S1: Generation stage.
 Contract:
-- Reads: spec/shot-01.poster.json, spec/style.json, manifest.json
+- Reads: tests/fixtures/shot-01.poster.json, tests/fixtures/style.json, manifest.json
 - Writes: assets/<asset>.png, manifest.json
 - Exit code: 0 = all assets ready and verified, 1 = generation/download failure.
 - Invariant: Generation is not re-entrant (no seed in API). If an asset is already verified in manifest.json,
@@ -438,6 +438,9 @@ def _write_video_fixture(target_path, seconds=2, fps=30, w=270, h=480,
     with_audio=True adds a steady tone, so a fixture can exercise the
     "the clip owns the audio" path (a native track that must survive S2,
     be mastered in S3 and be measured by S4)."""
+    parent = os.path.dirname(target_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-f", "lavfi", "-i", f"color=c=0x101830:s={w}x{h}:r={fps}",
@@ -467,13 +470,13 @@ def _write_video_fixture(target_path, seconds=2, fps=30, w=270, h=480,
 
 def main():
     parser = argparse.ArgumentParser(description="S1: Generate assets")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
     parser.add_argument("--force", action="store_true", help="Force re-generation even if manifest entry exists")
     parser.add_argument("--fixture", action="store_true", help="Use deterministic code fixture instead of API")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
-    style_path = os.path.join(ROOT, spec.get("style", "spec/style.json"))
+    style_path = os.path.join(ROOT, spec.get("style", "tests/fixtures/style.json"))
     style = {}
     if os.path.exists(style_path):
         with open(style_path) as f:
@@ -484,13 +487,84 @@ def main():
     resolution = style.get("resolution", "2K")
     shot_seconds = spec.get("durationInFrames", 0) / max(1, spec.get("fps", 30))
 
+    # Collect and topologically sort asset generation tasks
+    # (independent plates/torsos generate first; dependent kit limbs/weapons generate after with input_asset)
+    tasks = []
+    seen = set()
     for L in spec["layers"]:
         ltype = L.get("type")
         if ltype not in ("ai", "video"):
             continue
-        asset = L["asset"]
         is_video = ltype == "video"
 
+        extra_meta = {}
+        if L.get("joint") is not None:
+            extra_meta["joint"] = L["joint"]
+        if L.get("socket") is not None:
+            extra_meta["socket"] = L["socket"]
+        if L.get("partScale") is not None:
+            extra_meta["part_scale"] = L["partScale"]
+        if L.get("kit") is not None:
+            extra_meta["kit"] = L["kit"]
+            if L["kit"].get("parent_asset") and not L.get("input_asset"):
+                L["input_asset"] = L["kit"]["parent_asset"]
+
+        if L["asset"] not in seen:
+            seen.add(L["asset"])
+            tasks.append({
+                "asset": L["asset"],
+                "layer_prompt": L.get("prompt"),
+                "is_video": is_video,
+                "layer": L,
+                "input_asset": L.get("input_asset"),
+                "extra_meta": extra_meta,
+            })
+
+        if ltype == "ai":
+            for p in L.get("poses") or []:
+                pa = p.get("asset")
+                if pa and pa not in seen:
+                    seen.add(pa)
+                    tasks.append({
+                        "asset": pa,
+                        "layer_prompt": p.get("prompt") or L.get("prompt"),
+                        "is_video": False,
+                        "layer": L,
+                        "input_asset": p.get("input_asset") or L.get("input_asset"),
+                        "extra_meta": extra_meta,
+                    })
+
+    # Sort tasks so dependencies (input_asset) are generated before dependent assets
+    sorted_tasks = []
+    visited = set()
+    visiting = set()
+
+    def visit(t):
+        if t["asset"] in visited:
+            return
+        if t["asset"] in visiting:
+            sorted_tasks.append(t)
+            visited.add(t["asset"])
+            return
+        visiting.add(t["asset"])
+        dep = t.get("input_asset")
+        if dep:
+            dep_t = next((x for x in tasks if x["asset"] == dep), None)
+            if dep_t:
+                visit(dep_t)
+        visiting.remove(t["asset"])
+        visited.add(t["asset"])
+        sorted_tasks.append(t)
+
+    for t in tasks:
+        visit(t)
+
+    for task in sorted_tasks:
+        asset = task["asset"]
+        layer_prompt = task["layer_prompt"]
+        is_video = task["is_video"]
+        L = task["layer"]
+        extra_meta = task["extra_meta"]
         if is_video:
             rel = f"assets/{asset}.mp4"
             target_path = os.path.join(ROOT, rel)
@@ -501,11 +575,6 @@ def main():
         row = manifest.verified("assets", asset)
         if not args.force and row:
             if row.get("source") == "fixture":
-                # The ledger is authoritative, so a row written by a --fixture
-                # rehearsal satisfies the request and the run would ship the
-                # placeholder as if it were generated content. Say so — and say
-                # how to get the real asset. (No silent regeneration: that
-                # would spend credits on a run that did not ask for them.)
                 print(f"reuse {asset} — PLACEHOLDER (a --fixture asset — from a "
                       f"rehearsal or a shipped placeholder — not a generated "
                       f"one; this run ships the placeholder)")
@@ -516,18 +585,16 @@ def main():
 
         if args.fixture:
             if is_video:
-                # A tiny deterministic clip: the fixture path must not spend
-                # generation credits, so it builds a real (tiny) mp4 locally.
                 _write_video_fixture(target_path)
             else:
                 from core.draw import write_fixture
                 write_fixture(target_path)
-            row = manifest.register("assets", asset, rel, source="fixture")
+            row = manifest.register("assets", asset, rel, source="fixture", **extra_meta)
             print(f"Registered fixture {rel} sha256={row['sha256'][:12]}")
             continue
 
         if is_video:
-            prompt = build_prompt(style, L.get("prompt"))
+            prompt = build_prompt(style, layer_prompt)
             model = L.get("model", style.get("videoModel", "MiniMax-H3-Max"))
             duration = int(L.get("duration") or _clip_duration(shot_seconds, model))
             video_ratio = L.get("ratio") or aspect_ratio
@@ -543,14 +610,13 @@ def main():
                 "assets", asset, rel, source="ai-generated", task_id=task_id,
                 prompt=prompt, model=model, duration=duration,
                 ratio=video_ratio, resolution=video_res,
-                native_audio=VIDEO_MODELS.get(model, {}).get("audio", False))
+                native_audio=VIDEO_MODELS.get(model, {}).get("audio", False),
+                **extra_meta)
             print(f"Registered {rel} sha256={row['sha256'][:12]}")
             continue
 
         # Real generation via connector
-        prompt = build_prompt(style, L.get("prompt"))
-        # Image-to-image: the source must already be a frozen local asset —
-        # the backend can only reference a URL, so it is uploaded first.
+        prompt = build_prompt(style, layer_prompt)
         input_urls = None
         src_asset = L.get("input_asset")
         if src_asset:
@@ -565,17 +631,14 @@ def main():
         node_id = call_generate_image(prompt, asset, aspect_ratio=aspect_ratio,
                                       resolution=resolution, input_urls=input_urls)
         url = fetch_asset_url(node_id)
-        # Download to a sidecar first: the manifest may only ever record a
-        # file whose bytes really are what its extension claims.
         raw_path = os.path.join(ROOT, ".tmp", f"{asset}.download")
         download_file(url, raw_path)
         ensure_png(raw_path, target_path)
 
-        # Register in manifest — after the true-format file exists.
         row = manifest.register("assets", asset, rel, source="ai-generated",
                                 node_id=node_id, prompt=prompt,
                                 aspect_ratio=aspect_ratio, resolution=resolution,
-                                input_asset=src_asset)
+                                input_asset=src_asset, **extra_meta)
         print(f"Registered {rel} sha256={row['sha256'][:12]}")
 
     return 0

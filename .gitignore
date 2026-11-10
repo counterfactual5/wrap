@@ -1,7 +1,12 @@
 build/
 __pycache__/
+*.pyc
+.pytest_cache/
 node_modules
 .tmp/
 docs/.local/
 out/
 public/
+.DS_Store
+
+.video_agent/

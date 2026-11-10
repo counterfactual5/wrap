@@ -50,7 +50,7 @@ class TestPipeline(unittest.TestCase):
 
     def test_02_stages_run(self):
         # S1 (ensure assets verified, spec-aware)
-        res = subprocess.run([sys.executable, "stages/01_generate.py", "--spec", "spec/shot-01.poster.json"],
+        res = subprocess.run([sys.executable, "stages/01_generate.py", "--spec", "tests/fixtures/shot-01.poster.json"],
                              cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
@@ -123,7 +123,7 @@ class TestPipeline(unittest.TestCase):
 
     def test_06_style_palette_is_truth(self):
         """S2 must consume style.json palette: change accent -> grid paper changes."""
-        style_path = os.path.join(ROOT, "spec", "style.json")
+        style_path = os.path.join(ROOT, "tests", "fixtures", "style.json")
         with open(style_path) as f:
             original = f.read()
         try:

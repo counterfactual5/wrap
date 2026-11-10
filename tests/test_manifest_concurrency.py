@@ -32,7 +32,7 @@ sys.path.insert(0, {ROOT!r})
 from core import manifest
 for i in range({ROWS_PER_WORKER}):
     manifest.register("assets", "conc-test-%s-%d" % (sys.argv[1], i),
-                      "assets/city-silhouette.png", source="concurrency-probe")
+                      "tests/fixtures/assets/city-silhouette.png", source="concurrency-probe")
 '''
 
 

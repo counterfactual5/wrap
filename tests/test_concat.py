@@ -19,7 +19,7 @@ class TestConcat(unittest.TestCase):
         S3 refuses to render without the prepared rows, so a build contract
         that runs only S3+S4 leaves a fresh checkout dead on "prepared
         '<shot>/<layer>' not manifest-verified"."""
-        shot_spec = "spec/shot-01.poster.json"
+        shot_spec = "tests/fixtures/shot-01.poster.json"
         mp4 = os.path.join(ROOT, "build", "shot-01.mp4")
         frames = os.path.join(ROOT, "build", "frames", "shot-01")
         prepared = os.path.join(ROOT, "build", "prepared", "shot-01")
@@ -31,7 +31,7 @@ class TestConcat(unittest.TestCase):
             os.replace(mp4, backup)
         try:
             tl_path = os.path.join(ROOT, "build", "test_timeline.json")
-            out_mp4 = os.path.join(ROOT, "build", "full.mp4")
+            out_mp4 = os.path.join(ROOT, "build", "test_full_concat.mp4")
             os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
             with open(tl_path, "w") as f:
                 json.dump({"id": "full-sequence", "shots": [shot_spec]}, f, indent=2)
@@ -68,17 +68,17 @@ class TestConcat(unittest.TestCase):
 
         # 2. Test actual concat with a temporary timeline
         tl_path = os.path.join(ROOT, "build", "test_timeline.json")
-        out_mp4 = os.path.join(ROOT, "build", "full.mp4")
+        out_mp4 = os.path.join(ROOT, "build", "test_full_concat.mp4")
         os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
         with open(tl_path, "w") as f:
-            json.dump({"id": "full-sequence", "shots": ["spec/shot-01.poster.json"]}, f, indent=2)
+            json.dump({"id": "full-sequence", "shots": ["tests/fixtures/shot-01.poster.json"]}, f, indent=2)
 
         with preserve_manifest():
             try:
                 # The shot must be rendered before it can be assembled —
                 # `make clean` removes build/, and the dependency used to be
                 # implicit in a leftover artifact.
-                ensure_rendered("spec/shot-01.poster.json", "shot-01")
+                ensure_rendered("tests/fixtures/shot-01.poster.json", "shot-01")
 
                 res = subprocess.run(
                     [sys.executable, "pipeline.py", "concat", "--timeline", tl_path, "--output", out_mp4],

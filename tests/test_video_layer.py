@@ -199,7 +199,7 @@ class TestVideoEndToEnd(unittest.TestCase):
             "fps": 30,
             "durationInFrames": 60,
             "vibe": False,
-            "style": "spec/style-quantum.json",
+            "style": "tests/fixtures/style-quantum.json",
             "layers": [
                 {"id": "clip", "type": "video", "asset": "video-e2e-clip",
                  "rect": [0, 0, 1080, 1920], "z": 0, "plate": False},

@@ -1,10 +1,14 @@
 """Minimal PNG helpers (stdlib only): write RGB8, read IHDR size."""
+import os
 import struct
 import zlib
 
 
 def write_png(path, w, h, rgb):
     assert len(rgb) == w * h * 3
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3] for y in range(h))
 
     def chunk(tag, data):

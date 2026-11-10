@@ -96,7 +96,7 @@ def preserve_assets(*asset_names):
     passed"."""
     backups = {}
     for name in asset_names:
-        path = os.path.join(ROOT, "assets", name)
+        path = os.path.join(ROOT, "tests", "fixtures", "assets", name)
         if os.path.exists(path):
             backup = _backup_path(name)
             shutil.copyfile(path, backup)
@@ -105,7 +105,7 @@ def preserve_assets(*asset_names):
         yield
     finally:
         for name, backup in backups.items():
-            path = os.path.join(ROOT, "assets", name)
+            path = os.path.join(ROOT, "tests", "fixtures", "assets", name)
             try:
                 shutil.copyfile(backup, path)
             except OSError:

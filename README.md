@@ -114,7 +114,7 @@ python3 pipeline.py test
 
 ### 3. Initialize a New Shot
 ```bash
-python3 pipeline.py init-shot shot-02
+python3 pipeline.py init-shot my-shot
 ```
 
 ### 4. Run Pipeline
@@ -123,15 +123,15 @@ python3 pipeline.py init-shot shot-02
 # placeholder assets instead of calling a (billed) model. The placeholders
 # are registered in the ledger, so a later real run reuses them — pass
 # --force to S1 when you want the generated asset instead.
-python3 pipeline.py run --spec spec/shot-01.poster.json --fixture
+python3 pipeline.py run --spec spec/my-shot.poster.json --fixture
 
 # Full execution (validate -> S1 -> S2 -> S3 -> S4 -> S5)
 make run
 # or
-python3 pipeline.py run --spec spec/shot-01.poster.json
+python3 pipeline.py run --spec spec/my-shot.poster.json
 
 # Judge the contact sheet after review (closes the S5 loop)
-python3 pipeline.py judge --spec spec/shot-01.poster.json --verdict pass --notes "..."
+python3 pipeline.py judge --spec spec/my-shot.poster.json --verdict pass --notes "..."
 
 # Clean build artifacts
 make clean
@@ -184,7 +184,7 @@ An `ai` layer can derive from an already-frozen asset:
   "id": "hero-plate",
   "type": "ai",
   "asset": "snowy-skyline",
-  "input_asset": "city-silhouette",
+  "input_asset": "my-base-asset",
   "prompt": "a snowy version of the same skyline, cold blue light",
   "keyColor": "#ffffff",
   "blend": "multiply",
@@ -200,7 +200,7 @@ to the backend and freezes the derived image like any other asset. A layer's
 
 ### 5. Concatenate Shots via Timeline
 ```bash
-python3 pipeline.py concat --timeline spec/timeline.json --output build/full.mp4
+python3 pipeline.py concat --timeline spec/timeline.json --output build/my-film.mp4
 ```
 Concat also runs **full-video gates** on the assembled output (duration vs timeline, blackdetect, whole-track silence/loudness, A/V alignment, per-shot loudness jump ≤3 LU), written per timeline to `build/gates_full_{timeline}.json`; exit 1 on any red. Per-shot gates cannot see cross-shot seams — this is the layer that does.
 
@@ -208,22 +208,35 @@ Concat also runs **full-video gates** on the assembled output (duration vs timel
 
 ## Repository Layout
 
+This repository is the **engine** (the skill). It contains no shot specs or
+generated assets — those live in a **project** directory (e.g. an examples
+repo) that the engine renders. Point the pipeline at a project with
+`POSTER_ROOT`:
+
+```bash
+cd /path/to/my-project          # contains spec/, assets/, manifest.json
+POSTER_ROOT=$PWD python3 /path/to/poster-pipeline/pipeline.py run --spec spec/my-shot.poster.json
+```
+
 ```
 pipeline.py            Unified CLI: validate / generate / prepare / compose / gate / inspect / judge / run / concat / test
 stages/                One script per stage: 01_generate … 05_inspect
 core/                  Shared runtime: schema (spec contract), manifest (frozen-file ledger),
                        metrics (pixel QC), audio (TTS + mastering), render (frame & encoder fingerprints),
-                       draw / png (procedural layers)
+                       draw / png (procedural layers), rig (sprite rigging & IK)
 remotion/              TypeScript renderer (React) — the S3 render engine
-spec/                  Shot specs (*.poster.json), styles, timelines
-assets/                Frozen AI-generated images (sha256 in manifest.json)
-tests/                 Regression suite (make verify)
-scripts/               Post-production chains that sit above the pipeline (e.g. scripts/enhance/)
+tests/                 Regression suite (make verify); fixtures live in tests/fixtures/
+skills/                The packaged Agent Skill (skills/code-driven-shot-pipeline/)
 ```
+
+A project directory holds `spec/` (shot specs, styles, timelines), `assets/`
+(frozen AI-generated images, sha256 in `manifest.json`), `build/` (outputs),
+and optionally `remotion-custom.tsx` (project-specific custom components,
+aliased in as the `project-custom` module — see `remotion.config.ts`).
 
 Run a stage directly when debugging it:
 ```bash
-python3 stages/03_compose.py --spec spec/shot-01.poster.json
+python3 stages/03_compose.py --spec spec/my-shot.poster.json
 ```
 
 ---

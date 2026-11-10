@@ -26,7 +26,7 @@ FRAMES_ROOT = os.path.join(ROOT, "build", "frames")
 # `make clean` removes build/, so relying on a leftover artifact made the
 # suite fail for a reason unrelated to what it verifies.
 BOUND = "shot-01"
-BOUND_SPEC = "spec/shot-01.poster.json"
+BOUND_SPEC = "tests/fixtures/shot-01.poster.json"
 
 
 def gate(spec):
@@ -85,8 +85,8 @@ class TestGateBinding(unittest.TestCase):
         vacuously once that shot had been rendered by something else."""
         from core import manifest
         shot_id = "gate-unbound-shot"
-        spec_path = os.path.join(ROOT, "spec", f"{shot_id}.poster.json")
-        with open(os.path.join(ROOT, "spec", "shot-01.poster.json")) as f:
+        spec_path = os.path.join(ROOT, "tests", "fixtures", f"{shot_id}.poster.json")
+        with open(os.path.join(ROOT, "tests", "fixtures", "shot-01.poster.json")) as f:
             spec = json.load(f)
         spec["id"] = shot_id
         with open(spec_path, "w") as f:
@@ -131,7 +131,7 @@ class TestGateBinding(unittest.TestCase):
         if os.path.exists(gp):
             with open(gp, "rb") as f:
                 before = f.read()
-        res = gate(f"spec/{foreign}.poster.json")
+        res = gate(f"tests/fixtures/{foreign}.poster.json")
         self.assertNotEqual(res.returncode, 0,
                             f"S4 blessed {bound}'s frames for {foreign}'s spec")
         self.assertIn(foreign, res.stderr, f"stderr must name the shot: {res.stderr}")
@@ -153,7 +153,7 @@ class TestGateBinding(unittest.TestCase):
         if not os.path.isdir(frames_dir_for(bound)):
             self.skipTest(f"run S3 for {bound} first (per-shot frames missing)")
         with _ManifestState(bound):
-            res = gate(f"spec/{bound}.poster.json")
+            res = gate(f"tests/fixtures/{bound}.poster.json")
             self.assertEqual(res.returncode, 0, res.stderr)
 
     def test_gate_refuses_replaced_frames(self):
@@ -177,7 +177,7 @@ class TestGateBinding(unittest.TestCase):
             rgb = bytearray(metrics.read_rgb(first, w, h))
             rgb[0:3] = bytes([rgb[0] ^ 0xFF, rgb[1], rgb[2]])
             png.write_png(first, w, h, bytes(rgb))
-            res = gate(f"spec/{bound}.poster.json")
+            res = gate(f"tests/fixtures/{bound}.poster.json")
             self.assertNotEqual(res.returncode, 0,
                                 "S4 blessed replaced frames: fingerprint not checked")
             self.assertIn("fingerprint", res.stderr,
@@ -204,7 +204,7 @@ class TestGateBinding(unittest.TestCase):
             m["video"][bound] = row
             with open(MANIFEST, "w") as f:
                 json.dump(m, f, indent=2, sort_keys=True)
-            res = gate(f"spec/{bound}.poster.json")
+            res = gate(f"tests/fixtures/{bound}.poster.json")
             self.assertNotEqual(res.returncode, 0,
                                 "S4 blessed frames with no registered fingerprint")
             self.assertIn("frames_sha", res.stderr,

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from core import manifest
 from core.render import encoder_fingerprint, frames_fingerprint
-from core.schema import ROOT, load_spec
+from core.schema import ENGINE_ROOT, ROOT, load_spec
 
 
 def build_props(spec):
@@ -38,7 +38,7 @@ def build_props(spec):
     staged into public/prepared/{shot}/ and referenced through Remotion's
     staticFile(), which resolves against the bundle's public folder."""
     shot_id = spec.get("id", "shot-01")
-    props = {"spec": spec, "prepared": {}, "preparedVideos": {}}
+    props = {"spec": spec, "prepared": {}, "preparedVideos": {}, "preparedPoses": {}}
     for L in spec["layers"]:
         if L["type"] == "ai":
             key = f"{shot_id}/{L['asset']}"
@@ -58,7 +58,7 @@ def build_props(spec):
             public_rel = f"prepared/{shot_id}/{L['asset']}.mp4"
             # public_rel is relative to public/ — the renderer reads
             # staticFile("prepared/<shot>/<asset>.mp4").
-            public_root = os.path.abspath(os.path.join(ROOT, "public"))
+            public_root = os.path.abspath(os.path.join(ENGINE_ROOT, "public"))
             public_path = os.path.join(public_root, public_rel)
             # The staged path must stay inside public/prepared/ — that is the
             # only part the renderer reads. A shot id or asset name with ../
@@ -76,10 +76,74 @@ def build_props(spec):
             continue
         with open(os.path.join(ROOT, row["path"]), "rb") as f:
             props["prepared"][L["id"]] = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        if L["type"] == "ai" and L.get("poses"):
+            pose_map = {}
+            for p in L["poses"]:
+                pa = p.get("asset")
+                if not pa or pa in pose_map:
+                    continue
+                pk = f"{shot_id}/{pa}"
+                prow = manifest.verified("prepared", pk)
+                if prow is None:
+                    raise RuntimeError(
+                        f"prepared '{pk}' not manifest-verified; run S2 (02_prepare.py) "
+                        f"for this shot first")
+                with open(os.path.join(ROOT, prow["path"]), "rb") as pf:
+                    pose_map[pa] = "data:image/png;base64," + base64.b64encode(pf.read()).decode()
+            props["preparedPoses"][L["id"]] = pose_map
     return props
 
 
+def _render_quartz_fallback(spec, out_dir, shot_id):
+    """Native macOS CoreGraphics/CoreText fallback when headless Chromium hits
+    sandbox SIGSEGV inside restricted sandbox-exec environments."""
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # If the shot is driven by a prepared video layer, extract its frames directly via ffmpeg
+    video_layers = [L for L in spec.get("layers", []) if L.get("type") == "video"]
+    if video_layers and len(spec.get("layers", [])) == 1:
+        v_layer = video_layers[0]
+        row = manifest.verified("prepared", f"{shot_id}/{v_layer['asset']}")
+        if row:
+            v_path = os.path.join(ROOT, row["path"])
+            W, H = spec["canvas"]["w"], spec["canvas"]["h"]
+            n_frames = spec["durationInFrames"]
+            loop_args = ["-stream_loop", "-1"] if v_layer.get("loop", True) else []
+            cmd = (
+                ["ffmpeg", "-v", "error", "-y"]
+                + loop_args
+                + ["-i", v_path,
+                   "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}",
+                   "-frames:v", str(n_frames),
+                   os.path.join(out_dir, "%05d.png")]
+            )
+            subprocess.run(cmd, check=True, cwd=ROOT)
+            # Pad frozen tail if loop=False and source clip was shorter than shot
+            written = sorted(f for f in os.listdir(out_dir) if f.endswith(".png"))
+            if written and len(written) < n_frames:
+                last_src = os.path.join(out_dir, written[-1])
+                for idx in range(len(written) + 1, n_frames + 1):
+                    shutil.copyfile(last_src, os.path.join(out_dir, f"{idx:05d}.png"))
+            return
+
+    swift_src = os.path.join(ENGINE_ROOT, "core", "quartz_compose.swift")
+    bin_path = os.path.join(ROOT, ".tmp", "quartz_compose")
+    os.makedirs(os.path.dirname(bin_path), exist_ok=True)
+    if (not os.path.exists(bin_path)
+            or os.path.getmtime(swift_src) > os.path.getmtime(bin_path)):
+        subprocess.run(["swiftc", "-O", swift_src, "-o", bin_path], check=True, cwd=ROOT)
+
+    spec_file = os.path.join(ROOT, ".tmp", f"resolved-spec-{shot_id}.json")
+    with open(spec_file, "w") as f:
+        json.dump(spec, f)
+    subprocess.run([bin_path, spec_file, out_dir, shot_id], check=True, cwd=ROOT)
+
+
 def render_remotion(spec, out_dir, shot_id):
+    if os.environ.get("POSTER_FORCE_QUARTZ") == "1":
+        _render_quartz_fallback(spec, out_dir, shot_id)
+        return
     props = build_props(spec)
     # Props file is per shot too: two concurrent S3 runs share .tmp/.
     props_file = os.path.join(ROOT, ".tmp", f"render-props-{shot_id}.json")
@@ -96,15 +160,22 @@ def render_remotion(spec, out_dir, shot_id):
         f"--props={props_file}",
     ]
     print(" ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=ROOT)
-
-    # Renumber 0-indexed [frame] (padded to the frame-count width) -> 1-indexed %05d
-    pad = len(str(spec["durationInFrames"] - 1))
-    for i in range(spec["durationInFrames"]):
-        src = os.path.join(out_dir, "rm", f"{i:0{pad}d}.png")
-        dst = os.path.join(out_dir, f"{i + 1:05d}.png")
-        os.rename(src, dst)
-    shutil.rmtree(os.path.join(out_dir, "rm"))
+    env = dict(os.environ)
+    extra_paths = "/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin"
+    env["PATH"] = f"{extra_paths}:{env.get('PATH', '')}"
+    try:
+        subprocess.run(cmd, check=True, cwd=ENGINE_ROOT, env=env)
+        # Renumber 0-indexed [frame] (padded to the frame-count width) -> 1-indexed %05d
+        pad = len(str(spec["durationInFrames"] - 1))
+        for i in range(spec["durationInFrames"]):
+            src = os.path.join(out_dir, "rm", f"{i:0{pad}d}.png")
+            dst = os.path.join(out_dir, f"{i + 1:05d}.png")
+            os.rename(src, dst)
+        shutil.rmtree(os.path.join(out_dir, "rm"))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        shutil.rmtree(os.path.join(out_dir, "rm"), ignore_errors=True)
+        print("  [S3] Chromium headless shell blocked by macOS sandbox; using native Quartz compositor...")
+        _render_quartz_fallback(spec, out_dir, shot_id)
 
 
 def video_audio_source(spec):
@@ -149,21 +220,48 @@ def encode_mp4(spec, frames_dir, out_mp4):
         # real H3 clip — below the gate's -19 floor). Run the same loudnorm
         # target the TTS chain uses so every shot lands in the same window.
         audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_clip_audio.m4a")
-        mastered = subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", clip_audio,
-             "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-             "-ar", "44100", "-ac", "2", "-c:a", "aac", "-b:a", "192k", audio_file],
-            capture_output=True, text=True)
+        v_layer = next((L for L in spec.get("layers", [])
+                        if L.get("type") == "video" and not L.get("muted", True)), None)
+        trim = v_layer.get("trim") if v_layer else None
+        shot_seconds = spec["durationInFrames"] / max(1, FPS)
+
+        af_parts = ["aformat=sample_rates=44100:channel_layouts=stereo"]
+        input_args = []
+        if trim:
+            t0, t1 = trim[0], trim[1]
+            seg_dur = max(0.001, t1 - t0)
+            af_parts.append(f"atrim=start={t0}:end={t1}")
+            af_parts.append("asetpts=PTS-STARTPTS")
+            if v_layer.get("loop", True) and seg_dur < shot_seconds:
+                af_parts.append(f"aloop=loop=-1:size={int(round(seg_dur * 44100))}")
+        elif v_layer and v_layer.get("loop", True):
+            input_args = ["-stream_loop", "-1"]
+
+        af_parts.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+        master_cmd = (
+            ["ffmpeg", "-v", "error", "-y"]
+            + input_args
+            + ["-i", clip_audio,
+               "-af", ",".join(af_parts),
+               "-t", f"{shot_seconds:.4f}",
+               "-ar", "44100", "-ac", "2", "-c:a", "aac", "-b:a", "192k", audio_file]
+        )
+        mastered = subprocess.run(master_cmd, capture_output=True, text=True)
         if mastered.returncode != 0:
             raise RuntimeError(
                 f"mastering the clip's native audio failed:\n{mastered.stderr}")
-        print(f"audio source: native track of {os.path.basename(clip_audio)} "
+        trim_note = f" (trimmed to [{trim[0]}s, {trim[1]}s])" if trim else ""
+        print(f"audio source: native track of {os.path.basename(clip_audio)}{trim_note} "
               f"(mastered to -16 LUFS)")
     elif wants_tts:
         from core.audio import prepare_shot_audio
         audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_audio.aac")
-        prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
-        print("audio source: TTS chain (edge-tts + ambient drone + loudnorm)")
+        if spec.get("punches"):
+            prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file, punches=spec["punches"])
+        else:
+            prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
+        bgm_label = audio_spec.get("bgm", "ambient")
+        print(f"audio source: TTS chain (edge-tts + {bgm_label} bgm + loudnorm)")
     else:
         print("audio source: none (silent shot)")
 
@@ -197,7 +295,7 @@ def encode_mp4(spec, frames_dir, out_mp4):
 
 def main():
     parser = argparse.ArgumentParser(description="S3: Compose layers into frames and mp4")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)

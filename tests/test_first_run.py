@@ -110,7 +110,7 @@ class TestPlaceholderVisibility(unittest.TestCase):
                 "canvas": {"w": 1080, "h": 1920},
                 "fps": 30,
                 "durationInFrames": 60,
-                "style": "spec/style.json",
+                "style": "tests/fixtures/style.json",
                 "layers": [{"id": "l", "type": "ai", "asset": "probe-placeholder",
                             "rect": [0, 0, 1080, 1920], "z": 0,
                             "blend": "normal", "keyColor": "#070512"}],

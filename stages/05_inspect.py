@@ -43,6 +43,7 @@ def extract_checklist(spec):
     code_draws = []
     hud_types = []
     video_assets = []
+    components = []
 
     shot_id = spec.get("id", "shot-01")
     for layer in spec.get("layers", []):
@@ -58,11 +59,22 @@ def extract_checklist(spec):
                 "quote": layer.get("quote")
             })
         elif ltype == "ai":
-            ai_assets.append({"id": layer.get("id"), "asset": layer.get("asset")})
+            ai_entry = {"id": layer.get("id"), "asset": layer.get("asset")}
+            if layer.get("parent"):
+                ai_entry["parent"] = layer.get("parent")
+            if layer.get("pivot"):
+                ai_entry["pivot"] = layer.get("pivot")
+            if layer.get("poses"):
+                ai_entry["poses"] = [p.get("asset") for p in layer["poses"]]
+            if layer.get("gait"):
+                ai_entry["gait"] = layer.get("gait", {}).get("mode")
+            ai_assets.append(ai_entry)
         elif ltype == "code":
             code_draws.append({"id": layer.get("id"), "draw": layer.get("draw")})
         elif ltype == "hud":
             hud_types.append({"id": layer.get("id"), "hudType": layer.get("hudType")})
+        elif ltype == "component":
+            components.append({"id": layer.get("id"), "component": layer.get("component")})
         elif ltype == "video":
             # The clip's own facts live in the prepared manifest row S2 wrote
             # (source_duration / shot_duration / upscale). Reading them here
@@ -87,7 +99,8 @@ def extract_checklist(spec):
         "ai_assets": ai_assets,
         "code_draws": code_draws,
         "hud_types": hud_types,
-        "video_assets": video_assets
+        "video_assets": video_assets,
+        "components": components
     }
 
 
@@ -149,6 +162,20 @@ AUDIT_CRITERIA = [
     "composition_diversity: This shot's skeleton (layout zones, title/caption/HUD placement, "
     "entrance style) must differ from sibling shots in the same episode — an identical "
     "badge/title/box/capsule stack repeated across sheets is a FAIL even when every frame is clean",
+    "spatial_coherence: Foreground layers and sprites must respect the 2D/3D perspective and "
+    "physical aperture of the background plate — never float across stage pillars, frames, or "
+    "borders where the subject cannot physically exist (use clipRect or orthographic plates)",
+    "craft_authenticity: Complex organic, cultural, or traditional subjects (e.g. shadow puppets, "
+    "portraits, creatures) must use authentic high-detail AI/art assets rather than simplistic "
+    "geometric SVG stick-figures, and optical blending (cutout/multiply/screen) must match the medium",
+    "articulated_choreography: In action/combat/character shots, characters must not slide across "
+    "the canvas as a single rigid static PNG without limb/weapon swing or posture change — verify "
+    "child weapon/limb layers (parent + pivot) visibly swing across contact sheet frames, "
+    "multi-pose states (poses) switch on impact with coupled target reaction, and moving characters "
+    "declare gait (puppet/walk/shudder) + operatic staccato timing (snap/overshoot + hold/亮相)",
+    "caption_voice_sync: When both audio.voiceover and captions are present, subtitle clauses must "
+    "share the exact same text as audio.voiceover and switch on TTS speech boundaries (via sync-audio) "
+    "with zero truncated speech",
 ]
 
 
@@ -277,7 +304,7 @@ def record(args):
 
 def main():
     parser = argparse.ArgumentParser(description="S5: Visual Self-Audit Inspection")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
     parser.add_argument("--grid", default="3x3", help="Contact sheet grid layout (default: 3x3)")
     parser.add_argument("--record", choices=["pass", "fail"], default=None,
                         help="Record a judge verdict instead of generating evidence")

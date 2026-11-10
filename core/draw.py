@@ -1,5 +1,5 @@
 """Code-drawn layers and the fake test fixture (stdlib only).
-Palette comes from spec/style.json (S2 passes it in); the fallback defaults are
+Palette comes from tests/fixtures/style.json (S2 passes it in); the fallback defaults are
 the same values the style file ships, so colors have exactly one source."""
 from .png import write_png
 

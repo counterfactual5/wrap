@@ -24,7 +24,7 @@ def _write(path, data):
 
 class TestMissingAssets(unittest.TestCase):
     def test_00_frozen_assets_are_not_missing(self):
-        with open(os.path.join(ROOT, "spec", "shot-01.poster.json")) as f:
+        with open(os.path.join(ROOT, "tests", "fixtures", "shot-01.poster.json")) as f:
             spec = json.load(f)
         self.assertEqual(missing_assets(spec), [])
 
@@ -71,7 +71,7 @@ class TestConcatDoesNotGenerate(unittest.TestCase):
             "fps": 30,
             "durationInFrames": 30,
             "vibe": False,
-            "style": "spec/style-quantum.json",
+            "style": "tests/fixtures/style-quantum.json",
             "layers": [{"id": "hero", "type": "ai", "asset": asset_name,
                         "keyColor": "#ffffff", "blend": "multiply",
                         "rect": [0, 0, 1080, 1920], "z": 0}],

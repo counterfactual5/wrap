@@ -49,7 +49,7 @@ def _spec(video_layer=None, audio=None):
         "fps": 30,
         "durationInFrames": 60,
         "vibe": False,
-        "style": "spec/style-quantum.json",
+        "style": "tests/fixtures/style-quantum.json",
         "layers": [layer],
         "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                    "lo": 0.0001, "hi": 0.3}],
@@ -95,6 +95,18 @@ class TestAudioOwnershipRule(unittest.TestCase):
             s3.encode_mp4(spec, "/tmp/frames", "/tmp/out.mp4")
         cmd = run.call_args[0][0]
         self.assertNotIn("-c:a", cmd, "a silent shot must not declare an audio codec")
+
+    def test_03_unmuted_layer_with_trim_applies_audio_trim(self):
+        """When video layer has trim, audio mastering commands must include atrim filter."""
+        spec = _spec(video_layer={"muted": False, "trim": [1.0, 3.0]})
+        with mock.patch.object(s3, "video_audio_source", return_value="/tmp/clip.mp4"), \
+             mock.patch.object(s3.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr="")
+            s3.encode_mp4(spec, "/tmp/frames", "/tmp/out.mp4")
+        master_cmd = run.call_args_list[0][0][0]
+        af_idx = master_cmd.index("-af")
+        self.assertIn("atrim=start=1.0:end=3.0", master_cmd[af_idx + 1])
 
 
 class TestVideoAudioSource(unittest.TestCase):
@@ -145,7 +157,7 @@ class TestVideoAudioEndToEnd(unittest.TestCase):
             "fps": 30,
             "durationInFrames": 60,
             "vibe": False,
-            "style": "spec/style-quantum.json",
+            "style": "tests/fixtures/style-quantum.json",
             "layers": [
                 {"id": "clip", "type": "video", "asset": "audio-e2e-clip",
                  "rect": [0, 0, 1080, 1920], "z": 0, "plate": False,

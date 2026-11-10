@@ -1,0 +1,16 @@
+{
+  "keyColor": "#070512",
+  "palette": {
+    "paper": "#070512",
+    "grid": "#1a1533",
+    "accent": "#B84DFF",
+    "secondary": "#00F0FF",
+    "ink": "#FFFFFF"
+  },
+  "promptFields": {
+    "subject": "abstract quantum tunneling visualization, glowing violet probability wave and translucent energy barrier",
+    "composition": "centered luminous wave function rippling toward a tall glowing barrier with particles emerging beyond it",
+    "background": "deep dark indigo background #070512 with subtle stardust",
+    "exclude": "no text, no watermark, no frame, no bright white edges"
+  }
+}

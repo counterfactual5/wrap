@@ -21,9 +21,13 @@ import shutil
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.realpath(__file__))
-CORE = os.path.join(ROOT, "core")
-STAGES = os.path.join(ROOT, "stages")
+ENGINE_ROOT = os.path.dirname(os.path.realpath(__file__))
+# Project root: where spec/, assets/, build/ and manifest.json live. Defaults to
+# the engine itself (development/tests); POSTER_ROOT points the pipeline at an
+# external project (e.g. the examples repo).
+ROOT = os.environ.get("POSTER_ROOT") or ENGINE_ROOT
+CORE = os.path.join(ENGINE_ROOT, "core")
+STAGES = os.path.join(ENGINE_ROOT, "stages")
 
 
 def run_stage(cmd_args, desc):
@@ -45,11 +49,17 @@ def missing_assets(spec):
     for layer in spec.get("layers", []):
         if layer.get("type") not in ("ai", "video"):
             continue
-        asset = layer.get("asset")
-        if not asset:
-            continue
-        if manifest.verified("assets", asset) is None:
-            missing.append(asset)
+        assets = [layer.get("asset")]
+        if layer.get("type") == "ai":
+            for p in layer.get("poses") or []:
+                pa = p.get("asset")
+                if pa and pa not in assets:
+                    assets.append(pa)
+        for asset in assets:
+            if not asset:
+                continue
+            if manifest.verified("assets", asset) is None and asset not in missing:
+                missing.append(asset)
     return missing
 
 
@@ -194,52 +204,137 @@ def main():
 
     # validate
     p_val = subparsers.add_parser("validate", help="Validate spec against schema")
-    p_val.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_val.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
 
     # generate (S1)
     p_gen = subparsers.add_parser("generate", help="S1: generate/fetch assets")
-    p_gen.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_gen.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
     p_gen.add_argument("--force", action="store_true", help="Force re-generation")
     p_gen.add_argument("--fixture", action="store_true", help="Use deterministic fixture")
 
     # prepare (S2)
     p_prep = subparsers.add_parser("prepare", help="S2: prepare assets & key purity check")
-    p_prep.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_prep.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
 
     # compose (S3)
     p_comp = subparsers.add_parser("compose", help="S3: ffmpeg compose frames & mp4")
-    p_comp.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_comp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
 
     # gate (S4)
     p_gate = subparsers.add_parser("gate", help="S4: quality gates & freeze detect")
-    p_gate.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_gate.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
 
     # inspect (S5)
     p_insp = subparsers.add_parser("inspect", help="S5: Generate contact sheet & checklist for visual self-audit")
-    p_insp.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_insp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
     p_insp.add_argument("--grid", default="3x3", help="Contact sheet grid, e.g. 3x3")
 
     # judge (S5 verdict)
     p_judge = subparsers.add_parser("judge", help="S5: Judge the contact sheet; record pass/fail verdict")
-    p_judge.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_judge.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
     p_judge.add_argument("--verdict", choices=["pass", "fail"], default=None,
                          help="Record verdict; omit to regenerate evidence + judge instructions")
     p_judge.add_argument("--notes", default=None, help="Judge findings stored with the verdict")
 
     # run (S1..S5)
     p_run = subparsers.add_parser("run", help="Run full pipeline: validate -> S1 -> S2 -> S3 -> S4 -> S5")
-    p_run.add_argument("--spec", default="spec/shot-01.poster.json")
+    p_run.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
     p_run.add_argument("--force", action="store_true", help="Force re-generation of assets")
     p_run.add_argument("--fixture", action="store_true", help="Use deterministic fixture")
 
     # init-shot
     p_init = subparsers.add_parser("init-shot", help="Initialize a new shot specification template")
     p_init.add_argument("shot_id", help="Shot ID, e.g. shot-02")
+    p_init.add_argument("--from-shot", default=None, help="Path to previous shot spec to carry final layer states from")
+
+    # inspect-sprite
+    p_ispr = subparsers.add_parser("inspect-sprite", help="Generate coordinate ruler grid & compute canvas pivot for a sprite asset")
+    p_ispr.add_argument("asset", help="Asset name in assets/<asset>.png")
+    p_ispr.add_argument("--rect", default=None, help="Layer canvas rect x,y,w,h (e.g. 260,290,448,600)")
+    p_ispr.add_argument("--joint", default=None, help="Joint coordinate jx,jy in source pixels or 0..1 floats (e.g. 638,612)")
+    p_ispr.add_argument("--key-color", default="#ffffff", help="Solid background hex color (default: #ffffff)")
+
+    # split-sprite
+    p_sspr = subparsers.add_parser("split-sprite", help="Split a character sprite into parent body + one or more articulated child limbs/weapons")
+    p_sspr.add_argument("--src", required=True, help="Source asset name in assets/<src>.png")
+    p_sspr.add_argument("--body", required=True, help="Output parent body asset name")
+    p_sspr.add_argument("--part", default=None, help="Output child weapon/limb asset name (single-part mode)")
+    p_sspr.add_argument("--box", default=None, help="Child region x0,y0,x1,y1 in source pixels or 0..1 floats (single-part mode)")
+    p_sspr.add_argument("--joint", default=None, help="Hinge joint jx,jy in source pixels or 0..1 floats (single-part mode)")
+    p_sspr.add_argument("--parts-json", default=None, help="JSON list of part specs [{\"part\":\"...\",\"box\":[x0,y0,x1,y1],\"joint\":[jx,jy],\"radius\":22}] for multi-node splitting")
+    p_sspr.add_argument("--clean-boxes-json", default=None, help="Optional JSON list of extra boxes [[x0,y0,x1,y1],...] to sanitize on the parent body")
+    p_sspr.add_argument("--radius", type=int, default=22, help="Joint overlap cap radius in source pixels (default: 22)")
+    p_sspr.add_argument("--rect", default=None, help="Layer canvas rect x,y,w,h to auto-compute canvas pivot")
+    p_sspr.add_argument("--key-color", default="#ffffff", help="Solid background hex color (default: #ffffff)")
+
+    # derive-poses
+    p_pose = subparsers.add_parser("derive-poses", help="Slice a multi-pose sprite sheet or derive combat/transformation pose states")
+    p_pose.add_argument("--sheet", default=None, help="Horizontal sprite-sheet asset name to slice")
+    p_pose.add_argument("--cols", type=int, default=3, help="Number of horizontal panels in --sheet (default: 3)")
+    p_pose.add_argument("--out-prefix", default=None, help="Output asset prefix when slicing --sheet")
+    p_pose.add_argument("--from-asset", default=None, help="Base asset name for preset pose derivation")
+    p_pose.add_argument("--preset", choices=["disguise", "shatter", "recoil"], default="shatter", help="Pose preset to derive from --from-asset")
+    p_pose.add_argument("--out", default=None, help="Output asset name for --from-asset preset")
+    p_pose.add_argument("--key-color", default="#ffffff", help="Solid background hex color (default: #ffffff)")
+
+    # snap-joint
+    p_snap = subparsers.add_parser("snap-joint", help="Compute child layer canvas rect and pivot to snap onto parent receiving socket")
+    p_snap.add_argument("--parent-asset", required=True, help="Parent asset name in assets/<asset>.png")
+    p_snap.add_argument("--parent-rect", required=True, help="Parent canvas rect x,y,w,h")
+    p_snap.add_argument("--parent-socket", required=True, help="Parent receiving socket coordinate sx,sy in source pixels")
+    p_snap.add_argument("--child-asset", required=True, help="Child asset name in assets/<asset>.png")
+    p_snap.add_argument("--child-joint", required=True, help="Child joint coordinate jx,jy in source pixels")
+    p_snap.add_argument("--scale", type=float, default=None, help="Explicit scale factor (defaults to parent contain scale)")
+
+    # unpack-kit
+    p_unpack = subparsers.add_parser("unpack-kit", help="Slice a multi-component runner sheet into registered modular parts")
+    p_unpack.add_argument("--sheet", required=True, help="Kit sheet asset name in assets/<sheet>.png")
+    p_unpack.add_argument("--prefix", required=True, help="Prefix for extracted part assets")
+    p_unpack.add_argument("--labels", default=None, help="Comma-separated part names, e.g. torso,arm,blade")
+    p_unpack.add_argument("--min-area", type=int, default=300, help="Minimum pixel area for a valid component (default: 300)")
+    p_unpack.add_argument("--pad", type=int, default=16, help="Padding in pixels around each component (default: 16)")
+    p_unpack.add_argument("--sort-by", choices=["area", "position"], default="area", help="Sort order (default: area descending)")
+    p_unpack.add_argument("--key-color", default="#ffffff", help="Solid background hex color (default: #ffffff)")
+
+    # sync-audio
+    p_sync = subparsers.add_parser("sync-audio", help="Synthesize audio.voiceover, fit durationInFrames (no truncation), and auto-sync captions items to speech boundaries")
+    p_sync.add_argument("--spec", default="tests/fixtures/shot-01.poster.json", help="Path to spec file")
+    p_sync.add_argument("--no-fit-duration", action="store_true", help="Do not expand durationInFrames to fit voiceover duration")
+    p_sync.add_argument("--no-rescale-anim", action="store_true", help="Do not rescale anim keyframes when durationInFrames expands")
+    p_sync.add_argument("--max-chars", type=int, default=20, help="Max characters per subtitle clause (default: 20)")
 
     # concat
     p_cat = subparsers.add_parser("concat", help="Concatenate multiple rendered shots via timeline")
     p_cat.add_argument("--timeline", default="spec/timeline.json", help="Path to timeline.json")
     p_cat.add_argument("--output", default="build/full.mp4", help="Path to output mp4")
+
+    # verify-rig
+    p_rig = subparsers.add_parser("verify-rig", help="Verify skeletal puppet joint alignment, socket calibration & render diagnostic overlay")
+    p_rig.add_argument("--spec", required=True, help="Path to poster spec JSON")
+    p_rig.add_argument("--tolerance", type=int, default=4, help="Maximum allowed socket-joint distance error in canvas px")
+
+    # verify-combat
+    p_combat = subparsers.add_parser("verify-combat", help="Verify physical weapon-to-target contact on all punch/strike frames")
+    p_combat.add_argument("--spec", required=True, help="Path to poster spec JSON")
+    p_combat.add_argument("--attacker", default=None, help="Attacker root layer ID (defaults to spec.combat.attacker or auto-discovered)")
+    p_combat.add_argument("--weapon", default=None, help="Articulated weapon layer ID (defaults to spec.combat.weapon or auto-discovered)")
+    p_combat.add_argument("--target", default=None, help="Target layer ID (defaults to spec.combat.target or auto-discovered)")
+    p_combat.add_argument("--tolerance", type=int, default=None, help="Maximum allowed whiffing gap in canvas px (default: 40)")
+
+    # verify-blocking
+    p_block = subparsers.add_parser("verify-blocking", help="Verify co-planar 2D character non-overlap & horizontal stage-lane separation across all frames")
+    p_block.add_argument("--spec", required=True, help="Path to poster spec JSON")
+    p_block.add_argument("--max-overlap", type=float, default=12.0, help="Maximum allowed torso overlap in canvas px (default: 12.0)")
+
+    # detect-punches
+    p_dp = subparsers.add_parser("detect-punches", help="Auto-detect audio transient peaks (percussion/plosives/sub-bass) for spec.punches")
+    p_dp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json", help="Path to spec file")
+    p_dp.add_argument("--audio", default=None, help="Optional explicit audio/video file path")
+    p_dp.add_argument("--max-punches", type=int, default=6, help="Maximum number of punch frames to detect")
+    p_dp.add_argument("--min-gap", type=float, default=0.45, help="Minimum gap in seconds between punches")
+    p_dp.add_argument("--threshold-sigma", type=float, default=1.6, help="Peak threshold in standard deviations above mean flux (default: 1.6)")
+    p_dp.add_argument("--highpass", type=float, default=180.0, help="Highpass filter cutoff in Hz (default 180 for percussion/speech; set 0 or 40 for EDM/sub-bass)")
+    p_dp.add_argument("--apply", action="store_true", help="Write detected punches directly into the spec JSON")
 
     # test
     subparsers.add_parser("test", help="Run full regression test suite")
@@ -314,18 +409,34 @@ def main():
         if os.path.exists(target):
             print(f"Spec already exists: {target}")
             return
+        if args.from_shot:
+            from core.schema import carry_state_from, load_spec
+            prev_path = args.from_shot
+            if not prev_path.endswith(".json"):
+                prev_path = f"spec/{prev_path}.poster.json"
+            prev_spec = load_spec(prev_path)
+            template = carry_state_from(prev_spec, shot_id)
+            with open(target, "w") as f:
+                json.dump(template, f, indent=2, ensure_ascii=False)
+            print(f"Initialized {target} carrying final layer states from {prev_path}")
+            return
         # Schema skeleton only — deliberately NO layout. Composition is a
         # per-episode design decision (SKILL.md "The One Design Law"); a baked
         # skeleton here is how every episode converged to one identical look.
         template = {
             "_design_hints": [
                 "Pipeline is fixed; this skeleton has no layout by design.",
+                "Environment-Adaptive Routing & Division-of-Labor (probe runtime tools FIRST):",
+                "  Path 1 (Image Gen + Video Gen): generate keyframe plate -> feed I2V -> use type:'video' layer.",
+                "  Path 2 (Image Gen only, NO Video Gen): NEVER hand-code organic/cultural characters with geometric SVG! Generate flat orthographic backdrop + AI character/prop sprite(s) on solid keyColor, set cutout:true & clipRect:[x,y,w,h], detach weapons/limbs with split-sprite (parent + pivot), add gait:{mode:'puppet'|'walk'|'shudder'} + snap/overshoot eases for staccato operatic rhythm, and run sync-audio so captions and durationInFrames match audio.voiceover.",
+                "  Path 3 (Code-first / Pure Procedural): use type:'code' (field/path/captions) or type:'component' for mathematical/geometric diagrams.",
                 "Design composition from the shot's narrative role FIRST:",
                 "  hook -> full-bleed poster (ai plate:false + big title via anim + field/path accents)",
                 "  development -> pure diagram (no ai layer; formula card timed to narration)",
                 "  resolution -> full-bleed documentary (real footage, slow reveal)",
                 "Never clone a previous episode's skeleton. Vocabulary:",
-                "  anim (x/y/scale/opacity/rotate keyframes, ease in/out/inout),",
+                "  anim (x/y/scale/opacity/rotate keyframes, ease in/out/inout/snap/overshoot/step),",
+                "  gait (mode: puppet|walk|float|shudder, freq, bob, sway, range),",
                 "  field particles, path reveal/flow lines, vibe:false, plate:false.",
                 "Choosing the subject layer — ai or video, pick ONE per shot:",
                 "  ai layer  = a still plate from the image model (no motion of its own).",
@@ -338,9 +449,10 @@ def main():
                 "Before designing: ROLL THE DICE (SKILL.md 'Creative dice') — sample",
                 "  composition x palette x entrance x camera x HUD-density, commit the",
                 "  rolled values here; >=4 shared values with a sibling spec = re-roll.",
-                "Verified examples: skills/code-driven-shot-pipeline/references/",
-                "  reference_hook_poster.json / reference_development_diagram.json /",
-                "  reference_resolution_documentary.json (three composition languages).",
+                "Three composition languages to draw from: a full-bleed AI plate with",
+                "  code-drawn HUD/typography over it; a pure-code geometric kinematics",
+                "  piece (fields, paths, springs); a character-drama piece with an",
+                "  articulated skeletal rig (see SKILL.md 'Skeletal rigs').",
             ],
             "id": shot_id,
             "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
@@ -358,12 +470,187 @@ def main():
             json.dump(template, f, indent=2, ensure_ascii=False)
         print(f"Initialized schema skeleton: {target} (layout is yours to design — see _design_hints)")
 
+    elif args.command == "inspect-sprite":
+        from core.rig import inspect_sprite
+        rect = [int(v) for v in args.rect.split(",")] if args.rect else None
+        joint = [float(v) for v in args.joint.split(",")] if args.joint else None
+        info = inspect_sprite(args.asset, rect=rect, joint=joint, key_color=args.key_color)
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+
+    elif args.command == "split-sprite":
+        from core.rig import split_multi_sprite, split_sprite
+        rect = [int(v) for v in args.rect.split(",")] if args.rect else None
+        if args.parts_json:
+            parts = json.loads(args.parts_json)
+            clean_boxes = json.loads(args.clean_boxes_json) if args.clean_boxes_json else None
+            info = split_multi_sprite(
+                args.src, args.body, parts=parts,
+                clean_boxes=clean_boxes, rect=rect, key_color=args.key_color,
+            )
+        else:
+            if not (args.part and args.box and args.joint):
+                sys.exit("split-sprite requires either --parts-json or (--part, --box, --joint)")
+            box = [float(v) for v in args.box.split(",")]
+            joint = [float(v) for v in args.joint.split(",")]
+            info = split_sprite(
+                args.src, args.body, args.part,
+                box=box, joint=joint, joint_radius=args.radius,
+                rect=rect, key_color=args.key_color,
+            )
+        print(json.dumps(info, indent=2, ensure_ascii=False))
+
+    elif args.command == "derive-poses":
+        from core.rig import derive_pose_preset, derive_poses_from_sheet
+        if args.sheet:
+            prefix = args.out_prefix or args.sheet
+            res = derive_poses_from_sheet(args.sheet, prefix, cols=args.cols, key_color=args.key_color)
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        elif args.from_asset:
+            out_name = args.out or f"{args.from_asset}-{args.preset}"
+            res = derive_pose_preset(args.from_asset, out_name, preset=args.preset, key_color=args.key_color)
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        else:
+            sys.exit("derive-poses requires either --sheet <asset> or --from-asset <asset>")
+
+    elif args.command == "snap-joint":
+        from core import manifest
+        from core.png import read_size
+        from core.rig import snap_socket_joint
+        p_row = manifest.verified("assets", args.parent_asset)
+        c_row = manifest.verified("assets", args.child_asset)
+        if not p_row:
+            sys.exit(f"parent asset not found or not verified in manifest: {args.parent_asset}")
+        if not c_row:
+            sys.exit(f"child asset not found or not verified in manifest: {args.child_asset}")
+        pw, ph = read_size(os.path.join(ROOT, p_row["path"]))
+        cw, ch = read_size(os.path.join(ROOT, c_row["path"]))
+        p_rect = [int(v) for v in args.parent_rect.split(",")]
+        p_socket = [float(v) for v in args.parent_socket.split(",")]
+        c_joint = [float(v) for v in args.child_joint.split(",")]
+        res = snap_socket_joint([pw, ph], p_rect, p_socket, [cw, ch], c_joint, scale=args.scale)
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+
+    elif args.command == "unpack-kit":
+        from core.rig import unpack_kit
+        labels = [s.strip() for s in args.labels.split(",")] if args.labels else None
+        res = unpack_kit(
+            args.sheet, args.prefix,
+            key_color=args.key_color,
+            min_area=args.min_area,
+            pad=args.pad,
+            sort_by=args.sort_by,
+            labels=labels,
+        )
+        print(f"Unpacked {res['parts_count']} parts from {args.sheet}:")
+        for p in res["parts"]:
+            print(f"  - {p['asset']}: size={p['size']}, center={p['center']}, area={p['area']}, bbox={p['bbox']}")
+        if labels and args.sort_by == "area":
+            print("  note: labels bind to islands by descending area — verify bbox placement, or rerun with --sort-by position to map labels left-to-right/top-to-bottom")
+        print("\nReady-to-use Remotion Spec Layer Snippet:")
+        print(json.dumps(res["spec_layers_snippet"], indent=2, ensure_ascii=False))
+
+    elif args.command == "sync-audio":
+        from core.audio import sync_spec_audio
+        spec_path = os.path.join(ROOT, args.spec)
+        if not os.path.exists(spec_path):
+            sys.exit(f"Spec not found: {spec_path}")
+        res = sync_spec_audio(
+            spec_path,
+            fit_duration=not args.no_fit_duration,
+            rescale_anim=not args.no_rescale_anim,
+            max_chars=args.max_chars,
+        )
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+
+    elif args.command == "verify-rig":
+        from core.rig import verify_puppet_rig
+        spec_path = os.path.join(ROOT, args.spec)
+        if not os.path.exists(spec_path):
+            sys.exit(f"Spec not found: {spec_path}")
+        with open(spec_path) as f:
+            spec_data = json.load(f)
+        res = verify_puppet_rig(spec_data, tolerance=args.tolerance)
+        print(f"\n=== Puppet Rig Verification: {spec_data.get('id', 'puppet')} ===")
+        for j in res["joints"]:
+            print(f"  [{j['status']}] {j['child_id']} -> {j['parent_id']}: delta={j['delta_px']}px (socket={j['socket_src']}, joint={j['joint_src']}, pivot={j['pivot_canvas']})")
+        if res.get("diagnostic_image") and os.path.exists(res["diagnostic_image"]):
+            print(f"  diagnostic overlay rendered: {res['diagnostic_image']}")
+        if not res["passed"]:
+            print(f"\nRig Verification FAILED:\n  " + "\n  ".join(res["errors"]))
+            sys.exit(1)
+        print("\nRig Verification PASSED (All joints calibrated within tolerance).")
+
+    elif args.command == "verify-combat":
+        from core.rig import verify_combat_contact
+        spec_path = os.path.join(ROOT, args.spec)
+        if not os.path.exists(spec_path):
+            sys.exit(f"Spec not found: {spec_path}")
+        with open(spec_path) as f:
+            spec_data = json.load(f)
+        res = verify_combat_contact(
+            spec_data,
+            attacker_id=args.attacker,
+            weapon_id=args.weapon,
+            target_id=args.target,
+            tolerance=args.tolerance,
+        )
+        print(f"\n=== Combat Contact Verification: {spec_data.get('id', 'puppet')} ===")
+        for d in res["details"]:
+            print(f"  Frame {d['frame']:3d}: [{d['status']}] weapon_tip={d['weapon_tip']} target_hitbox={d['target_hitbox']} gap={d['gap_px']}px")
+        if not res["passed"]:
+            print(f"\nCombat Contact FAILED (Whiffing detected):\n  " + "\n  ".join(res["errors"]))
+            sys.exit(1)
+        print("\nCombat Contact PASSED (Physical weapon collision confirmed on all strikes).")
+
+    elif args.command == "verify-blocking":
+        from core.rig import verify_stage_blocking
+        spec_path = os.path.join(ROOT, args.spec)
+        if not os.path.exists(spec_path):
+            sys.exit(f"Spec not found: {spec_path}")
+        with open(spec_path) as f:
+            spec_data = json.load(f)
+        res = verify_stage_blocking(spec_data, max_overlap_px=args.max_overlap)
+        print(f"\n=== Stage Blocking & Non-Overlap Verification: {spec_data.get('id', 'puppet')} ===")
+        for p in res["pairs"]:
+            print(f"  [{p['status']}] {p['pair']:<22} | min_clearance={p['min_clearance_px']:>6.1f}px | max_overlap={p['max_overlap_px']:>5.1f}px (frame {p['worst_frame']})")
+        if not res["passed"]:
+            print(f"\nStage Blocking FAILED (Co-planar character overlap detected):\n  " + "\n  ".join(res["errors"]))
+            sys.exit(1)
+        print("\nStage Blocking PASSED (Zero co-planar torso overlap across all frames).")
+
+    elif args.command == "detect-punches":
+        from core.audio import detect_audio_punches
+        spec_path = os.path.join(ROOT, args.spec)
+        if not os.path.exists(spec_path):
+            sys.exit(f"Spec not found: {spec_path}")
+        with open(spec_path) as f:
+            spec_data = json.load(f)
+        fps = spec_data.get("fps", 30)
+        sid = spec_data.get("id", "shot-01")
+        audio_target = args.audio or os.path.join(ROOT, "build", f"{sid}.mp4")
+        if not os.path.exists(audio_target):
+            audio_target = os.path.join(ROOT, ".tmp", f"{sid}_sync_voice.wav")
+        res = detect_audio_punches(
+            audio_target,
+            fps=fps,
+            max_punches=args.max_punches,
+            min_gap_sec=args.min_gap,
+            threshold_sigma=args.threshold_sigma,
+            highpass_hz=args.highpass,
+        )
+        if args.apply and res["punches"]:
+            spec_data["punches"] = res["punches"]
+            with open(spec_path, "w") as f:
+                json.dump(spec_data, f, indent=2, ensure_ascii=False)
+            res["applied_to"] = args.spec
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+
     elif args.command == "concat":
         timeline_path = os.path.join(ROOT, args.timeline)
         if not os.path.exists(timeline_path):
             os.makedirs(os.path.dirname(timeline_path), exist_ok=True)
             with open(timeline_path, "w") as f:
-                json.dump({"id": "full-sequence", "shots": ["spec/shot-01.poster.json"]}, f, indent=2)
+                json.dump({"id": "full-sequence", "shots": ["tests/fixtures/shot-01.poster.json"]}, f, indent=2)
             print(f"Created default timeline at: {timeline_path}")
 
         with open(timeline_path) as f:
@@ -470,10 +757,14 @@ def main():
             print("Removed build/ directory.")
         # public/prepared/ holds the video clips S3 stages for Remotion's
         # staticFile(). Nothing cleans it, so it grows with every render.
-        pub_dir = os.path.join(ROOT, "public", "prepared")
+        pub_dir = os.path.join(ENGINE_ROOT, "public", "prepared")
         if os.path.exists(pub_dir):
             shutil.rmtree(pub_dir)
             print("Removed public/prepared/ directory.")
+        tmp_dir = os.path.join(ROOT, ".tmp")
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+            print("Removed .tmp/ directory.")
         print("Clean complete.")
 
 

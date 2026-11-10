@@ -75,7 +75,7 @@ def _spec_for(draw):
         "fps": 30,
         "durationInFrames": FRAMES,
         "vibe": False,
-        "style": "spec/style-quantum.json",
+        "style": "tests/fixtures/style-quantum.json",
         "layers": [_layer_for(draw)],
         "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                    "lo": 0.0001, "hi": 0.9}],

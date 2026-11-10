@@ -119,7 +119,7 @@ def _accent_color(spec):
 
 def main():
     parser = argparse.ArgumentParser(description="S4: Quality gates validation")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: spec/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
@@ -156,11 +156,17 @@ def main():
             for L in spec["layers"]:
                 if L["type"] != "ai":
                     continue
-                row = manifest.verified("prepared", f"{shot_id}/{L['asset']}")
-                if row is None:
-                    raise RuntimeError(
-                        f"prepared asset '{shot_id}/{L['asset']}' not manifest-verified; run S2")
-                rows.append(row.get("purity"))
+                ai_assets = [L["asset"]]
+                for p in L.get("poses") or []:
+                    pa = p.get("asset")
+                    if pa and pa not in ai_assets:
+                        ai_assets.append(pa)
+                for asset_name in ai_assets:
+                    row = manifest.verified("prepared", f"{shot_id}/{asset_name}")
+                    if row is None:
+                        raise RuntimeError(
+                            f"prepared asset '{shot_id}/{asset_name}' not manifest-verified; run S2")
+                    rows.append(row.get("purity"))
             if not rows or any(r is None for r in rows):
                 raise RuntimeError("no purity recorded; run S2")
             return min(rows)
@@ -201,14 +207,28 @@ def main():
     from core import audio
     av_probe = audio.measure_av_durations(mp4)
     if av_probe.get("has_audio"):
-        # 1. Silence check: non-silent audio track
+        # 1. Silence and content check
         sil_res = audio.measure_audio_silence(mp4)
+        is_ambient = spec.get("ambient", False) or (isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("ambient", False))
+
         sil_ok = not sil_res["is_silent"]
+        # A non-silent track must also carry real content (not just flat noise/drone),
+        # unless the shot is explicitly declared as an ambient soundbed.
+        if sil_ok and not is_ambient and not sil_res.get("has_content", True):
+            sil_ok = False
+            sp_m = sil_res.get("speech_max_volume", -99.0)
+            print(f"FAIL  silence    audio_content        no voice/foreground content (speech band max {sp_m:.1f} dB <= -25.0 dB). "
+                  f"Declare 'ambient': true in spec if this is an ambient shot.")
+        else:
+            print(f"{'PASS' if sil_ok else 'FAIL'}  silence    audio_max_volume     {sil_res['max_volume']:.1f} dB  [>-45.0 dB]"
+                  f"{' (ambient)' if is_ambient else ''}")
+
         red |= not sil_ok
-        print(f"{'PASS' if sil_ok else 'FAIL'}  silence    audio_max_volume     {sil_res['max_volume']:.1f} dB  [>-45.0 dB]")
         results.append({
             "id": "audio_silence", "metric": "audio_max_volume",
-            "value": sil_res["max_volume"], "lo": -45.0, "pass": sil_ok
+            "value": sil_res["max_volume"], "lo": -45.0, "pass": sil_ok,
+            "has_content": sil_res.get("has_content", True),
+            "ambient": is_ambient
         })
 
         # 2. Integrated loudness check: EBU R128 (-16 LUFS target, range [-19.0, -13.0])
@@ -233,6 +253,34 @@ def main():
             "id": "audio_av_sync", "metric": "duration_delta",
             "value": delta, "hi": 0.10, "pass": sync_ok
         })
+
+        # 4. Voiceover truncation check: ensure TTS narration was not chopped off by -t shot_duration
+        voice_meta_path = os.path.join(ROOT, ".tmp", f"{shot_id}_audio.aac.meta.json")
+        if os.path.exists(voice_meta_path):
+            try:
+                with open(voice_meta_path) as mf:
+                    vmeta = json.load(mf)
+            except Exception:
+                vmeta = {}
+            if vmeta.get("has_voice"):
+                raw_d = float(vmeta.get("raw_voice_duration", 0.0))
+                tgt_d = float(vmeta.get("target_duration", spec["durationInFrames"] / max(1, FPS)))
+                trunc_ok = not vmeta.get("truncated", raw_d > tgt_d + 0.25)
+                red |= not trunc_ok
+                if trunc_ok:
+                    print(f"PASS  truncation voiceover_truncation {raw_d:.2f} s  [<= {tgt_d + 0.25:.2f} s]")
+                else:
+                    print(
+                        f"FAIL  truncation voiceover_truncation raw={raw_d:.2f}s > shot={tgt_d:.2f}s "
+                        f"(voiceover cut off! Run 'python3 pipeline.py sync-audio --spec <spec>' or increase durationInFrames)"
+                    )
+                results.append({
+                    "id": "voiceover_truncation",
+                    "metric": "voiceover_vs_shot_duration",
+                    "value": raw_d,
+                    "hi": round(tgt_d + 0.25, 3),
+                    "pass": trunc_ok,
+                })
 
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.
