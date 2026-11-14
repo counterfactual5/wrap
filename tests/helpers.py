@@ -12,6 +12,7 @@ suite reports on the code, not on the bookkeeping.
 """
 import contextlib
 
+import json
 import os
 import shutil
 import tempfile
@@ -159,14 +160,33 @@ def ensure_rendered(shot_spec, shot_id, through_gate=False):
         return mp4
     import subprocess
     import sys
+    # Register explicit test media for the spec's ai assets so S1 REUSES them
+    # (no connector, no credits, no --fixture). A verified row is never
+    # touched — only a missing one is materialized.
+    with open(os.path.join(ROOT, shot_spec)) as f:
+        spec_data = json.load(f)
+    from core.runtime import manifest
+    canvas = spec_data.get("canvas", {})
+    names = set()
+    for layer in spec_data.get("layers", []):
+        if layer.get("type") == "ai" and layer.get("asset"):
+            names.add(layer["asset"])
+            for pose in layer.get("poses") or []:
+                if pose.get("asset"):
+                    names.add(pose["asset"])
+    for name in sorted(names):
+        if manifest.verified("assets", name) is None:
+            rel = f"assets/{name}.png"
+            path = os.path.join(ROOT, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            write_fixture(path, w=canvas.get("w", 1280), h=canvas.get("h", 720))
+            register_test_asset(name, rel)
     stages = ["01_generate.py", "02_prepare.py", "03_compose.py"]
     if through_gate:
         stages.append("04_gate.py")
     env = dict(os.environ, POSTER_MANIFEST=active_manifest_path())
     for stage in stages:
         command = [sys.executable, os.path.join(ROOT, "stages", stage), "--spec", shot_spec]
-        if stage == "01_generate.py":
-            command.append("--fixture")
         res = subprocess.run(
             command, env=env, cwd=ROOT, capture_output=True, text=True)
         if res.returncode != 0:
@@ -174,3 +194,83 @@ def ensure_rendered(shot_spec, shot_id, through_gate=False):
                 f"could not prepare {shot_id} ({stage} failed):\n"
                 f"{res.stdout}\n{res.stderr}")
     return mp4
+
+
+from core.media.png import write_png
+
+def fake_city(w, h, ink=(17, 17, 17), key=(255, 255, 255)):
+    """White canvas + deterministic black 'buildings' on a baseline. No RNG, no externals."""
+    px = bytearray(bytes(key) * (w * h))
+    x, i = int(w * 0.04), 0
+    while x < w * 0.96:
+        bw = 70 + (i * 37) % 90
+        bh = int(h * (0.18 + 0.5 * (((i * 53) % 100) / 100)))
+        base = int(h * 0.88)
+        for y in range(base - bh, base):
+            px[(y * w + x) * 3:(y * w + min(x + bw, int(w * 0.96))) * 3] = bytes(ink) * (min(x + bw, int(w * 0.96)) - x)
+        x += bw + 12
+        i += 1
+    return bytes(px)
+
+
+def write_fixture(path, w=2560, h=1440):
+    write_png(path, w, h, fake_city(w, h))
+
+
+def make_test_clip(path, seconds=1.0, fps=30, w=270, h=480, with_audio=False):
+    """A deterministic local clip (ffmpeg testsrc2), replacing the removed
+    production fixture writer: test-only media construction lives in test
+    support code, never in the pipeline."""
+    import subprocess
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+           f"testsrc2=size={w}x{h}:rate={fps}:duration={seconds}"]
+    if with_audio:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}"]
+    cmd += ["-r", str(fps), "-c:v", "libx264", "-preset", "veryfast",
+            "-pix_fmt", "yuv420p"]
+    cmd += ["-c:a", "aac", "-b:a", "128k", "-shortest"] if with_audio else ["-an"]
+    cmd.append(path)
+    subprocess.run(cmd, check=True)
+    return path
+
+
+def register_test_asset(name, rel, source="test-media"):
+    """Register an explicit test-media file in the ACTIVE ledger so S1 reuses
+    it instead of generating (no connector, no credits, no --fixture)."""
+    from core.runtime import manifest
+    return manifest.register("assets", name, rel, source=source)
+
+
+# Capability manifests for tests: declared models, never a built-in catalog.
+TEST_VIDEO_MODELS = {
+    "Test-Max": {"min_dur": 4, "max_dur": 15, "resolutions": ["768P", "1080P"],
+                 "reference_types": ["first_frame", "last_frame"],
+                 "audio": True, "input_image": True, "last_frame": True,
+                 "reference_media": True},
+    "Test-Discrete": {"min_dur": 6, "max_dur": 10, "resolutions": ["768P"],
+                      "durations": [6, 10], "audio": False},
+    "Test-NoLF": {"min_dur": 5, "max_dur": 10, "resolutions": ["768P"],
+                  "reference_types": ["first_frame"],
+                  "input_image": True, "last_frame": False, "reference_media": False},
+    "Test-Subjectless": {"min_dur": 4, "max_dur": 10, "resolutions": ["768P"],
+                         "reference_types": ["first_frame"],
+                         "input_image": True,
+                         "unsupported_reference_types":
+                             {"subject": "fails upstream AFTER billing"}},
+}
+TEST_IMAGE_MODELS = {
+    "Test-Image": {"aspect_ratios": ["1:1", "16:9", "9:16", "3:4", "4:3", "21:9"],
+                   "areas": ["1K", "2K", "4K"]},
+}
+TEST_MODELS_JSON = json.dumps(TEST_VIDEO_MODELS)
+TEST_IMAGE_MODELS_JSON = json.dumps(TEST_IMAGE_MODELS)
+
+
+def env_with_models(**extra):
+    """Environment with the test capability manifests declared."""
+    env = dict(os.environ)
+    env["POSTER_MODELS_JSON"] = TEST_MODELS_JSON
+    env["POSTER_IMAGE_CAPABILITIES_JSON"] = TEST_IMAGE_MODELS_JSON
+    env.update(extra)
+    return env

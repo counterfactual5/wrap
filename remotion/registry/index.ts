@@ -12,5 +12,5 @@
 //      project-custom.d.ts.
 //
 // When no project file exists the registry is empty and component layers
-// render as a dashed placeholder box (see Shot.tsx).
+// fail explicitly rather than rendering substitute artwork (see Shot.tsx).
 export {CUSTOM_COMPONENTS} from 'project-custom';

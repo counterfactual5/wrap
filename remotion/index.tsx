@@ -2,23 +2,23 @@ import {Composition, registerRoot} from 'remotion';
 import {Shot} from './Shot';
 import type {ShotSpec} from './spec';
 
+
 // The spec arrives as props (inline JSON or --props=./file), already validated
 // by schema.py. One file drives S1 (prompt), S3 (this render) and S4 (gates).
 // Props carry the spec content — not a path — so the bundle stays static.
 
 export type ShotProps = {
   spec: ShotSpec;
-  /** layer id -> data: URL of the S2-prepared PNG (AI assets and code backgrounds). */
+  /** layer id -> data: URL of the S2-prepared PNG (image media). */
   prepared: Record<string, string>;
-  /** layer id -> absolute path of the S2-prepared mp4 (video layers). */
+  /** layer id -> public-relative path of the S2-prepared mp4 (video layers). */
   preparedVideos?: Record<string, string>;
   /** layer id -> pose asset name -> data: URL of the S2-prepared PNG. */
   preparedPoses?: Record<string, Record<string, string>>;
+
 };
 
-export const RemotionVideo: React.FC<ShotProps> = ({spec, prepared, preparedVideos, preparedPoses}) => {
-  return <Shot spec={spec} prepared={prepared} preparedVideos={preparedVideos} preparedPoses={preparedPoses} />;
-};
+export const RemotionVideo: React.FC<ShotProps> = (props) => <Shot {...props} />;
 
 export const Index: React.FC = () => {
   return (

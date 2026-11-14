@@ -123,19 +123,28 @@ class TestFormatNormalization(unittest.TestCase):
 
 
 class TestAspectRatioFromCanvas(unittest.TestCase):
-    """The generation request must follow the shot's canvas, not a fixed 16:9."""
+    """The generation request must follow the shot's canvas against the
+    DECLARED aspect capability — there is no hardcoded ratio table."""
+
+    SUPPORTED = ("1:1", "16:9", "9:16", "3:4", "4:3", "21:9")
 
     def test_00_vertical_canvas_yields_vertical_ratio(self):
-        self.assertEqual(s1.aspect_for_canvas(1080, 1920), "9:16")
+        self.assertEqual(s1.aspect_for_canvas(1080, 1920, self.SUPPORTED), "9:16")
 
     def test_01_landscape_canvas_yields_landscape_ratio(self):
-        self.assertEqual(s1.aspect_for_canvas(1920, 1080), "16:9")
+        self.assertEqual(s1.aspect_for_canvas(1920, 1080, self.SUPPORTED), "16:9")
 
     def test_02_square_canvas(self):
-        self.assertEqual(s1.aspect_for_canvas(1080, 1080), "1:1")
+        self.assertEqual(s1.aspect_for_canvas(1080, 1080, self.SUPPORTED), "1:1")
 
     def test_03_portrait_four_by_three(self):
-        self.assertEqual(s1.aspect_for_canvas(1080, 1440), "3:4")
+        self.assertEqual(s1.aspect_for_canvas(1080, 1440, self.SUPPORTED), "3:4")
+
+    def test_04_no_declared_capability_yields_none(self):
+        """Without a declared capability the derivation returns None and the
+        caller must pass an explicit ratio — the engine never invents one."""
+        self.assertIsNone(s1.aspect_for_canvas(1080, 1920, ()))
+        self.assertIsNone(s1.aspect_for_canvas(1080, 1920, ("bogus",)))
 
 
 class TestGenerateRequestShape(unittest.TestCase):
@@ -153,10 +162,15 @@ class TestGenerateRequestShape(unittest.TestCase):
                 args=[], returncode=0,
                 stdout=json.dumps({"success_items": [{"node_id": "77"}]}), stderr="")
 
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
-            s1.call_generate_image("a subject", "asset-x", aspect_ratio="9:16", resolution="2K")
+        from tests.helpers import TEST_IMAGE_MODELS
+        from core.generation import models
+        with mock.patch.object(models, "IMAGE_MODELS", TEST_IMAGE_MODELS), \
+                mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
+            s1.call_generate_image("a subject", "asset-x", model="Test-Image",
+                                   aspect_ratio="9:16", resolution="2K")
 
         req = captured["payload"]["requests"][0]
+        self.assertEqual(req["model"], "Test-Image")
         self.assertEqual(req["aspect_ratio"], "9:16")
         self.assertEqual(req["area"], "2K")
         self.assertNotIn("resolution", req)
@@ -174,8 +188,12 @@ class TestGenerateRequestShape(unittest.TestCase):
                 args=[], returncode=0,
                 stdout=json.dumps({"success_items": [{"node_id": "77"}]}), stderr="")
 
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
-            s1.call_generate_image("plain subject", "asset-plain")
+        from tests.helpers import TEST_IMAGE_MODELS
+        from core.generation import models
+        with mock.patch.object(models, "IMAGE_MODELS", TEST_IMAGE_MODELS), \
+                mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
+            s1.call_generate_image("plain subject", "asset-plain", model="Test-Image",
+                                   aspect_ratio="1:1", resolution="1K")
 
         req = captured["payload"]["requests"][0]
         self.assertNotIn("reference_images", req)
@@ -241,6 +259,9 @@ class TestConnectorSchemaContract(unittest.TestCase):
 
     def _capture_image_payload(self, **kwargs):
         captured = {}
+        from tests.helpers import TEST_IMAGE_MODELS
+        from core.generation import models
+        kwargs.setdefault("model", "Test-Image")
 
         def fake_run(cmd, **kw):
             args_file = cmd[cmd.index("--args-file") + 1]
@@ -250,18 +271,24 @@ class TestConnectorSchemaContract(unittest.TestCase):
                 args=[], returncode=0,
                 stdout=json.dumps({"success_items": [{"node_id": "1"}]}), stderr="")
 
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
+        with mock.patch.object(models, "IMAGE_MODELS", TEST_IMAGE_MODELS), \
+                mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
             s1.call_generate_image("test prompt", "asset-a", **kwargs)
         return captured["payload"]
 
     def _capture_video_payload(self, **kwargs):
         captured = {}
+        from tests.helpers import TEST_VIDEO_MODELS
+        from core.generation import models
+        kwargs.setdefault("model", "Test-Max")
+        kwargs.setdefault("resolution", "768P")
 
         def fake_call(tool, payload, timeout=None):
             captured["payload"] = payload
             return {"task_id": "t-1", "status": "submitted"}
 
-        with mock.patch.object(gen_video, "_connector_call", side_effect=fake_call):
+        with mock.patch.dict(models.VIDEO_MODELS, TEST_VIDEO_MODELS), \
+                mock.patch.object(gen_video, "_connector_call", side_effect=fake_call):
             s1.submit_video_generation("test video prompt", **kwargs)
         return captured["payload"]
 
@@ -271,6 +298,7 @@ class TestConnectorSchemaContract(unittest.TestCase):
 
         # 1. Text-to-image payload
         p1 = self._capture_image_payload(aspect_ratio="16:9", resolution="2K")
+        self.assertEqual(p1["requests"][0]["model"], "Test-Image")
         _assert_matches_schema(self, p1, schema)
         for k in p1["requests"][0]:
             self.assertIn(k, req_props)
@@ -292,12 +320,12 @@ class TestConnectorSchemaContract(unittest.TestCase):
         schema = self._load_snapshot()["connector__matrix__submit_video_generation"]["input_schema"]
 
         # 1. Text-to-video payload
-        v1 = self._capture_video_payload(model="MiniMax-H3-Max", duration=6, ratio="9:16", resolution="768P")
+        v1 = self._capture_video_payload(model="Test-Max", duration=6, ratio="9:16", resolution="768P")
         _assert_matches_schema(self, v1, schema)
 
         # 2. Keyframe first_frame + last_frame payload
         v2 = self._capture_video_payload(
-            model="MiniMax-H3", duration=6, resolution="768P",
+            model="Test-Max", duration=6, resolution="768P",
             input_image={"url": "https://example.invalid/first.png"},
             last_frame_image={"url": "https://example.invalid/last.png"},
             reference_images=[{"url": "https://example.invalid/ref1.png"}],

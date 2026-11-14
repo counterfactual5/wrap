@@ -1,171 +1,153 @@
 """The contract must not be quietly narrowed.
 
-`core/spec/constants.py`'s DRAWS is what an author may write in a spec; the Remotion
-renderer is what actually draws. The cross-layer check
-(`tests/contract/agreement.py`) guards one direction — a draw the contract
-accepts but the renderer cannot draw. The other direction was unguarded.
+`core/spec/constants.py`'s `LAYER_TYPES` is what a spec may declare; the
+Remotion renderer is what actually draws. `tests/contract/agreement.py`
+guards one direction — a type the contract accepts but the renderer cannot
+draw. The other direction was unguarded.
 
-Delete an entry from DRAWS and BOTH sides shrink together: every check that
-iterates FROM the contract (`tests/contract/test_draw_contract.py` takes its render
-list from DRAWS, `tests/test_docs_draw_contract.py` walks DRAWS) sees a
-smaller contract and stays green. Measured on this repository: with one draw
-removed from DRAWS and nothing else touched — not the Skill, not the
-renderer — `make verify` still passed (198 tests, rc=0). The capability was
-gone and no check said so. The only trace is the author's "draw must be one
-of [...]", which does not say the draw existed yesterday.
+Delete an entry from `LAYER_TYPES` and both sides shrink together: the
+cross-layer check sees a smaller contract and stays green. The capability
+is gone and no check said so. This module pins the second direction by
+counter-proof: narrowing the LIVE contract must be OBSERVABLE — a spec that
+used the narrowed type must stop validating, through the same loud gate
+every author hits.
 
-This module pins the second direction: every draw the renderer has an
-explicit branch for must be in the contract, or the contract was narrowed and
-the check says which draw.
+Two vocabulary facts are also pinned, post zero-template migration:
+
+  * `DRAWS` is the removed procedural draw vocabulary: defined in the
+    contract module, empty, and loud.
+  * `LAYER_TYPES` names exactly the surviving media/component vocabulary.
 
 Nothing here copies a list. The renderer side is parsed from the renderer's
-own source (`renderer_draws`), the contract side is read live from
-`core.spec.constants.DRAWS`. A copied list would be a second implementation of the
+own source (`renderer_layer_types`), the contract side is read live from
+`core.spec.constants`. A copied list would be a second implementation of the
 contract, drifting exactly when the first one changes — the failure mode
 `tests/contract/agreement.py` exists to prevent.
 """
 import os
+import re
 import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, ROOT)
 
-from core.spec import constants
-from tests.contract.agreement import (
-    contract_draws,
+from core.spec import constants  # noqa: E402
+from core.spec.shot import validate  # noqa: E402
+from tests.contract.agreement import (  # noqa: E402
+    contract_layer_types,
     contract_leads_renderer,
+    missing_types,
     parser_fresh_or_fail,
-    renderer_draws,
+    renderer_layer_types,
 )
 
 
-class TestContractWeakening(unittest.TestCase):
-    """The renderer may not lead the contract.
+def _spec(layer):
+    return {
+        "id": "weakening-probe",
+        "canvas": {"w": 1080, "h": 1920},
+        "fps": 30,
+        "durationInFrames": 60,
+        "layers": [layer],
+        "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                   "lo": 0.0001, "hi": 0.15}],
+    }
 
-    The policy is deliberate friction: until now the renderer was allowed to
-    be ahead of the contract (a renderer-only draw was simply not offered to
-    authors). It is no longer — a renderer branch must be in the contract,
-    and a contract that dropped one is reported instead of silently
-    narrowing what authors may write.
-    """
 
-    def test_00_the_renderer_does_not_lead_the_contract(self):
+def _layer(ltype):
+    if ltype == "ai":
+        return {"id": "l", "type": "ai", "asset": "a", "keyColor": "#070512",
+                "blend": "normal", "rect": [0, 0, 1080, 1920], "z": 0}
+    if ltype == "video":
+        return {"id": "l", "type": "video", "asset": "v",
+                "rect": [0, 0, 1080, 1920], "z": 0}
+    return {"id": "l", "type": ltype, "component": "Probe",
+            "rect": [0, 0, 1080, 1920], "z": 0}
+
+
+class TestContractNotQuietlyNarrowed(unittest.TestCase):
+    def test_00_the_two_invariants_hold(self):
         # The canary first: if the parser no longer sees the renderer the
-        # way it used to, the set below would be a narrowed idea of the
-        # renderer, and could report a disagreement that is not one.
+        # way it used to, the checks below would be comparing against a
+        # narrowed idea of the renderer.
         self.assertTrue(parser_fresh_or_fail(),
                         "the parser went stale — fix "
                         "tests/contract/agreement.py, not the contract")
-        leading = contract_leads_renderer()
+        missing = missing_types(contract_layer_types(), renderer_layer_types())
         self.assertEqual(
-            leading, set(),
-            f"the renderer draws {sorted(leading)} but the contract does not "
-            f"accept them: the contract was narrowed — add the draw to "
-            f"core.spec.constants.DRAWS (the renderer already draws it) or remove the "
-            f"branch from the renderer; do not shrink the contract silently")
+            missing, set(),
+            f"the contract accepts layer types the renderer never draws: "
+            f"{sorted(missing)} — add the rendering path in the renderer or "
+            f"remove the type from core.spec.constants.LAYER_TYPES; do not "
+            f"leave the contract promising something nothing draws")
+        # A beyond-contract renderer branch is allowed ONLY as a loud
+        # refusal: the validator must reject it by name (see
+        # test_contract_agreement for the full check).
+        for ltype in contract_leads_renderer():
+            errs = validate(_spec(_layer(ltype)))
+            self.assertTrue(errs, f"{ltype!r} must be refused by the validator")
 
-    def test_01_a_narrowed_contract_is_reported_by_name(self):
-        """The counter-proof: weaken the LIVE contract and the check must
-        name the draw that was lost.
-
-        The victim is taken from the live contract (and from the draws the
-        renderer actually has) rather than written down here: a literal list
-        of draw names in this file would be a second copy of the contract —
-        exactly what `tests/contract/agreement.py` warns against.
-        """
-        live = contract_draws()
+    def test_01_a_narrowed_contract_is_observable_through_the_gate(self):
+        """The counter-proof: weaken the LIVE contract and an author's spec
+        must start failing validation. If narrowing were invisible, this
+        test would be the only tripwire — and it must trip."""
+        live = contract_layer_types()
         self.assertTrue(live, "the contract is empty — nothing to weaken")
-        # The victim is a draw the RENDERER has a branch for: dropping such a
-        # draw from the contract is what makes the renderer lead it. (Taken
-        # from the intersection, so the name always means "the renderer drew
-        # it and the contract lost it" — never the fallback-only case.)
-        drawn = renderer_draws() & live
-        self.assertTrue(drawn, "the renderer and the contract share no draw")
-        victim = sorted(drawn)[0]
-        original = constants.DRAWS
-        try:
-            # The live list, narrowed by one draw — the same edit a
-            # maintainer makes when they "clean up" a draw they think is
-            # unused.
-            constants.DRAWS = set(original) - {victim}
-            self.assertNotEqual(constants.DRAWS, original,
-                                "the contract did not actually shrink")
-            leading = contract_leads_renderer()
-        finally:
-            constants.DRAWS = original
-        self.assertIn(
-            victim, leading,
-            f"narrowing the contract by dropping {victim!r} went unreported: "
-            f"leading={sorted(leading)}")
-        # Restoring the contract must clear the report — the check reads the
+        for victim in sorted(live):
+            original = constants.LAYER_TYPES
+            try:
+                constants.LAYER_TYPES = set(original) - {victim}
+                self.assertNotEqual(constants.LAYER_TYPES, original,
+                                    "the contract did not actually shrink")
+                errs = validate(_spec(_layer(victim)))
+                self.assertTrue(
+                    errs,
+                    f"narrowing the contract by dropping {victim!r} was NOT "
+                    f"observable: a spec declaring {victim!r} still validated")
+            finally:
+                constants.LAYER_TYPES = original
+        # Restoring the contract must clear the effect — the gate reads the
         # live list, it does not remember a verdict.
-        self.assertEqual(contract_leads_renderer(), set(),
-                         "the report survived restoring the contract")
+        for ltype in sorted(live):
+            self.assertEqual(validate(_spec(_layer(ltype))), [])
 
 
 class TestPolicyIsDocumented(unittest.TestCase):
-    """The policy is written down where it will be read.
-
-    Two places: next to the list a maintainer edits, and in the Skill an
-    author reads. Plus the two gaps this check does NOT cover — a check that
-    claims more than it covers is its own kind of quiet narrowing.
-    """
+    """The policy is written down where it will be read: next to the lists a
+    maintainer edits."""
 
     # Keep policy checks next to the live contract vocabulary.
     CONTRACT = os.path.join(ROOT, "core", "spec", "constants.py")
-    SKILL = os.path.join(ROOT, "skills", "wrap",
-                         "SKILL.md")
 
     def _text(self, path):
         with open(path, encoding="utf-8") as f:
             return f.read()
 
     def _flat(self, path):
-        """The file's text with whitespace collapsed.
-
-        The assertions below look for whole sentences, not single words: a
-        word like "BOTH" can appear anywhere in a file, and a sentence can
-        wrap across lines. Collapsing the whitespace lets one fragment match
-        a wrapped sentence without pinning the line breaks.
-        """
+        """The file's text with whitespace collapsed, so a sentence can wrap."""
         return " ".join(self._text(path).split())
 
-    def test_00_the_policy_sits_next_to_the_list(self):
+    def test_00_the_migration_policy_sits_next_to_the_lists(self):
         text = self._flat(self.CONTRACT)
-        # assertTrue, not assertIn: the failure message of assertIn dumps
-        # the whole file, and this file is the whole contract vocabulary.
-        self.assertTrue("The renderer may not lead the contract" in text,
-                        "core/spec/constants.py does not warn that the renderer may "
-                        "not lead the contract")
-        self.assertTrue("test_contract_weakening" in text,
-                        "core/spec/constants.py does not point at the check that "
-                        "guards this direction")
+        self.assertTrue("zero-template migration" in text,
+                        "core/spec/constants.py does not state the migration law")
+        self.assertTrue("migration boundary" in text,
+                        "core/spec/constants.py does not say what DRAWS now is")
+        self.assertTrue("DRAWS = set()" in text,
+                        "the removed draw vocabulary must be an explicit empty set")
 
-    def test_00c_draws_is_defined_in_the_contract_module(self):
+    def test_01_the_vocabulary_is_defined_in_the_contract_module(self):
         """The policy check must inspect the source of the live vocabulary."""
         self.assertEqual(os.path.realpath(constants.__file__), self.CONTRACT)
-        self.assertRegex(self._text(self.CONTRACT), r"(?m)^DRAWS\s*=\s*\{")
-        from core.spec import DRAWS
+        self.assertRegex(self._text(self.CONTRACT), r"(?m)^LAYER_TYPES\s*=\s*\{")
+        self.assertRegex(self._text(self.CONTRACT), r"(?m)^DRAWS\s*=\s*set\(\)")
+        from core.spec import DRAWS, LAYER_TYPES
         self.assertIs(DRAWS, constants.DRAWS)
-
-    def test_01_the_policy_is_in_the_skill(self):
-        text = self._flat(self.SKILL)
-        self.assertTrue("The renderer may not lead the contract" in text,
-                        "the Skill does not state the policy")
-        self.assertTrue("test_contract_weakening" in text,
-                        "the Skill does not point at the check")
-
-    def test_02_the_two_gaps_are_written_down(self):
-        """What this check does NOT cover, said out loud."""
-        text = self._flat(self.SKILL)
-        self.assertTrue("BOTH the contract and the renderer stays green" in text,
-                        "the Skill does not say that removing a draw from both "
-                        "the contract and the renderer stays green")
-        self.assertTrue("present but unreachable still" in text,
-                        "the Skill does not say that the renderer side is read "
-                        "from the source, so an unreachable branch still counts "
-                        "as implemented")
+        self.assertIs(LAYER_TYPES, constants.LAYER_TYPES)
+        self.assertEqual(set(DRAWS), set(),
+                         "the procedural draw vocabulary must stay removed")
+        self.assertEqual(set(LAYER_TYPES), {"ai", "video", "component"})
 
 
 if __name__ == "__main__":

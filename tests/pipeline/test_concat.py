@@ -11,6 +11,17 @@ sys.path.insert(0, ROOT)
 from tests.helpers import ensure_rendered, preserve_manifest
 
 
+def _local_bgm(tmpdir, seconds=10):
+    """A locally generated music file (no network, no credits): BGM is an
+    explicit audio file — there are no built-in music presets."""
+    import subprocess as sp
+    bgm = os.path.join(tmpdir, "bed.wav")
+    sp.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+            "-i", f"sine=frequency=220:duration={seconds}",
+            "-ar", "44100", "-ac", "2", bgm], check=True)
+    return bgm
+
+
 class TestConcat(unittest.TestCase):
     def test_00_concat_builds_a_missing_shot_end_to_end(self):
         """A shot with no rendered mp4 must be built by the concat command
@@ -118,7 +129,7 @@ class TestConcat(unittest.TestCase):
         with open(tl_path, "w") as f:
             json.dump({
                 "id": "tl-bgm-seq",
-                "bgm": "ambient",
+                "bgm": _local_bgm(os.path.join(ROOT, ".tmp")),
                 "shots": ["tests/fixtures/shot-01.poster.json"]
             }, f, indent=2)
         with preserve_manifest():
@@ -158,15 +169,11 @@ class TestConcatAudioAlignment(unittest.TestCase):
     """
 
     def _build_audible_spec(self, tmpdir):
-        """A copy of the fixture with a locally generated ambient bed.
-
-        The ambient drone is synthesized locally (no network, no credits), so
-        this shot is audible at the -16 LUFS target without a TTS call.
-        """
+        """A copy of the fixture with a locally generated music bed."""
         with open(os.path.join(ROOT, "tests", "fixtures", "shot-01.poster.json")) as f:
             spec = json.load(f)
         spec["id"] = "concat-audible"
-        spec["audio"] = {"bgm": "ambient"}
+        spec["audio"] = {"bgm": _local_bgm(tmpdir)}
         path = os.path.join(tmpdir, "concat-audible.poster.json")
         with open(path, "w") as f:
             json.dump(spec, f, indent=2)
@@ -238,7 +245,7 @@ class TestRunTimeline(unittest.TestCase):
             shot1 = json.load(f)
         shot1["id"] = "tl-shot-1"
         # A locally generated BGM bed: audible, and no network / no credits.
-        shot1["audio"] = {"bgm": "ambient"}
+        shot1["audio"] = {"bgm": _local_bgm(tmpdir)}
         p1 = os.path.join(tmpdir, "tl-shot-1.poster.json")
         with open(p1, "w") as f:
             json.dump(shot1, f, indent=2)
@@ -250,9 +257,10 @@ class TestRunTimeline(unittest.TestCase):
             "style": "tests/fixtures/style.json",
             "layers": [{
                 "id": "clip", "type": "video", "asset": "tl-clip",
-                "model": "MiniMax-Hailuo-2.3", "duration": 6, "resolution": "768P",
+                "model": "Test-Max", "duration": 6, "resolution": "768P",
+                "prompt": "a clip continuing the previous shot's tail",
                 "first_frame": "tl-shot-1-tail",
-                "rect": [0, 0, 1920, 1080], "z": 0, "plate": False, "muted": True,
+                "rect": [0, 0, 1920, 1080], "z": 0, "muted": True,
             }],
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                        "lo": 0.0005, "hi": 0.15, "lumaDelta": 6}],
@@ -276,15 +284,20 @@ class TestRunTimeline(unittest.TestCase):
         tl_path = self._write_specs(tmpdir)
         out_mp4 = os.path.join(tmpdir, "film.mp4")
 
+        from tests.helpers import env_with_models, make_test_clip, register_test_asset
         with preserve_manifest():
+            clip_rel = "assets/tl-clip.mp4"
+            clip_path = os.path.join(ROOT, clip_rel)
             try:
-                # --force: S1 must build the clip with the CURRENT fixture code.
-                # Without it a placeholder frozen in the ledger by an earlier
-                # run is reused, and the test silently checks yesterday's clip.
+                # Explicit test media, registered up front: shot 1's plate and
+                # shot 2's clip are REUSED by S1 (no connector, no credits);
+                # the seam is still frozen from shot 1's rendered tail.
+                make_test_clip(clip_path, seconds=3)
+                register_test_asset("tl-clip", clip_rel)
                 res = subprocess.run(
                     [sys.executable, "pipeline.py", "run", "--timeline", tl_path,
-                     "--output", out_mp4, "--fixture", "--force"],
-                    cwd=ROOT, capture_output=True, text=True)
+                     "--output", out_mp4],
+                    cwd=ROOT, capture_output=True, text=True, env=env_with_models())
                 self.assertEqual(res.returncode, 0,
                                  f"run --timeline failed:\n{res.stdout}\n{res.stderr}")
                 self.assertIn("seam: freezing tl-shot-1-tail", res.stdout)
@@ -303,7 +316,7 @@ class TestRunTimeline(unittest.TestCase):
                 for g in gates:
                     self.assertTrue(g["pass"], f"Full-video gate {g['id']} failed: {g}")
             finally:
-                for p in (out_mp4,
+                for p in (out_mp4, clip_path,
                           os.path.join(ROOT, "build", "gates_full_run-timeline-test.json")):
                     if os.path.exists(p):
                         os.remove(p)

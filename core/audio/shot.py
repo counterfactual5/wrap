@@ -8,7 +8,6 @@ import os
 import subprocess
 
 from core.runtime.config import ROOT
-from core.audio.bgm import generate_ambient_bgm, generate_opera_bgm
 from core.audio.captions import clauses_from_boundaries
 from core.audio.mastering import run_two_pass_loudnorm
 from core.audio.tts import get_audio_duration, synthesize_voiceover_with_timings
@@ -50,10 +49,12 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     voiceover_text = (audio_spec.get("voiceover") or "").strip() if isinstance(audio_spec, dict) else ""
-    voice = audio_spec.get("voice", "neural") if isinstance(audio_spec, dict) else "neural"
+    voice = audio_spec.get("voice") if isinstance(audio_spec, dict) else None
     bgm_type = audio_spec.get("bgm") if isinstance(audio_spec, dict) else None
     bgm_offset = float(audio_spec.get("bgmOffset", 0.0)) if isinstance(audio_spec, dict) and audio_spec.get("bgmOffset") is not None else 0.0
-    rate = audio_spec.get("rate", "+18%") if isinstance(audio_spec, dict) else "+18%"
+    rate = (audio_spec.get("rate") or "+0%") if isinstance(audio_spec, dict) else "+0%"
+    if voiceover_text and not voice:
+        raise ValueError("audio.voiceover requires an explicit audio.voice; the engine ships no default narrator")
 
     # Unique per-shot prefix so concurrent S3 runs never share scratch files.
     tmp_voice = out_path + ".voice.wav"
@@ -68,6 +69,8 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
             shutil.copyfile(voiceover_text, tmp_voice)
             raw_voice_dur = get_audio_duration(tmp_voice)
         else:
+            if voiceover_text.lower().endswith((".wav", ".mp3", ".aac", ".m4a", ".ogg", ".flac")):
+                raise FileNotFoundError(f"Voiceover file not found: {voiceover_text}")
             _, raw_voice_dur, boundaries = synthesize_voiceover_with_timings(
                 voiceover_text, voice=voice, out_path=tmp_voice, rate=rate
             )
@@ -99,31 +102,25 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
     bgm_vol = 0.22 if has_voice else 1.0  # Background music is ducked when voiceover is present; full volume for music-only shots
 
     if has_bgm:
-        if bgm_type in ("opera", "shadow_puppet", "percussion"):
-            generate_opera_bgm(target_duration, fps=fps, punches=punches, out_path=tmp_bgm)
-            bgm_vol = 0.34 if has_voice else 1.0
-        elif bgm_type == "ambient":
-            generate_ambient_bgm(target_duration, out_path=tmp_bgm)
+        # Check file paths: absolute, relative to ROOT, or in assets/
+        candidates = [
+            bgm_type,
+            os.path.join(ROOT, bgm_type),
+            os.path.join(ROOT, "assets", bgm_type),
+        ]
+        found_bgm = next((p for p in candidates if os.path.exists(p)), None)
+        if found_bgm:
+            fade_dur = min(0.04, target_duration * 0.1)
+            fade_filter = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, target_duration - fade_dur):.3f}:d={fade_dur:.3f}"
+            seek_args = ["-ss", f"{bgm_offset:.3f}"] if bgm_offset > 0 else []
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1"] + seek_args + [
+                "-i", found_bgm, "-t", str(target_duration),
+                "-af", fade_filter,
+                "-ar", "44100", "-ac", "2", tmp_bgm
+            ], check=True)
         else:
-            # Check file paths: absolute, relative to ROOT, or in assets/
-            candidates = [
-                bgm_type,
-                os.path.join(ROOT, bgm_type),
-                os.path.join(ROOT, "assets", bgm_type),
-            ]
-            found_bgm = next((p for p in candidates if os.path.exists(p)), None)
-            if found_bgm:
-                fade_dur = min(0.04, target_duration * 0.1)
-                fade_filter = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, target_duration - fade_dur):.3f}:d={fade_dur:.3f}"
-                seek_args = ["-ss", f"{bgm_offset:.3f}"] if bgm_offset > 0 else []
-                subprocess.run([
-                    "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1"] + seek_args + [
-                    "-i", found_bgm, "-t", str(target_duration),
-                    "-af", fade_filter,
-                    "-ar", "44100", "-ac", "2", tmp_bgm
-                ], check=True)
-            else:
-                generate_ambient_bgm(target_duration, out_path=tmp_bgm)
+            raise FileNotFoundError(f"BGM file not found: {bgm_type}; built-in music presets were removed")
 
     if has_voice and has_bgm:
         base_fc = (

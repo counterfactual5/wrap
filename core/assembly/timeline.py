@@ -180,7 +180,7 @@ def concat_stream_problem(clips):
     return None
 
 
-def gate_full_video(out_path, timeline_id, segments):
+def gate_full_video(out_path, timeline_id, segments, allow_black=False):
     """Post-assembly QC on the concatenated full video.
 
     Per-shot gates (S4) already ran before stitching; this catches what only
@@ -188,7 +188,9 @@ def gate_full_video(out_path, timeline_id, segments):
     frames, whole-track silence/loudness, A/V alignment, and loudness jumps
     across cut boundaries (each shot is loudnorm'd independently — two in-band
     shots can still pop at the seam). Writes build/gates_full_{timeline}.json
-    (namespaced per timeline, unlike the shared per-shot gates.json)."""
+    (namespaced per timeline, unlike the shared per-shot gates.json).
+    `allow_black` skips the black-frame check for an intentionally dark film;
+    the caller decides — the timeline file is the only thing that can say so."""
     from core import audio
 
     results, red = [], False
@@ -205,15 +207,17 @@ def gate_full_video(out_path, timeline_id, segments):
     delta = abs(av["video_duration"] - expected)
     add("duration", "timeline_duration_delta", round(delta, 3), delta <= 0.25, "<= 0.250 s")
 
-    # 2. True digital-black frames (concat fill around missing frames). The dark
-    #    space canvas (#06080F, luma ~8) stays above pixel_black_th=0.02 (~5).
-    bd = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", out_path,
-         "-vf", "blackdetect=d=0.2:picture_black_ratio_th=0.98:pixel_black_th=0.02",
-         "-f", "null", "-"],
-        capture_output=True, text=True).stderr
-    n_black = bd.count("black_start")
-    add("black", "blackdetect", n_black, n_black == 0, "0 intervals")
+    if allow_black:
+        print("SKIP  black          blackdetect         timeline allows black (allow_black=true)")
+    else:
+        # 2. True digital-black frames (concat fill around missing frames).
+        bd = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", out_path,
+             "-vf", "blackdetect=d=0.2:picture_black_ratio_th=0.98:pixel_black_th=0.02",
+             "-f", "null", "-"],
+            capture_output=True, text=True).stderr
+        n_black = bd.count("black_start")
+        add("black", "blackdetect", n_black, n_black == 0, "0 intervals")
 
     if av.get("has_audio"):
         # A timeline can mix silent shots (no soundtrack by design) with

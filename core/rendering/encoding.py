@@ -17,9 +17,13 @@ def video_audio_source(spec):
       - otherwise the pipeline's TTS chain owns it.
     Returns the prepared clip path, or None."""
     shot_id = spec.get("id", "shot-01")
-    for L in spec["layers"]:
-        if L.get("type") != "video" or L.get("muted", True):
-            continue
+    candidates = [L for L in spec["layers"] if L.get("type") == "video" and not L.get("muted", True)]
+    if len(candidates) > 1:
+        raise RuntimeError(
+            f"{spec.get('id')}: more than one unmuted video layer "
+            f"({[L.get('id') for L in candidates]}) — the pipeline cannot decide "
+            f"whose track owns the soundtrack; set \"muted\": true on all but one.")
+    for L in candidates:
         row = manifest.verified("prepared", f"{shot_id}/{L['asset']}")
         if row is None:
             continue
@@ -107,11 +111,8 @@ def encode_mp4(spec, frames_dir, out_mp4):
     elif wants_tts:
         from core.audio import prepare_shot_audio
         audio_file = os.path.join(ROOT, ".tmp", f"{spec['id']}_audio.aac")
-        if spec.get("punches"):
-            prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file, punches=spec["punches"])
-        else:
-            prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
-        bgm_label = audio_spec.get("bgm", "ambient")
+        prepare_shot_audio(audio_spec, spec["durationInFrames"], FPS, audio_file)
+        bgm_label = audio_spec.get("bgm")
         # Name the track that was ACTUALLY built. The old label said
         # "TTS chain (edge-tts + ...)" for every branch, which sent the
         # author looking for a narration that was never synthesized.
@@ -138,11 +139,6 @@ def encode_mp4(spec, frames_dir, out_mp4):
     if audio_file and os.path.exists(audio_file):
         cmd.extend(["-i", audio_file])
 
-    # vibe_grade: cinema texture on encode (deterministic filters — same spec
-    # still yields the same mp4). Gates measure the ungraded S3 frames; this is
-    # presentation layered on top.
-    if spec.get("vibe_grade"):
-        cmd.extend(["-vf", "split[a][b];[b]gblur=sigma=14[bl];[a][bl]blend=all_mode=screen:all_opacity=0.22,noise=alls=12:allf=t,vignette=PI/3.8,eq=contrast=1.1:saturation=1.16"])
 
     cmd.extend([
         "-frames:v", str(spec["durationInFrames"]), "-c:v", "libx264", "-preset", "medium", "-crf", "18",

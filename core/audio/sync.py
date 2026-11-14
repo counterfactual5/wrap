@@ -1,7 +1,8 @@
 """Single-source-of-truth alignment of a shot spec to TTS speech timings.
 
-- sync_spec_audio: Aligns shot durationInFrames and captions items to TTS speech timings,
-  pacing captions from character reading speed when no voiceover is declared.
+- sync_spec_audio: Aligns shot durationInFrames and tracks.captions to TTS
+  speech clause timings. When no voiceover is declared, a spec's tracks are
+  left untouched (a judge/author owns them); there is no pacing default.
 """
 import json
 import math
@@ -9,7 +10,7 @@ import os
 import re
 import tempfile
 
-from core.audio.captions import _extract_highlight, clauses_from_boundaries
+from core.audio.captions import clauses_from_boundaries
 from core.audio.tts import synthesize_voiceover_with_timings
 
 def _norm_cjk(s):
@@ -64,14 +65,13 @@ def _rescale_frame(f, old_max, new_max, anchors=None):
 
 def _rescale_spec_timings(spec, old_frames, new_frames, anchors=None):
     """Piecewise clause-anchored (or proportional) rescaling of layer anim keyframes,
-    poses, gait ranges, path reveals, and punches."""
+    poses, and tracks.events frames."""
     old_max = max(1, old_frames - 1)
     new_max = max(1, new_frames - 1)
-    if isinstance(spec.get("punches"), list):
-        spec["punches"] = sorted({
-            _rescale_frame(p, old_max, new_max, anchors=anchors)
-            for p in spec["punches"] if isinstance(p, int)
-        })
+    for event in (spec.get("tracks") or {}).get("events", []):
+        for key in ("frame", "end_frame"):
+            if key in event:
+                event[key] = _rescale_frame(event[key], old_max, new_max, anchors=anchors)
     for L in spec.get("layers", []):
         if isinstance(L.get("anim"), dict):
             for ch, kfs in L["anim"].items():
@@ -94,26 +94,16 @@ def _rescale_spec_timings(spec, old_frames, new_frames, anchors=None):
                         nf = prev_pf + 1
                     pose["frame"] = nf
                     prev_pf = nf
-        if isinstance(L.get("gait"), dict) and isinstance(L["gait"].get("range"), list) and len(L["gait"]["range"]) == 2:
-            r0, r1 = L["gait"]["range"]
-            nr0 = _rescale_frame(r0, old_max, new_max, anchors=anchors)
-            nr1 = max(nr0 + 1, _rescale_frame(r1, old_max, new_max, anchors=anchors))
-            L["gait"]["range"] = [nr0, nr1]
-        if L.get("type") == "code" and L.get("draw") == "path" and isinstance(L.get("params"), dict):
-            rev = L["params"].get("reveal")
-            if isinstance(rev, list) and len(rev) == 2:
-                nr0 = _rescale_frame(rev[0], old_max, new_max, anchors=anchors)
-                nr1 = max(nr0 + 1, _rescale_frame(rev[1], old_max, new_max, anchors=anchors))
-                L["params"]["reveal"] = [nr0, nr1]
 
 
 def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=20):
-    """Synchronize a shot spec's durationInFrames and captions layer directly from audio.voiceover.
+    """Synchronize a shot spec's durationInFrames and tracks.captions from audio.voiceover.
 
     TTS is strictly optional:
-    - If audio.voiceover is present, aligns durationInFrames and captions to speech clauses.
-    - If audio.voiceover is omitted (pure BGM / music-driven shot), paces captions items
-      naturally across durationInFrames according to character reading speed.
+    - If audio.voiceover is present, aligns durationInFrames and tracks.captions
+      to speech clauses and warps layer keyframes / poses / events to them.
+    - If audio.voiceover is omitted, the spec is left untouched (tracks are
+      authored data; the engine does not pace or design them).
     """
     with open(spec_path) as f:
         spec = json.load(f)
@@ -121,49 +111,15 @@ def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=2
     fps = spec.get("fps", 30)
     audio_spec = spec.get("audio") or {}
     voiceover_text = (audio_spec.get("voiceover") or "").strip()
+    tracks = spec.setdefault("tracks", {})
+    old_items = tracks.get("captions", [])
     if not voiceover_text:
-        # Pure music / text-only shot mode (e.g. Douyin BGM + text captions):
-        # Even without voiceover, automatically schedule captions items over durationInFrames.
-        updated_captions = 0
-        caption_items = []
-        for captions_layer in spec.get("layers", []):
-            if (captions_layer.get("type") != "code" or captions_layer.get("draw") != "captions"
-                    or not isinstance(captions_layer.get("params"), dict)):
-                continue
-            items = captions_layer["params"].get("items") or []
-            if items:
-                dur_frames = spec.get("durationInFrames", 150)
-                char_counts = [max(1, len(re.sub(r"\W+", "", it.get("text", "")))) for it in items]
-                tot_chars = sum(char_counts)
-                cursor = 0
-                prev_f = -1
-                for idx, (it, count) in enumerate(zip(items, char_counts)):
-                    f_start = int(round(cursor))
-                    if f_start <= prev_f:
-                        f_start = prev_f + 1
-                    it_span = max(15, int(round(dur_frames * (count / tot_chars))))
-                    it["frame"] = f_start
-                    it["end_frame"] = min(dur_frames - 1, f_start + it_span)
-                    if not it.get("hl"):
-                        it["hl"] = _extract_highlight(it.get("text", ""))
-                    prev_f = f_start
-                    cursor += it_span
-                updated_captions += 1
-                if updated_captions == 1:
-                    caption_items = items
-        if updated_captions:
-            with open(spec_path, "w") as f:
-                json.dump(spec, f, indent=2, ensure_ascii=False)
-            return {
-                "shot_id": spec.get("id"),
-                "mode": "captions_paced_without_voiceover",
-                "updated_caption_layers": updated_captions,
-                "captions": caption_items,
-            }
-        return {"shot_id": spec.get("id"), "status": "no_voiceover"}
+        return {"shot_id": spec.get("id"), "status": "no_voiceover", "captions": old_items}
 
-    voice = audio_spec.get("voice", "neural")
-    rate = audio_spec.get("rate", "+18%")
+    voice = audio_spec.get("voice")
+    rate = audio_spec.get("rate") or "+0%"
+    if voiceover_text and not voice:
+        raise ValueError("audio.voiceover requires an explicit audio.voice; the engine ships no default narrator")
     with tempfile.TemporaryDirectory(prefix="wrap-sync-audio-") as temp_dir:
         tmp_wav = os.path.join(temp_dir, "voice.wav")
         _, raw_dur, boundaries = synthesize_voiceover_with_timings(
@@ -178,28 +134,12 @@ def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=2
         voiceover_text, boundaries, raw_dur, fps=fps, max_chars=max_chars
     )
 
-    old_items = []
-    for L in spec.get("layers", []):
-        if L.get("type") == "code" and L.get("draw") == "captions":
-            old_items = (L.get("params") or {}).get("items") or []
-            break
-
     anchors = _build_clause_anchors(old_items, clauses, max(1, old_frames - 1), max(1, new_frames - 1))
     if rescale_anim and (new_frames != old_frames or len(anchors) > 2):
         _rescale_spec_timings(spec, old_frames, new_frames, anchors=anchors)
     spec["durationInFrames"] = new_frames
-    caption_items = [
-        {"frame": c["frame"], "end_frame": c["end_frame"], "text": c["text"], "hl": c["hl"], "size": c["size"]}
-        for c in clauses
-    ]
-
-    updated_captions = 0
-    for L in spec.get("layers", []):
-        if L.get("type") == "code" and L.get("draw") == "captions":
-            L.setdefault("params", {})
-            L["params"]["items"] = caption_items
-            updated_captions += 1
-
+    caption_items = clauses
+    tracks["captions"] = caption_items
     with open(spec_path, "w") as f:
         json.dump(spec, f, indent=2, ensure_ascii=False)
 
@@ -209,6 +149,6 @@ def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=2
         "old_durationInFrames": old_frames,
         "new_durationInFrames": new_frames,
         "shot_duration_sec": round(new_frames / fps, 2),
-        "updated_caption_layers": updated_captions,
+        "updated_caption_tracks": 1,
         "captions": caption_items,
     }

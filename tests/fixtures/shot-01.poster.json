@@ -9,18 +9,6 @@
   "style": "tests/fixtures/style.json",
   "layers": [
     {
-      "id": "bg",
-      "type": "code",
-      "draw": "grid",
-      "rect": [
-        0,
-        0,
-        1920,
-        1080
-      ],
-      "z": 0
-    },
-    {
       "id": "city",
       "type": "ai",
       "asset": "city-silhouette",
@@ -38,26 +26,6 @@
         "zoom": [
           1.0,
           1.06
-        ]
-      }
-    },
-    {
-      "id": "accent",
-      "type": "code",
-      "draw": "bar",
-      "rect": [
-        0,
-        880,
-        240,
-        70
-      ],
-      "color": "#E03A3A",
-      "z": 2,
-      "motion": {
-        "type": "geometric",
-        "pan": [
-          0,
-          540
         ]
       }
     }
@@ -82,17 +50,15 @@
       ]
     },
     {
-      "id": "red",
-      "metric": "red_pixel_ratio",
-      "lo": 0.002,
-      "hi": 0.02
-    },
-    {
       "id": "keyPurity",
       "metric": "edge_key_purity",
       "lo": 0.98,
       "ring": 8,
       "tol": 12
     }
-  ]
+  ],
+  "tracks": {
+    "captions": [],
+    "events": []
+  }
 }

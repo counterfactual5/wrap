@@ -158,25 +158,9 @@ def _video_hint(spec, reason="low_motion"):
             f"motion.zoom / active keyframes), not the composition.")
 
 
-def _bar_band(spec):
-    """Vertical band covering the accent bar's travel (rect y .. y+h, padded)."""
-    for L in spec["layers"]:
-        if L["type"] == "code" and L.get("draw") == "bar":
-            x, y, w, h = L["rect"]
-            return [max(0, y - 20), min(spec["canvas"]["h"], y + h + 20)]
-    return None
-
-
-def _accent_color(spec):
-    for L in spec["layers"]:
-        if L["type"] == "code" and L.get("draw") == "bar":
-            return L.get("color")
-    return None
-
-
 def main():
     parser = argparse.ArgumentParser(description="S4: Quality gates validation")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (required)")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
@@ -194,18 +178,16 @@ def main():
         if g["metric"] == "subject_motion_ratio":
             # Same metric, restricted to the region outside g["region"] — a
             # panning bar can no longer mask a static AI subject.
-            band = g.get("region") or _bar_band(spec)
+            band = g.get("region")
             exclude = tuple(band) if band else None
             return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=exclude))
         if g["metric"] in ("red_pixel_ratio", "accent_color_ratio"):
-            if g["metric"] == "accent_color_ratio":
-                from core.spec.naming import hex_rgb
-                color = _accent_color(spec)
-                if color is None:
-                    raise RuntimeError("accent_color_ratio: no bar layer color in spec")
-                tables = metrics._mask_tables(hex_rgb(color))
-                return metrics.median(metrics.color_pixel_ratios(frames, W, H, tables, inp))
-            return metrics.median(metrics.red_pixel_ratios(frames, W, H, inp))
+            from core.spec.naming import hex_rgb
+            color = g.get("color")
+            if not color:
+                raise ValueError("color gate requires explicit color")
+            tables = metrics._mask_tables(hex_rgb(color))
+            return metrics.median(metrics.color_pixel_ratios(frames, W, H, tables, inp))
         if g["metric"] == "edge_key_purity":
             # Verify sha256 through the manifest (not trust a stored number): a
             # tampered prepared asset must fail the gate, not sail through it.
@@ -251,11 +233,15 @@ def main():
             if hint:
                 print(hint)
 
-    fz = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.5", "-f", "null", "-"],
-        capture_output=True, text=True
-    ).stderr
-    frozen = [l for l in fz.splitlines() if "freeze_start" in l]
+    if spec.get("frame_freeze") is True:
+        print("SKIP  freeze     freezedetect         spec allows frozen frames (frame_freeze=true)")
+        frozen = []
+    else:
+        fz = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.5", "-f", "null", "-"],
+            capture_output=True, text=True
+        ).stderr
+        frozen = [l for l in fz.splitlines() if "freeze_start" in l]
     print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")
     if frozen:
         # The motion gate's verdict picks the diagnosis. If the frame-to-frame
@@ -267,8 +253,8 @@ def main():
         hint = _video_hint(spec, reason="low_motion" if motion_failed else "frozen_window")
         if not hint:
             hint = ("\n       -> the picture was IDENTICAL for >= 0.5s and the shot has "
-                    "no video layer: nothing moves unless a layer carries motion (a "
-                    "code layer without motion, or a camera move too slow to register).")
+                    "no moving media: give a component a camera move / anim / anim-on-"
+                    "pose, or allow frozen frames with \"frame_freeze\": true in the spec.")
         print(hint)
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
@@ -293,7 +279,6 @@ def main():
         else:
             # 1. Silence and content check
             sil_res = audio.measure_audio_silence(mp4)
-            is_ambient = spec.get("ambient", False) or (isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("ambient", False))
 
             sil_ok = not sil_res["is_silent"]
 
@@ -309,16 +294,16 @@ def main():
             elif isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("voiceover"):
                 has_voice = True
 
-            # When a shot has voiceover narration, verify speech band content unless marked ambient.
-            # When a shot has no voiceover (pure BGM / music-only shot / Douyin track), speech-band
-            # check is automatically exempt — pure music only needs to be non-silent (> -45 dB) and in LUFS range.
-            if sil_ok and has_voice and not is_ambient and not sil_res.get("has_content", True):
+            # When a shot has voiceover narration, verify speech band content.
+            # A shot with no voiceover (pure BGM / music-only shot) is exempt
+            # from speech-band detection — it only needs to be non-silent and in LUFS range.
+            if sil_ok and has_voice and not sil_res.get("has_content", True):
                 sil_ok = False
                 sp_m = sil_res.get("speech_max_volume", -99.0)
                 print(f"FAIL  silence    audio_content        no voice/foreground content (speech band max {sp_m:.1f} dB <= -25.0 dB). "
-                      f"Declare 'ambient': true in spec if this is an ambient shot.")
+                      f"If this shot should not carry speech, remove the voiceover declaration; the engine does not accept an 'ambient' opt-out.")
             else:
-                tag = " (ambient)" if is_ambient else (" (music-only)" if not has_voice else "")
+                tag = " (music-only)" if not has_voice else ""
                 print(f"{'PASS' if sil_ok else 'FAIL'}  silence    audio_max_volume     {sil_res['max_volume']:.1f} dB  [>-45.0 dB]{tag}")
 
             red |= not sil_ok
@@ -326,7 +311,6 @@ def main():
                 "id": "audio_silence", "metric": "audio_max_volume",
                 "value": sil_res["max_volume"], "lo": -45.0, "pass": sil_ok,
                 "has_content": sil_res.get("has_content", True),
-                "ambient": is_ambient
             })
 
             # 2. Integrated loudness check: EBU R128 (-16 LUFS target, range [-19.0, -13.0])

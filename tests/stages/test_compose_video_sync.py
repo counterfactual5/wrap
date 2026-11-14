@@ -1,5 +1,5 @@
 """S3 compose: video timeline parity — native-audio playbackRate sync and the
-Quartz fallback's trim / speed / rect / contain handling.
+frame picker's trim / speed / rect / contain handling.
 
 The contract under test is read from the installed renderer (remotion
 4.0.529, node_modules): remotion/Shot.tsx maps trim -> trimBefore/trimAfter =
@@ -272,9 +272,10 @@ class TestQuartzFramePicking(unittest.TestCase):
         expect = [min(int((i % 20) * 1.5), 29) for i in range(40)]
         self.assertEqual(picked, expect)
 
-    def test_05_trim_no_loop_fills_with_plate_background(self):
-        # A trimmed <Video> unmounts when its window ends: Remotion shows the
-        # wrapper div's plate background (#030509) for the rest of the shot.
+    def test_05_trim_no_loop_fills_transparent(self):
+        # A trimmed <Video> unmounts when its window ends: the layer simply
+        # stops being drawn, so the fill frames are TRANSPARENT and lower
+        # layers show through. No plate chrome, no baked background.
         layer = _layer(trim=[0.0, 0.3333], loop=False)
         fake = _FakeFfmpegWindow(10)
         with tempfile.TemporaryDirectory() as d:
@@ -291,20 +292,9 @@ class TestQuartzFramePicking(unittest.TestCase):
                 else:
                     w, h, pixel = _png_payload(path)
                     self.assertEqual((w, h), (100, 50))
-                    self.assertEqual(pixel, bytes((3, 5, 9, 255)),
-                                     "plate background must fill unmounted frames")
+                    self.assertEqual(pixel, bytes((0, 0, 0, 0)),
+                                     "unmounted frames must be transparent")
             self.assertEqual(real, 10)
-
-    def test_06_trim_no_loop_plate_false_fills_transparent(self):
-        layer = _layer(trim=[0.0, 0.3333], loop=False, plate=False)
-        fake = _FakeFfmpegWindow(10)
-        with tempfile.TemporaryDirectory() as d:
-            out = os.path.join(d, "frames")
-            with mock.patch.object(video_frames.subprocess, "run", side_effect=fake):
-                video_frames._extract_video_frames(layer, "clip.mp4", out, 12, 30, 100, 50)
-            w, h, pixel = _png_payload(os.path.join(out, "00012.png"))
-            self.assertEqual(pixel, bytes((0, 0, 0, 0)),
-                             "plate:false must let lower layers show through")
 
     def test_07_cover_and_contain_build_the_objectfit_chains(self):
         _, cover_cmd = self._pick(_layer(), 10, 40, 320, 180)
@@ -316,8 +306,8 @@ class TestQuartzFramePicking(unittest.TestCase):
         vf = contain_cmd[contain_cmd.index("-vf") + 1]
         self.assertIn("scale=320:180:force_original_aspect_ratio=decrease", vf)
         self.assertIn("pad=320:180", vf)
-        self.assertIn("color=0x030509@1.0", vf,
-                      "contain letterboxes in the plate background")
+        self.assertIn("color=black@0.0", vf,
+                      "contain letterboxes transparently, no plate background")
 
     def test_08_no_stream_loop_and_capped_window_pull(self):
         # Looping is done by the Python picker (Remotion's <Loop>), so ffmpeg
@@ -328,41 +318,33 @@ class TestQuartzFramePicking(unittest.TestCase):
         self.assertEqual(int(cap), math.ceil(30 * 2) + 8)
 
 
-class TestQuartzRouting(unittest.TestCase):
-    """The direct-to-frames fast path is only valid for a single full-canvas
-    video layer; anything else goes through the Swift compositor."""
+class TestRemotionIsTheOnlyRenderer(unittest.TestCase):
+    """The Quartz compositor and its single-layer fast path are REMOVED: S3
+    always renders through Remotion. The pin is source-derived, so a Quartz
+    path coming back is reported instead of silently re-appearing."""
 
-    def _spec_layers(self, layers):
+    def test_00_quartz_is_a_loud_tombstone_not_a_renderer(self):
+        """The removed Quartz design backend refuses by raising — asking for
+        it (POSTER_FORCE_QUARTZ=1) must fail the stage, never draw a
+        fallback design."""
+        from core.rendering.quartz import _render_quartz_fallback
+        with self.assertRaises(RuntimeError) as ctx:
+            _render_quartz_fallback({"id": "x"}, "/tmp/never", "x")
+        self.assertIn("Quartz", str(ctx.exception))
         spec = _spec()
-        spec["layers"] = layers
-        return spec
-
-    def test_00_single_full_canvas_video_layer_is_fast(self):
-        spec = self._spec_layers([_layer()])
-        self.assertIs(video_frames._quartz_fast_path_layer(spec), spec["layers"][0])
-
-    def test_01_offset_rect_needs_the_compositor(self):
-        spec = self._spec_layers([_layer(rect=[40, 60, 1080, 1920])])
-        self.assertIsNone(video_frames._quartz_fast_path_layer(spec))
-
-    def test_02_partial_rect_needs_the_compositor(self):
-        spec = self._spec_layers([_layer(rect=[0, 0, 540, 960])])
-        self.assertIsNone(video_frames._quartz_fast_path_layer(spec))
-
-    def test_03_more_than_one_layer_needs_the_compositor(self):
-        spec = self._spec_layers([_layer(), {"id": "t", "type": "text",
-                                             "text": "x", "rect": [0, 0, 10, 10],
-                                             "z": 1}])
-        self.assertIsNone(video_frames._quartz_fast_path_layer(spec))
-
+        with mock.patch.dict(os.environ, {"POSTER_FORCE_QUARTZ": "1"}):
+            with self.assertRaises(RuntimeError) as ctx:
+                remotion.render_remotion(spec, tempfile.mkdtemp(), spec["id"])
+        self.assertIn("Quartz", str(ctx.exception))
+        self.assertFalse(hasattr(video_frames, "_quartz_fast_path_layer"),
+                         "the removed Quartz fast path came back")
 
 class TestRealExtraction(unittest.TestCase):
     """Real ffmpeg: fitted frame sizes, and rate-driven duplication."""
 
     def _fixture(self, d, seconds=1):
-        path = os.path.join(d, "clip.mp4")
-        s1._write_video_fixture(path, seconds=seconds, fps=30, w=270, h=480)
-        return path
+        from tests.helpers import make_test_clip
+        return make_test_clip(os.path.join(d, "clip.mp4"), seconds=seconds, fps=30, w=270, h=480)
 
     def test_00_cover_and_contain_fit_the_rect_exactly(self):
         with tempfile.TemporaryDirectory() as d:

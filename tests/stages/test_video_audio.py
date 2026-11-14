@@ -154,11 +154,12 @@ class TestFixtureCarriesAudio(unittest.TestCase):
     """The local fixture must contain a real audio track, or the tests above
     would pass on a clip that never had one."""
 
-    def test_00_fixture_has_an_audio_stream(self):
+    def test_00_test_clip_has_an_audio_stream(self):
         import tempfile
+        from tests.helpers import make_test_clip
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "clip.mp4")
-            s1._write_video_fixture(out, seconds=1, with_audio=True)
+            make_test_clip(out, seconds=1, with_audio=True)
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
                  "-of", "csv=p=0", out],
@@ -178,12 +179,9 @@ class TestVideoAudioEndToEnd(unittest.TestCase):
             "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
             "fps": 30,
             "durationInFrames": 60,
-            "vibe": False,
-            "style": "tests/fixtures/style-quantum.json",
             "layers": [
                 {"id": "clip", "type": "video", "asset": "audio-e2e-clip",
-                 "rect": [0, 0, 1080, 1920], "z": 0, "plate": False,
-                 "muted": False},
+                 "rect": [0, 0, 1080, 1920], "z": 0, "muted": False},
             ],
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                        "lo": 0.0001, "hi": 0.3}],
@@ -196,23 +194,18 @@ class TestVideoAudioEndToEnd(unittest.TestCase):
             json.dump(spec, f, indent=2)
 
         with preserve_manifest():
+            clip_path = os.path.join(ROOT, "assets", "audio-e2e-clip.mp4")
             try:
-                # A fixture clip WITH audio: the track must survive S2, be
-                # mastered in S3 and be measured by S4.
-                gen = subprocess.run(
-                    [sys.executable, "stages/01_generate.py", "--spec", spec_path,
-                     "--fixture"],
-                    cwd=ROOT, capture_output=True, text=True)
-                self.assertEqual(gen.returncode, 0, gen.stdout + gen.stderr)
-
-                # Give the fixture a real track (the default fixture is silent).
-                clip_path = os.path.join(ROOT, "assets", "audio-e2e-clip.mp4")
-                s1._write_video_fixture(clip_path, seconds=2, with_audio=True)
+                # A test clip WITH audio, registered up front: the track must
+                # survive S1's reuse path, S2, be mastered in S3 and measured
+                # by S4.
+                from tests.helpers import make_test_clip
+                make_test_clip(clip_path, seconds=2, with_audio=True)
                 from core.runtime import manifest
                 manifest.register("assets", "audio-e2e-clip",
-                                  "assets/audio-e2e-clip.mp4", source="fixture")
+                                  "assets/audio-e2e-clip.mp4", source="test-media")
 
-                for stage in ("02_prepare.py", "03_compose.py"):
+                for stage in ("01_generate.py", "02_prepare.py", "03_compose.py"):
                     res = subprocess.run(
                         [sys.executable, os.path.join("stages", stage),
                          "--spec", spec_path],
@@ -243,8 +236,7 @@ class TestVideoAudioEndToEnd(unittest.TestCase):
                 for g in gates:
                     self.assertTrue(g["pass"], f"gate {g['id']} failed: {g}")
             finally:
-                for path in (spec_path,
-                             os.path.join(ROOT, "assets", "audio-e2e-clip.mp4")):
+                for path in (spec_path, clip_path):
                     if os.path.exists(path):
                         os.remove(path)
 

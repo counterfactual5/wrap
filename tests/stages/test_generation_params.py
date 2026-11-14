@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -23,7 +24,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__
 sys.path.insert(0, ROOT)
 
 from core.generation import models
+from core.spec.layers import validate_video_generation
 from core.spec.shot import validate
+from tests.helpers import TEST_IMAGE_MODELS, TEST_VIDEO_MODELS
 
 _spec = importlib.util.spec_from_file_location(
     "s1_gen_params", os.path.join(ROOT, "stages", "01_generate.py")
@@ -54,43 +57,46 @@ def _spec(layer=None):
 
 
 class TestVideoParamValidation(unittest.TestCase):
-    """The validator must agree with the backend catalog."""
+    """Structural `validate` is model-agnostic (a frozen asset must validate
+    with no declared model at all); the capability table is consulted ONCE,
+    at generation time, by core.spec.layers.validate_video_generation —
+    before S1 spends anything on a call."""
 
-    def test_00_known_model_and_duration_pass(self):
-        self.assertEqual(validate(_spec({"model": "MiniMax-H3-Max",
-                                         "duration": 6})), [])
+    def setUp(self):
+        self._patch = mock.patch.dict(models.VIDEO_MODELS, TEST_VIDEO_MODELS)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
 
-    def test_01_unknown_model_is_rejected(self):
-        errs = validate(_spec({"model": "MiniMax-H3-Maxx"}))
-        self.assertTrue(any("unknown" in e for e in errs), errs)
+    def test_00_a_declared_model_with_an_in_range_duration_passes_both_gates(self):
+        layer = _spec({"model": "Test-Max", "duration": 6, "resolution": "768P"})["layers"][0]
+        self.assertEqual(validate(_spec(layer)), [])
+        self.assertEqual(validate_video_generation(layer, "Test-Max"), [])
 
-    def test_02_duration_below_model_minimum_is_rejected(self):
-        # H3-Max accepts 5-15s; 3s would be rejected by the backend.
-        errs = validate(_spec({"model": "MiniMax-H3-Max", "duration": 3}))
+    def test_01_structural_validate_accepts_any_model_name(self):
+        self.assertEqual(validate(_spec({"model": "Not-Declared-Anywhere"})), [])
+
+    def test_02_the_generation_time_check_refuses_an_undeclared_model(self):
+        errs = validate_video_generation({"id": "clip", "asset": "a"}, "MiniMax-H3-Maxx")
+        self.assertTrue(any("No configured video capabilities" in e for e in errs), errs)
+
+    def test_03_duration_below_model_minimum_is_rejected(self):
+        layer = _spec({"model": "Test-Max", "duration": 3, "resolution": "768P"})["layers"][0]
+        errs = validate_video_generation(layer, "Test-Max")
         self.assertTrue(any("duration" in e for e in errs), errs)
 
-    def test_03_duration_above_model_maximum_is_rejected(self):
-        errs = validate(_spec({"model": "MiniMax-H3-Max", "duration": 20}))
+    def test_04_duration_above_model_maximum_is_rejected(self):
+        layer = _spec({"model": "Test-Max", "duration": 20, "resolution": "768P"})["layers"][0]
+        errs = validate_video_generation(layer, "Test-Max")
         self.assertTrue(any("duration" in e for e in errs), errs)
-
-    def test_04_duration_at_the_boundaries_passes(self):
-        for d in (5, 15):
-            with self.subTest(d=d):
-                self.assertEqual(validate(_spec({"model": "MiniMax-H3-Max",
-                                                 "duration": d})), [])
 
     def test_05_unsupported_resolution_is_rejected(self):
-        errs = validate(_spec({"model": "MiniMax-H3-Max", "resolution": "2K"}))
+        layer = _spec({"model": "Test-Max", "resolution": "2K"})["layers"][0]
+        errs = validate_video_generation(layer, "Test-Max")
         self.assertTrue(any("resolution" in e for e in errs), errs)
 
     def test_06_unsupported_ratio_is_rejected(self):
         errs = validate(_spec({"ratio": "5:4"}))
         self.assertTrue(any("ratio" in e for e in errs), errs)
-
-    def test_07_catalog_matches_the_backend_contract(self):
-        self.assertEqual(models.video_duration_range("MiniMax-H3"), (4, 15))
-        self.assertEqual(models.video_duration_range("MiniMax-H3-Max"), (5, 15))
-        self.assertEqual(models.video_duration_range("MiniMax-Hailuo-2.3"), (6, 10))
 
 
 class TestImageToImageValidation(unittest.TestCase):
@@ -159,9 +165,10 @@ class TestImageToImageTransport(unittest.TestCase):
                 "stdout": json.dumps({"success_items": [{"node_id": "9"}]}),
                 "stderr": ""})()
 
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
-            s1.call_generate_image("make it snowy", "derived", aspect_ratio="9:16",
-                                   resolution="2K",
+        with mock.patch.object(models, "IMAGE_MODELS", TEST_IMAGE_MODELS), \
+                mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
+            s1.call_generate_image("make it snowy", "derived", model="Test-Image",
+                                   aspect_ratio="9:16", resolution="2K",
                                    input_urls=["https://example.invalid/a.png"])
         req = captured["payload"]["requests"][0]
         self.assertEqual(req["reference_images"], [{"url": "https://example.invalid/a.png"}])
@@ -179,20 +186,20 @@ class TestImageToImageTransport(unittest.TestCase):
                 "stdout": json.dumps({"success_items": [{"node_id": "9"}]}),
                 "stderr": ""})()
 
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
-            s1.call_generate_image("plain", "fresh")
+        with mock.patch.object(models, "IMAGE_MODELS", TEST_IMAGE_MODELS), \
+                mock.patch.object(gen_connector.subprocess, "run", side_effect=fake_run):
+            s1.call_generate_image("plain", "fresh", model="Test-Image",
+                                   aspect_ratio="1:1", resolution="1K")
         req = captured["payload"]["requests"][0]
         self.assertNotIn("reference_images", req)
         self.assertNotIn("input_urls", req)
 
 
 class TestPromptComposition(unittest.TestCase):
-    """A layer prompt describes THIS asset; the style describes the episode.
-
-    Appending them would hand the backend two conflicting descriptions of the
-    same image, so a layer prompt replaces the style's subject/composition
-    while the style's background/exclude constraints remain.
-    """
+    """Prompts are EXPLICIT per layer: the engine injects no design brief.
+    Style files no longer contribute subject/composition/background/exclude
+    text — a blank layer prompt is refused at the call (see
+    test_first_run), never silently replaced by a built-in description."""
 
     STYLE = {
         "promptFields": {
@@ -203,38 +210,20 @@ class TestPromptComposition(unittest.TestCase):
         }
     }
 
-    def test_00_style_only_uses_all_style_fields(self):
-        prompt = s1.build_prompt(self.STYLE)
-        self.assertIn("a quantum tunneling wave", prompt)
-        self.assertIn("centered wave function", prompt)
-        self.assertIn("deep dark indigo background", prompt)
-        self.assertIn("no text, no watermark", prompt)
+    def test_00_a_layer_prompt_is_carried_verbatim(self):
+        self.assertEqual(s1.build_prompt(self.STYLE, "a snowy skyline, cold blue light"),
+                         "a snowy skyline, cold blue light")
 
-    def test_01_layer_prompt_replaces_subject_and_composition(self):
-        prompt = s1.build_prompt(self.STYLE, "a snowy skyline, cold blue light")
-        self.assertIn("a snowy skyline, cold blue light", prompt)
-        self.assertNotIn("quantum tunneling", prompt)
-        self.assertNotIn("wave function", prompt)
-
-    def test_02_layer_prompt_keeps_background_and_exclude(self):
-        prompt = s1.build_prompt(self.STYLE, "a snowy skyline")
-        self.assertIn("deep dark indigo background", prompt)
-        self.assertIn("no text, no watermark", prompt)
-
-    def test_03_blank_layer_prompt_falls_back_to_style(self):
-        prompt = s1.build_prompt(self.STYLE, "   ")
-        self.assertIn("a quantum tunneling wave", prompt)
+    def test_01_the_style_injects_nothing(self):
+        self.assertEqual(s1.build_prompt(self.STYLE), "")
+        self.assertNotIn("quantum", s1.build_prompt(self.STYLE, "a plain wall"))
 
 
 class TestEnvModelOverrides(unittest.TestCase):
-    """POSTER_MODELS_JSON / POSTER_VIDEO_MODEL must fail loudly, not silently.
-
-    The override exists to adapt the catalog to the environment. A typo that
-    leaves the defaults in place is indistinguishable from an override that
-    did nothing, and a half-populated entry crashes the very validator that
-    is supposed to report it. Each case runs in a subprocess so the module
-    reload cannot leak into the other tests.
-    """
+    """POSTER_MODELS_JSON fully replaces the (empty) built-in catalog and is
+    STRICT: a malformed or incomplete manifest is a loud import failure, not
+    a warning beside a stale catalog. Each case runs in a subprocess so the
+    import-time state cannot leak into the other tests."""
 
     def _run(self, env, code):
         full = dict(os.environ)
@@ -244,76 +233,82 @@ class TestEnvModelOverrides(unittest.TestCase):
         return subprocess.run([sys.executable, "-c", code], capture_output=True,
                               text=True, env=full, timeout=60, cwd=ROOT)
 
-    def test_00_malformed_json_warns_and_keeps_the_builtin_catalog(self):
+    def test_00_malformed_json_fails_the_import(self):
         proc = self._run(
             {"POSTER_MODELS_JSON": "{ not json"},
             "from core.generation import models\n"
-            "print(models.video_duration_range('MiniMax-Hailuo-2.3'))\n"
-            "print(models.video_allowed_durations('MiniMax-Hailuo-2.3'))\n")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("could not be parsed", proc.stderr)
-        self.assertIn("(6, 10)", proc.stdout)
+            "print(models.VIDEO_MODELS)\n")
+        self.assertNotEqual(proc.returncode, 0,
+                            "a malformed manifest must not silently keep a stale catalog")
 
-    def test_01_incomplete_override_is_refused_with_a_warning(self):
+    def test_01_incomplete_override_is_refused(self):
         proc = self._run(
             {"POSTER_MODELS_JSON": '{"MyCustom": {"audio": true}}'},
             "from core.generation import models\n"
-            "print('MyCustom' in models.VIDEO_MODELS)\n"
-            "print(models.video_duration_range('MyCustom'))\n")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("missing", proc.stderr)
-        self.assertIn("False", proc.stdout)
-        self.assertIn("None", proc.stdout)
+            "print('MyCustom' in models.VIDEO_MODELS)\n")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("missing required capabilities", proc.stderr)
 
     def test_02_complete_override_is_applied(self):
         proc = self._run(
-            {"POSTER_MODELS_JSON": '{"MiniMax-H3": {"audio": false}}'},
+            {"POSTER_MODELS_JSON": json.dumps(
+                {"MyCustom": {"min_dur": 3, "max_dur": 12,
+                              "resolutions": ["768P"], "audio": False}})},
             "from core.generation import models\n"
-            "print(models.video_has_audio('MiniMax-H3'))\n"
-            "print(models.video_duration_range('MiniMax-H3'))\n")
+            "print(models.video_has_audio('MyCustom'))\n"
+            "print(models.video_duration_range('MyCustom'))\n")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("False", proc.stdout)
-        self.assertIn("(4, 15)", proc.stdout)
-
-    def test_03_new_model_with_full_capabilities_is_accepted(self):
-        proc = self._run(
-            {"POSTER_MODELS_JSON": '{"MyCustom": {"min_dur": 3, "max_dur": 12,'
-                                    ' "resolutions": ["768P"], "audio": true}}'},
-            "from core.generation import models\n"
-            "print(models.video_duration_range('MyCustom'))\n"
-            "print(models.video_resolutions('MyCustom'))\n")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("(3, 12)", proc.stdout)
-        self.assertIn("('768P',)", proc.stdout)
 
-    def test_04_invalid_default_model_is_reported_not_crashed(self):
-        """A bad POSTER_VIDEO_MODEL must produce a readable error.
-
-        The validator is the user's first door; it must report the problem,
-        not raise a TypeError from an unpack of None.
-        """
-        code = (
-            "import sys; sys.path.insert(0, %r)\n"
-            "from core.spec.shot import validate\n"
-            "spec = {'id':'s','canvas':{'w':1080,'h':1920},'fps':30,'durationInFrames':180,\n"
-            "  'layers':[{'id':'c','type':'video','asset':'a','rect':[0,0,1080,1920],"
-            "'z':0,'duration':6}],\n"
-            "  'gates':[{'id':'m','metric':'changed_pixel_ratio','lo':0.001,'hi':0.1}]}\n"
-            "print(validate(spec))\n"
-        ) % ROOT
-        proc = self._run({"POSTER_VIDEO_MODEL": "Bogus-Model"}, code)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("default video model", proc.stdout)
-        self.assertIn("Bogus-Model", proc.stdout)
-
-    def test_05_discrete_durations_widen_a_conflicting_range(self):
+    def test_03_discrete_durations_must_stay_within_the_declared_range(self):
         proc = self._run(
-            {"POSTER_MODELS_JSON": '{"MiniMax-Hailuo-2.3": {"durations": [4, 12]}}'},
+            {"POSTER_MODELS_JSON": json.dumps(
+                {"MyCustom": {"min_dur": 5, "max_dur": 8,
+                              "resolutions": ["768P"], "durations": [4, 12]}})},
             "from core.generation import models\n"
-            "print(models.video_duration_range('MiniMax-Hailuo-2.3'))\n"
-            "print(models.video_allowed_durations('MiniMax-Hailuo-2.3'))\n")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("(4, 12)", proc.stdout)
+            "print(models.VIDEO_MODELS)\n")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("must stay within min_dur/max_dur", proc.stderr)
+
+    def test_04_an_invalid_default_model_fails_the_import(self):
+        """POSTER_VIDEO_MODEL naming an undeclared model is a contradictory
+        configuration: it fails at import, before any stage runs."""
+        proc = self._run(
+            {"POSTER_VIDEO_MODEL": "Bogus-Model"},
+            "from core.generation import models\nprint(models.DEFAULT_VIDEO_MODEL)\n")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Bogus-Model", proc.stderr)
+
+    def test_06_loads_from_project_models_json(self):
+        """When env vars are not set, models.py loads models.json from project root."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            models_file = os.path.join(tmp_dir, "models.json")
+            with open(models_file, "w") as f:
+                json.dump({
+                    "video_models": {
+                        "ProjectModel": {"min_dur": 4, "max_dur": 10, "resolutions": ["1080P"]}
+                    },
+                    "image_models": {
+                        "ProjectImage": {"aspect_ratios": ["16:9"], "areas": ["2K"]}
+                    },
+                    "default_video_model": "ProjectModel",
+                    "default_image_model": "ProjectImage",
+                    "default_image_area": "2K"
+                }, f)
+            proc = self._run(
+                {"POSTER_ROOT": tmp_dir, "POSTER_MODELS_JSON": "", "POSTER_IMAGE_CAPABILITIES_JSON": ""},
+                "from core.generation import models\n"
+                "print('ProjectModel' in models.VIDEO_MODELS)\n"
+                "print('ProjectImage' in models.IMAGE_MODELS)\n"
+                "print(models.DEFAULT_VIDEO_MODEL)\n"
+                "print(models.DEFAULT_IMAGE_MODEL)\n"
+                "print(models.DEFAULT_IMAGE_AREA)\n")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("True", proc.stdout)
+            self.assertIn("ProjectModel", proc.stdout)
+            self.assertIn("ProjectImage", proc.stdout)
+            self.assertIn("2K", proc.stdout)
 
 
 if __name__ == "__main__":

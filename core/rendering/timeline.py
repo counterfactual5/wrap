@@ -1,5 +1,4 @@
-"""Remotion timeline math, shared by the Quartz frame picker and the audio
-mastering chain.
+"""Remotion timeline math, shared by the audio mastering chain.
 
 The contract is read from the installed renderer (remotion 4.0.529,
 node_modules): remotion/Shot.tsx maps trim -> trimBefore/trimAfter =
@@ -23,8 +22,7 @@ def _js_round(x):
 
 def video_timeline(layer, fps):
     """A video layer's Remotion timeline (remotion 4.0.529, html5-video.js +
-    video/get-current-time.js), shared by the Quartz fallback's frame picker
-    and the native-audio mastering chain:
+    video/get-current-time.js), shared by the native-audio mastering chain:
 
       trimBefore/trimAfter = Math.round(trim * fps)   (remotion/Shot.tsx)
       media time at composition frame i = (trimBefore + local_i * rate) / fps

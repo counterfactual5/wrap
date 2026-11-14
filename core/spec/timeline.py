@@ -15,7 +15,9 @@ def validate_timeline(timeline):
         # The timeline id names build/gates_full_{id}.json.
         e(f"timeline id must be a letters/digits/._- string (got {timeline['id']!r})")
     if "bgm" in timeline and timeline["bgm"] is not None and not isinstance(timeline["bgm"], str):
-        e("timeline 'bgm' must be a string (preset name or audio file path)")
+        e("timeline 'bgm' must be a string (audio file path)")
+    if "allow_black" in timeline and not isinstance(timeline["allow_black"], bool):
+        e("timeline 'allow_black' must be a boolean")
     shots = timeline.get("shots")
     if not isinstance(shots, list) or len(shots) == 0:
         e("timeline 'shots' must be a non-empty list")

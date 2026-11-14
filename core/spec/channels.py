@@ -1,4 +1,4 @@
-"""The per-layer channels: anim keyframes, gait, spring, combat, captions.
+"""Per-layer channels: anim keyframes, spring, combat, and captions against voiceover.
 
 Each of these is declared inside a layer (or, for combat, at the shot level)
 and validated on its own, apart from the layer's own fields.
@@ -6,14 +6,19 @@ and validated on its own, apart from the layer's own fields.
 import os
 import re
 
-from .constants import ANIM_CHANNELS, ANIM_EASES, GAIT_MODES, SPRING_CHANNELS
+from .constants import ANIM_CHANNELS, ANIM_EASES, SPRING_CHANNELS
 
 
 def validate_spring(spring, lid, errs):
+    """Spring physics must be fully declared: the engine ships no implicit
+    second-order motion defaults — authors choose spring behavior."""
     e = errs.append
     if not isinstance(spring, dict) or not spring:
-        e(f"{lid}: spring must be a non-empty object (omega, zeta, coupling, channel, driverChannel, maxAccel)")
+        e(f"{lid}: spring must be an object with omega, zeta, coupling, channel, driverChannel, maxAccel")
         return
+    for key in ("omega", "zeta", "coupling", "channel", "driverChannel", "maxAccel"):
+        if key not in spring:
+            e(f"{lid}: spring.{key} is required (no defaults are provided)")
     for k, (lo, hi) in (
         ("omega", (1.0, 120.0)),
         ("zeta", (0.01, 2.0)),
@@ -52,29 +57,6 @@ def validate_combat(combat, layer_ids, errs):
         rw = combat["refWidth"]
         if not (isinstance(rw, (int, float)) and not isinstance(rw, bool) and rw > 0):
             e("combat.refWidth must be a positive number")
-
-
-def validate_gait(gait, lid, errs):
-    e = errs.append
-    if not isinstance(gait, dict) or not gait:
-        e(f"{lid}: gait must be a non-empty object with mode in {sorted(GAIT_MODES)}")
-        return
-    mode = gait.get("mode")
-    if mode not in GAIT_MODES:
-        e(f"{lid}: gait.mode must be one of {sorted(GAIT_MODES)} (got {mode!r})")
-    for k in ("freq", "bob", "sway"):
-        if k in gait:
-            v = gait[k]
-            if not (isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0):
-                e(f"{lid}: gait.{k} must be a non-negative number (got {v!r})")
-            elif k == "freq" and v <= 0:
-                e(f"{lid}: gait.freq must be > 0 (got {v!r})")
-    rng = gait.get("range")
-    if rng is not None:
-        if not (isinstance(rng, list) and len(rng) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool) for v in rng)
-                and 0 <= rng[0] < rng[1]):
-            e(f"{lid}: gait.range must be [startFrame, endFrame] ints with 0 <= startFrame < endFrame")
 
 
 def _norm_tokens(s):
@@ -139,9 +121,6 @@ def validate_anim(anim, lid, errs):
                 break
             if ch == "opacity" and not (0 <= v <= 1):
                 e(f"{lid}: anim.opacity values must be within [0, 1]")
-                break
-            if ch == "depth" and not (0 <= v <= 1):
-                e(f"{lid}: anim.depth values must be within [0, 1] (0=pressed against silk screen, 1=pulled back with penumbra blur)")
                 break
             if len(kf) == 3 and kf[2] not in ANIM_EASES:
                 e(f"{lid}: anim.{ch} ease must be one of {sorted(ANIM_EASES)}")

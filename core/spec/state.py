@@ -11,14 +11,9 @@ def carry_state_from(prev_spec, new_shot_id):
     """
     out = copy.deepcopy(prev_spec)
     out["id"] = new_shot_id
-    out.pop("punches", None)
+    out["tracks"] = {"captions": [], "events": []}
     new_layers = []
     for L in out.get("layers", []):
-        # Drop per-shot ephemeral subtitle captions items so the new shot starts clean
-        if L.get("type") == "code" and L.get("draw") == "captions":
-            L = copy.deepcopy(L)
-            if isinstance(L.get("params"), dict):
-                L["params"]["items"] = []
         # If an ai layer had poses, carry its final pose asset as the default asset at frame 0
         if L.get("type") == "ai" and isinstance(L.get("poses"), list) and L["poses"]:
             last_pose = L["poses"][-1]
@@ -34,11 +29,6 @@ def carry_state_from(prev_spec, new_shot_id):
                     carried_anim[ch] = [[0, last_val], [out.get("durationInFrames", 150) - 1, last_val]]
             if carried_anim:
                 L["anim"] = carried_anim
-        if isinstance(L.get("gait"), dict):
-            if L["gait"].get("mode") == "shudder":
-                L.pop("gait", None)
-            else:
-                L["gait"].pop("range", None)
         new_layers.append(L)
     out["layers"] = new_layers
     return out

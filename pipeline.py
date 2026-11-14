@@ -58,7 +58,10 @@ from core.assembly.timeline import load_timeline as _load_timeline
 
 def run_stage(cmd_args, desc):
     print(f"\n=== [Stage] {desc} ===")
-    res = subprocess.run([sys.executable] + cmd_args, cwd=ROOT)
+    env = dict(os.environ)
+    python_path = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = ENGINE_ROOT + (os.pathsep + python_path if python_path else "")
+    res = subprocess.run([sys.executable] + cmd_args, cwd=ROOT, env=env)
     if res.returncode != 0:
         print(f"FAILED: {desc} exited with code {res.returncode}", file=sys.stderr)
         sys.exit(res.returncode)
@@ -105,8 +108,6 @@ def run_timeline(args):
         gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", path]
         if args.force:
             gen_args.append("--force")
-        if args.fixture:
-            gen_args.append("--fixture")
         run_stage(gen_args, f"S1: Asset Generation ({sid})")
         run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", path], f"S2: Prepare ({sid})")
         run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", path], f"S3: Compose ({sid})")
@@ -267,23 +268,18 @@ def assemble_timeline(tl, out_rel=None):
         from core import audio as _audio
         tl_bgm_wav = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_bgm.wav")
         total_dur = max(0.5, cursor)
-        if tl_bgm in ("opera", "shadow_puppet", "percussion"):
-            _audio.generate_opera_bgm(total_dur, out_path=tl_bgm_wav)
-        elif tl_bgm == "ambient":
-            _audio.generate_ambient_bgm(total_dur, out_path=tl_bgm_wav)
+        candidates = [tl_bgm, os.path.join(ROOT, tl_bgm), os.path.join(ROOT, "assets", tl_bgm)]
+        found_bgm = next((p for p in candidates if os.path.exists(p)), None)
+        if found_bgm:
+            fade_dur = min(0.05, total_dur * 0.1)
+            fade_f = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, total_dur - fade_dur):.3f}:d={fade_dur:.3f}"
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1",
+                "-i", found_bgm, "-t", str(total_dur),
+                "-af", fade_f, "-ar", "44100", "-ac", "2", tl_bgm_wav
+            ], check=True)
         else:
-            candidates = [tl_bgm, os.path.join(ROOT, tl_bgm), os.path.join(ROOT, "assets", tl_bgm)]
-            found_bgm = next((p for p in candidates if os.path.exists(p)), None)
-            if found_bgm:
-                fade_dur = min(0.05, total_dur * 0.1)
-                fade_f = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, total_dur - fade_dur):.3f}:d={fade_dur:.3f}"
-                subprocess.run([
-                    "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1",
-                    "-i", found_bgm, "-t", str(total_dur),
-                    "-af", fade_f, "-ar", "44100", "-ac", "2", tl_bgm_wav
-                ], check=True)
-            else:
-                _audio.generate_ambient_bgm(total_dur, out_path=tl_bgm_wav)
+            raise FileNotFoundError(f"Timeline BGM file not found: {tl_bgm}; built-in music presets were removed")
 
         raw_sil = _audio.measure_audio_silence(raw_a_out)
         if raw_sil.get("is_silent"):
@@ -327,7 +323,7 @@ def assemble_timeline(tl, out_rel=None):
                 print(f"Synchronized alias: {mirror_path}")
 
     print(f"\n=== [Stage] Full-Video Gates ({tl_id}) ===")
-    return out_path, gate_full_video(out_path, tl_id, segments)
+    return out_path, gate_full_video(out_path, tl_id, segments, allow_black=tl.get("allow_black", False))
 
 
 PIPELINE_LOCK = os.path.join(ROOT, "build", ".pipeline.lock")
@@ -369,52 +365,53 @@ def main():
 
     # validate
     p_val = subparsers.add_parser("validate", help="Validate spec against schema")
-    p_val.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_val.add_argument("--spec", default=None)
 
     # generate (S1)
     p_gen = subparsers.add_parser("generate", help="S1: generate/fetch assets")
-    p_gen.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_gen.add_argument("--spec", default=None)
     p_gen.add_argument("--force", action="store_true", help="Force re-generation")
-    p_gen.add_argument("--fixture", action="store_true", help="Use deterministic fixture")
 
     # prepare (S2)
     p_prep = subparsers.add_parser("prepare", help="S2: prepare assets & key purity check")
-    p_prep.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_prep.add_argument("--spec", default=None)
 
     # compose (S3)
     p_comp = subparsers.add_parser("compose", help="S3: ffmpeg compose frames & mp4")
-    p_comp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_comp.add_argument("--spec", default=None)
 
     # gate (S4)
     p_gate = subparsers.add_parser("gate", help="S4: quality gates & freeze detect")
-    p_gate.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_gate.add_argument("--spec", default=None)
 
     # inspect (S5)
     p_insp = subparsers.add_parser("inspect", help="S5: Generate contact sheet & checklist for visual self-audit")
-    p_insp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_insp.add_argument("--spec", default=None)
     p_insp.add_argument("--grid", default="3x3", help="Contact sheet grid, e.g. 3x3")
 
     # judge (S5 verdict)
     p_judge = subparsers.add_parser("judge", help="S5: Judge the contact sheet; record pass/fail verdict")
-    p_judge.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_judge.add_argument("--spec", default=None)
     p_judge.add_argument("--verdict", choices=["pass", "fail"], default=None,
                          help="Record verdict; omit to regenerate evidence + judge instructions")
     p_judge.add_argument("--notes", default=None, help="Judge findings stored with the verdict")
 
     # run (S1..S5)
     p_run = subparsers.add_parser("run", help="Run full pipeline: validate -> S1 -> S2 -> S3 -> S4 -> S5")
-    p_run.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_run.add_argument("--spec", default=None)
     p_run.add_argument("--timeline", default=None,
                        help="Render every shot of a timeline IN ORDER (seaming them as it goes), "
                             "then assemble and gate the film. Mutually exclusive with --spec.")
     p_run.add_argument("--output", default=None,
                        help="Output mp4 for --timeline (default build/<timeline-id>.mp4)")
     p_run.add_argument("--force", action="store_true", help="Force re-generation of assets")
-    p_run.add_argument("--fixture", action="store_true", help="Use deterministic fixture")
 
     # init-shot
     p_init = subparsers.add_parser("init-shot", help="Initialize a new shot specification template")
     p_init.add_argument("shot_id", help="Shot ID, e.g. shot-02")
+    p_init.add_argument("--canvas", nargs=2, type=int, required=True, metavar=("WIDTH", "HEIGHT"))
+    p_init.add_argument("--fps", type=int, required=True)
+    p_init.add_argument("--frames", type=int, required=True)
     p_init.add_argument("--from-shot", default=None, help="Path to previous shot spec to carry final layer states from")
 
     # inspect-sprite
@@ -442,9 +439,6 @@ def main():
     p_pose.add_argument("--sheet", default=None, help="Horizontal sprite-sheet asset name to slice")
     p_pose.add_argument("--cols", type=int, default=3, help="Number of horizontal panels in --sheet (default: 3)")
     p_pose.add_argument("--out-prefix", default=None, help="Output asset prefix when slicing --sheet")
-    p_pose.add_argument("--from-asset", default=None, help="Base asset name for preset pose derivation")
-    p_pose.add_argument("--preset", choices=["disguise", "shatter", "recoil"], default="shatter", help="Pose preset to derive from --from-asset")
-    p_pose.add_argument("--out", default=None, help="Output asset name for --from-asset preset")
     p_pose.add_argument("--key-color", default="#ffffff", help="Solid background hex color (default: #ffffff)")
 
     # snap-joint
@@ -467,8 +461,8 @@ def main():
     p_unpack.add_argument("--key-color", default="#ffffff", help="Solid background hex color (default: #ffffff)")
 
     # sync-audio
-    p_sync = subparsers.add_parser("sync-audio", help="Synthesize audio.voiceover, fit durationInFrames (no truncation), and auto-sync captions items to speech boundaries")
-    p_sync.add_argument("--spec", default="tests/fixtures/shot-01.poster.json", help="Path to spec file")
+    p_sync = subparsers.add_parser("sync-audio", help="Synthesize audio.voiceover, fit durationInFrames (no truncation), and warp tracks.captions + layer keyframes to speech clauses")
+    p_sync.add_argument("--spec", default=None, help="Path to spec file")
     p_sync.add_argument("--no-fit-duration", action="store_true", help="Do not expand durationInFrames to fit voiceover duration")
     p_sync.add_argument("--no-rescale-anim", action="store_true", help="Do not rescale anim keyframes when durationInFrames expands")
     p_sync.add_argument("--max-chars", type=int, default=20, help="Max characters per subtitle clause (default: 20)")
@@ -502,8 +496,8 @@ def main():
     p_cont.add_argument("--spec", default=None, help="Path to a single poster spec JSON for stagecraft & prop verification")
 
     # detect-punches
-    p_dp = subparsers.add_parser("detect-punches", help="Auto-detect audio transient peaks (percussion/plosives/sub-bass) for spec.punches")
-    p_dp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json", help="Path to spec file")
+    p_dp = subparsers.add_parser("detect-punches", help="Auto-detect audio transient peaks (percussion/plosives/sub-bass) as tracks.events kind=audio_transient")
+    p_dp.add_argument("--spec", default=None, help="Path to spec file")
     p_dp.add_argument("--audio", default=None, help="Optional explicit audio/video file path")
     p_dp.add_argument("--max-punches", type=int, default=6, help="Maximum number of punch frames to detect")
     p_dp.add_argument("--min-gap", type=float, default=0.45, help="Minimum gap in seconds between punches")
@@ -535,8 +529,6 @@ def main():
         gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", args.spec]
         if args.force:
             gen_args.append("--force")
-        if args.fixture:
-            gen_args.append("--fixture")
         run_stage(gen_args, "S1: Asset Generation / Verification")
 
     elif args.command == "prepare":
@@ -574,8 +566,6 @@ def main():
             gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", args.spec]
             if args.force:
                 gen_args.append("--force")
-            if args.fixture:
-                gen_args.append("--fixture")
             run_stage(gen_args, "S1: Asset Generation / Verification")
             run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", args.spec], "S2: Prepare & Purity Check")
             run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", args.spec], "S3: Compose (FFmpeg)")
@@ -612,59 +602,26 @@ def main():
                 prev_path = prev_arg
             prev_spec = load_spec(prev_path)
             template = carry_state_from(prev_spec, shot_id)
+            template.update(canvas={"w": args.canvas[0], "h": args.canvas[1]}, fps=args.fps, durationInFrames=args.frames)
             with open(target, "w") as f:
                 json.dump(template, f, indent=2, ensure_ascii=False)
             print(f"Initialized {target} carrying final layer states from {prev_path}")
             return
-        # Schema skeleton only — deliberately NO layout. Composition is a
-        # per-episode design decision (SKILL.md "The One Design Law"); a baked
-        # skeleton here is how every episode converged to one identical look.
         template = {
-            "_design_hints": [
-                "Pipeline is fixed; this skeleton has no layout by design.",
-                "Environment-Adaptive Discovery & Free Modality Composition (LLM decides how to combine):",
-                "  - Probe available image/video models and tools in the runtime environment (never hardcode model IDs).",
-                "  - Freely combine `code` (grid/dots/bar/field/path/captions), `ai` (still plates, cutout sprites, articulated skeletal rigs), and `video` (generative clips) within the same shot or across shots so each modality plays to its strength.",
-                "  - Any static `code` plate (grid/dots), `ai` asset, or `manifest` asset can feed a `video` layer via `first_frame` / `last_frame` / `reference_images` or an `ai` layer via `input_asset`.",
-                "Design composition from the shot's narrative role FIRST:",
-                "  hook -> full-bleed poster (ai plate:false + big title via anim + field/path accents)",
-                "  development -> pure diagram (no ai layer; formula card timed to narration)",
-                "  resolution -> full-bleed documentary (real footage, slow reveal)",
-                "Never clone a previous episode's skeleton. Vocabulary:",
-                "  anim (x/y/scale/opacity/rotate keyframes, ease in/out/inout/snap/overshoot/step),",
-                "  gait (mode: puppet|walk|float|shudder, freq, bob, sway, range),",
-                "  field particles, path reveal/flow lines, vibe:false, plate:false.",
-                "Choosing the subject layer — ai or video, pick ONE primary backdrop per shot (or layer cutouts over it):",
-                "  ai layer  = a still plate or cutout rig from the image model.",
-                "  video layer = a generated CLIP (moving footage from the environment's video",
-                "    models). Pick video when the shot needs continuous motion in the plate.",
-                "  video layer keys: \"model\" (resolved from environment/core/generation/models.py),",
-                "    \"duration\" (seconds; within the model's supported range), \"muted\"",
-                "    (false = the clip's own audio track is the soundtrack), \"first_frame\".",
-                "  SKILL.md 'Using a generated video clip' has the full spec snippet.",
-                "Before designing: ROLL THE DICE (SKILL.md 'Creative dice') — sample",
-                "  composition x palette x entrance x camera x HUD-density, commit the",
-                "  rolled values here; >=4 shared values with a sibling spec = re-roll.",
-                "Three composition languages to draw from: a full-bleed AI plate with",
-                "  code-drawn HUD/typography over it; a pure-code geometric kinematics",
-                "  piece (fields, paths, springs); a character-drama piece with an",
-                "  articulated skeletal rig (see SKILL.md 'Skeletal rigs').",
-            ],
             "id": shot_id,
-            "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
-            "fps": 30,
-            "durationInFrames": 450,
-            "style": "spec/style.json",
-            "layers": [
-                {"id": "bg", "type": "code", "draw": "grid", "rect": [0, 0, 1080, 1920], "z": 0}
-            ],
-            "gates": [
-                {"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}
-            ]
+            "canvas": {"w": args.canvas[0], "h": args.canvas[1]},
+            "fps": args.fps,
+            "durationInFrames": args.frames,
+            "layers": [], "gates": [],
+            "tracks": {"captions": [], "events": []},
         }
+        from core.spec import validate
+        errors = validate(template)
+        if errors:
+            sys.exit("; ".join(errors))
         with open(target, "w") as f:
             json.dump(template, f, indent=2, ensure_ascii=False)
-        print(f"Initialized schema skeleton: {target} (layout is yours to design — see _design_hints)")
+        print(f"Initialized schema skeleton: {target} (zero layers, zero design — composition, colors, components and motion are yours to author)")
 
     elif args.command == "inspect-sprite":
         from core.rig import inspect_sprite
@@ -696,17 +653,13 @@ def main():
         print(json.dumps(info, indent=2, ensure_ascii=False))
 
     elif args.command == "derive-poses":
-        from core.rig import derive_pose_preset, derive_poses_from_sheet
+        from core.rig import derive_poses_from_sheet
         if args.sheet:
             prefix = args.out_prefix or args.sheet
             res = derive_poses_from_sheet(args.sheet, prefix, cols=args.cols, key_color=args.key_color)
             print(json.dumps(res, indent=2, ensure_ascii=False))
-        elif args.from_asset:
-            out_name = args.out or f"{args.from_asset}-{args.preset}"
-            res = derive_pose_preset(args.from_asset, out_name, preset=args.preset, key_color=args.key_color)
-            print(json.dumps(res, indent=2, ensure_ascii=False))
         else:
-            sys.exit("derive-poses requires either --sheet <asset> or --from-asset <asset>")
+            sys.exit("derive-poses requires --sheet <asset>; motion presets were removed")
 
     elif args.command == "snap-joint":
         from core.runtime import manifest
@@ -824,9 +777,6 @@ def main():
                 tl_data = json.load(f)
             res = verify_timeline_continuity(tl_data, root_dir=ROOT)
             print(f"\n=== Multi-Scene Timeline Continuity Verification: {tl_data.get('id', 'timeline')} ===")
-            for s in res["shots"]:
-                scroll_tag = "SCROLL_TRANSITION" if s["has_in_shot_scroll"] else "STATIC_STAGE"
-                print(f"  [SHOT] {s['shot_id']:<22} ({s['duration_sec']:>5.1f}s) | {scroll_tag:<17} | bg: {s['start_backdrop']} -> {s['end_backdrop']} | props={len(s['narrative_props'])}")
             for h in res["handoffs"]:
                 print(f"  [{h['status']}] {h['from_shot']} -> {h['to_shot']} | handoff: {h['end_backdrop']} == {h['next_start_backdrop']}")
             if not res["passed"]:
@@ -867,7 +817,9 @@ def main():
             highpass_hz=args.highpass,
         )
         if args.apply and res["punches"]:
-            spec_data["punches"] = res["punches"]
+            spec_data.setdefault("tracks", {}).setdefault("events", []).extend(
+                {"frame": frame, "kind": "audio_transient"} for frame in res["punches"])
+            spec_data["tracks"]["events"].sort(key=lambda event: event["frame"])
             with open(spec_path, "w") as f:
                 json.dump(spec_data, f, indent=2, ensure_ascii=False)
             res["applied_to"] = args.spec

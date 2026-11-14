@@ -27,11 +27,13 @@ class TestPrepareShotAudioScratchFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("core.audio.shot.synthesize_voiceover_with_timings", side_effect=fake_synth), \
                 patch("core.audio.shot.run_two_pass_loudnorm", side_effect=fake_loudnorm), \
-                patch("core.audio.shot.generate_ambient_bgm", side_effect=fake_ambient):
+                patch("core.audio.shot.subprocess.run"):
+            bgm = os.path.join(tmp, "music.wav")
+            fake_ambient(1, bgm)
             out1 = os.path.join(tmp, "shot-a.aac")
             out2 = os.path.join(tmp, "shot-b.aac")
-            audio.prepare_shot_audio({"voiceover": "你好世界", "bgm": "ambient"}, 30, 30, out1)
-            audio.prepare_shot_audio({"voiceover": "你好世界", "bgm": "ambient"}, 30, 30, out2)
+            audio.prepare_shot_audio({"voiceover": "你好世界", "voice": "TestVoice", "bgm": bgm}, 30, 30, out1)
+            audio.prepare_shot_audio({"voiceover": "你好世界", "voice": "TestVoice", "bgm": bgm}, 30, 30, out2)
 
         self.assertEqual(len(loudnorm_calls), 2)
         for inputs, out in ((loudnorm_calls[0], out1), (loudnorm_calls[1], out2)):

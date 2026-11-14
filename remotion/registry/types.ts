@@ -1,21 +1,18 @@
-// Shared types for the project-component registry. This is the single
-// source of truth: empty.tsx (the engine's fallback registry) and
-// project-custom.d.ts (the type declaration for the 'project-custom' webpack
-// alias) both reference these definitions instead of duplicating them.
-import React from 'react';
+import type React from 'react';
+import type {ComponentLayer, Rect, Tracks} from '../spec';
 
 export type CustomComponentProps = {
-  layer: {
-    id: string;
-    type: 'component';
-    component: string;
-    rect: [number, number, number, number];
-    z: number;
-    props?: Record<string, unknown>;
-  };
-  rect: [number, number, number, number];
+  layer: ComponentLayer;
+  /** Canvas coordinates; the component owns its positioning. */
+  rect: Rect;
   props?: Record<string, unknown>;
-  prepared?: Record<string, string>;
+  /** Prepared top-level media, keyed by layer id. No separate component asset system. */
+  prepared: Record<string, string>;
+  preparedVideos: Record<string, string>;
+  tracks: Tracks;
+  frame: number;
+  fps: number;
+  durationInFrames: number;
 };
 
 export type CustomComponentRegistry = Record<string, React.FC<CustomComponentProps>>;

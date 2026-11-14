@@ -1,6 +1,6 @@
 """S1: Generation stage.
 Contract:
-- Reads: tests/fixtures/shot-01.poster.json, tests/fixtures/style.json, manifest.json
+- Reads: the spec at the --spec path (required), its optional spec.style data, manifest.json
 - Writes: assets/<asset>.png, manifest.json
 - Exit code: 0 = all assets ready and verified, 1 = generation/download failure.
 - Invariant: Generation is not re-entrant (no seed in API). If an asset is already verified in manifest.json,
@@ -16,7 +16,7 @@ Asset transport notes (mcode-tools connector):
 
 This script owns the spec-driven orchestration and main() only; the
 transport implementation lives in core/generation/ (connector, images,
-uploads, video, fixtures).
+uploads, video).
 """
 import argparse
 import json
@@ -32,7 +32,6 @@ from core.runtime import manifest
 from core.generation import models
 from core.runtime.config import ROOT
 from core.spec.loader import load_spec
-from core.generation.fixtures import _write_video_fixture
 from core.generation.images import (
     aspect_for_canvas,
     build_prompt,
@@ -53,15 +52,14 @@ from core.generation.video import (
 
 def main():
     parser = argparse.ArgumentParser(description="S1: Generate assets")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (required)")
     parser.add_argument("--force", action="store_true", help="Force re-generation even if manifest entry exists")
-    parser.add_argument("--fixture", action="store_true", help="Use deterministic code fixture instead of API")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
-    style_path = os.path.join(ROOT, spec.get("style", "tests/fixtures/style.json"))
+    style_path = os.path.join(ROOT, spec.get("style", ""))
     style = {}
-    if os.path.exists(style_path):
+    if os.path.isfile(style_path):
         with open(style_path) as f:
             style = json.load(f)
 
@@ -184,29 +182,18 @@ def main():
                 print(f"reuse {asset} (frozen in manifest, sha256 verified)")
             continue
 
-        if args.fixture:
-            if is_video:
-                _write_video_fixture(target_path)
-            else:
-                from core.media.draw import write_fixture
-                write_fixture(target_path)
-            # Record the SOURCE pixel size: the rig calibration (core/rig.py)
-            # needs it to convert a source-space joint into canvas pixels, and
-            # a manifest row that does not carry it forces that code to guess.
-            from core.media.png import read_size
-            try:
-                sw, sh = read_size(target_path)
-            except (OSError, ValueError):
-                sw = sh = None
-            row = manifest.register("assets", asset, rel, source="fixture",
-                                    size=[sw, sh] if sw else None, **extra_meta)
-            print(f"Registered fixture {rel} sha256={row['sha256'][:12]}")
-            continue
-
         if is_video:
             prompt = build_prompt(style, layer_prompt)
             model = L.get("model") or style.get("videoModel") or models.DEFAULT_VIDEO_MODEL
-            video_res = L.get("resolution") or style.get("videoResolution", "768P")
+            if model not in models.VIDEO_MODELS:
+                raise ValueError(f"Missing configured video model/capabilities for {asset}: {model!r}")
+            from core.spec.layers import validate_video_generation
+            generation_errors = validate_video_generation(L, model)
+            if generation_errors:
+                raise ValueError("; ".join(generation_errors))
+            video_res = L.get("resolution") or style.get("videoResolution")
+            if video_res is None:
+                video_res = models.resolve_video_resolution(model, None)
 
             first_ref = L.get("first_frame") or L.get("input_asset") or L.get("input_image")
             last_ref = L.get("last_frame") or L.get("last_frame_image") or L.get("last_frame_asset")
@@ -264,6 +251,9 @@ def main():
             print(f"Registered {rel} sha256={row['sha256'][:12]}")
             continue
 
+        if not layer_prompt and not style:
+            raise ValueError(f"Missing asset {asset!r}: register media or provide explicit generation instructions")
+
         # Real generation via connector
         prompt = build_prompt(style, layer_prompt)
         input_urls = None
@@ -283,8 +273,9 @@ def main():
                 input_urls.append(upload_temp_url(src_path))
             if ref_imgs:
                 extra_meta["reference_images"] = ref_imgs
+        image_model = L.get("model") or style.get("imageModel") or models.DEFAULT_IMAGE_MODEL
         node_id = call_generate_image(prompt, asset, aspect_ratio=aspect_ratio,
-                                      resolution=resolution, input_urls=input_urls)
+                                      resolution=resolution, model=image_model, input_urls=input_urls)
         url = fetch_asset_url(node_id)
         raw_path = os.path.join(ROOT, ".tmp", f"{asset}.download")
         download_file(url, raw_path)

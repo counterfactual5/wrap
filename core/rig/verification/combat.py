@@ -74,7 +74,7 @@ def verify_combat_contact(spec, attacker_id=None, weapon_id=None,
             ],
         }
 
-    punches = spec.get("punches", [])
+    punches = [event["frame"] for event in (spec.get("tracks") or {}).get("events", []) if event.get("kind") == "contact"]
     if not punches:
         return {"passed": True, "details": [], "message": "No punches defined"}
 

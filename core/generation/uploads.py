@@ -55,47 +55,46 @@ def upload_temp_url(file_path, attempts=3):
 
 
 def resolve_reference_image_path(ref_name, spec, style=None):
-    """Resolve a reference image name to a verified local PNG file path.
+    """Resolve a reference image name to a VERIFIED FROZEN local PNG file path.
 
-    Unified dispatch by type rather than origin:
-    1. A frozen asset in manifest['assets'] (AI-generated or manually registered,
-       or referenced via an 'ai' layer's id);
-    2. A static code layer (draw in {'grid', 'dots'}) in spec['layers'], pre-drawn
-       deterministically into build/prepared/{shot}/{id}.png on demand;
-    3. An already-prepared image in manifest['prepared'].
-    """
+    Read-only: only entries already frozen in manifest.json are accepted —
+    this function never draws, generates or pre-paints anything:
+    1. A frozen asset in manifest['assets'] (AI-generated or manually
+       registered, or referenced via an 'ai' layer's id / asset);
+    2. An already-prepared image in manifest['prepared'] (frozen by S2).
+
+    Code layers are rejected: the S1 transport no longer pre-draws code
+    patterns (grid/dots/...) as references — no template fallback. A
+    reference must point at a frozen image; generate or prepare it first,
+    then re-run. The `style` argument stays for signature compatibility
+    with callers that already pass it."""
     shot_id = spec.get("id", "shot-01")
     row = manifest.verified("assets", ref_name)
     if row:
         return os.path.join(ROOT, row["path"]), row["path"]
 
     for layer in spec.get("layers", []):
-        if isinstance(layer, dict) and layer.get("id") == ref_name and layer.get("type") == "ai":
+        if not (isinstance(layer, dict) and layer.get("id") == ref_name):
+            continue
+        if layer.get("type") == "ai":
             ai_asset = layer.get("asset")
             if ai_asset:
                 ai_row = manifest.verified("assets", ai_asset)
                 if ai_row:
                     return os.path.join(ROOT, ai_row["path"]), ai_row["path"]
-        if isinstance(layer, dict) and layer.get("id") == ref_name and layer.get("type") == "code":
-            draw_kind = layer.get("draw")
-            if draw_kind in ("grid", "dots"):
-                prep_key = f"{shot_id}/{ref_name}"
-                prep_row = manifest.verified("prepared", prep_key)
-                if not prep_row:
-                    from core.media.draw import prepare_code_layer
-                    palette = (style or {}).get("palette") if style else None
-                    rel, full_path = prepare_code_layer(spec, layer, palette=palette, root=ROOT)
-                    print(f"  pre-drew code layer {rel} ({draw_kind}) for S1 reference")
-                    return full_path, rel
-                return os.path.join(ROOT, prep_row["path"]), prep_row["path"]
+        if layer.get("type") == "code":
             raise RuntimeError(
-                f"reference image {ref_name!r} points to code layer with draw={draw_kind!r}; "
-                f"only ('grid', 'dots') code layers produce a static PNG")
+                f"reference image {ref_name!r} points to a code layer "
+                f"(draw={layer.get('draw')!r}); S1 no longer pre-draws code "
+                f"patterns as references — register a frozen image asset "
+                f"under {ref_name!r} (manifest 'assets'), or point the "
+                f"layer's reference at a frozen asset instead")
 
     prep_row = manifest.verified("prepared", f"{shot_id}/{ref_name}")
     if prep_row:
         return os.path.join(ROOT, prep_row["path"]), prep_row["path"]
 
     raise RuntimeError(
-        f"reference image {ref_name!r} is not a verified asset in the manifest "
-        f"or a static code layer (grid/dots) in the spec (generate it first, then re-run)")
+        f"reference image {ref_name!r} is not a verified frozen image in the "
+        f"manifest (assets/prepared) — generate or prepare it first, then "
+        f"re-run; code-pattern fallbacks are not available")

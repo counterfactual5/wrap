@@ -1,5 +1,6 @@
 """Gate metric tests: subject sensitivity and spec-derived color masks."""
 import os
+import subprocess
 import sys
 import unittest
 
@@ -12,8 +13,10 @@ from core.spec.shot import validate
 
 
 class TestGateMetrics(unittest.TestCase):
+    FIXTURE = os.path.join(ROOT, "tests", "fixtures", "shot-01.poster.json")
+
     def test_00_spec_with_new_gates_validates(self):
-        spec = load_spec()
+        spec = load_spec(self.FIXTURE)
         errs = validate(spec)
         self.assertEqual(errs, [], f"spec invalid: {errs}")
         metric_ids = {g["metric"] for g in spec["gates"]}
@@ -21,7 +24,7 @@ class TestGateMetrics(unittest.TestCase):
         self.assertIn("changed_pixel_ratio", metric_ids)
 
     def test_01_region_invalid_rejected(self):
-        spec = load_spec()
+        spec = load_spec(self.FIXTURE)
         bad = dict(spec)
         bad["gates"] = [dict(g) for g in spec["gates"]]
         bad["gates"][1]["region"] = [500, 100]  # y0 >= y1
@@ -86,15 +89,31 @@ class TestGateMetrics(unittest.TestCase):
         self.assertEqual(statistics.median(deduped_static), 0.0, "truly frozen shot must still fail motion median")
 
     def test_06_two_pass_loudnorm_short_voice_long_shot(self):
-        """P0-1: Short voiceover + longer shot mastered via two-pass loudnorm lands within [-19, -13] LUFS and close to -16 LUFS."""
+        """P0-1: Short voiceover + longer shot mastered via two-pass loudnorm lands within [-19, -13] LUFS and close to -16 LUFS.
+
+        The voice source is a locally generated fixture (a speech-like band-limited
+        tone) so the test does not depend on the network or on the exact bytes of an
+        Edge voice snapshot — those can legitimately drift over time. What the test
+        guards is the loudnorm chain reaching the target within tolerance.
+        """
         import tempfile
+        import subprocess
         from core.audio import prepare_shot_audio, measure_audio_loudness
 
-        audio_spec = {
-            "voiceover": "短配音。",  # ~1.2-1.8s speech in a 5.0s shot
-            "bgm": "ambient",
-        }
         with tempfile.TemporaryDirectory() as tmp:
+            fixture = os.path.join(tmp, "voice.wav")
+            subprocess.run([
+                "ffmpeg", "-f", "lavfi", "-i",
+                ("sine=frequency=220:duration=1.6,"
+                 "afade=t=in:st=0:d=0.03,afade=t=out:st=1.5:d=0.1,"
+                 "alimiter=limit=0.3"),
+                "-y", "-ar", "44100", "-ac", "1", fixture
+            ], check=True)
+            audio_spec = {
+                "voiceover": fixture,  # a path to a source file (prepare_shot_audio treats it as the voice)
+                "voice": "TestVoice",
+                "bgm": fixture,
+            }
             out_m4a = os.path.join(tmp, "shot_audio.m4a")
             wav_path = prepare_shot_audio(audio_spec, duration_in_frames=150, fps=30, out_path=out_m4a)
             self.assertTrue(os.path.exists(wav_path))
@@ -111,7 +130,7 @@ class TestGateMetrics(unittest.TestCase):
         from core.audio import synthesize_voiceover_with_timings
 
         test_text = "冻结确定性配音测试。"
-        h = hashlib.sha256(f"neural_+18%_{test_text}".encode("utf-8")).hexdigest()[:16]
+        h = hashlib.sha256(f"TestVoice_+18%_{test_text}".encode("utf-8")).hexdigest()[:16]
         frozen_wav = os.path.join(ROOT, "assets", f"tts_{h}.wav")
         frozen_meta = os.path.join(ROOT, "assets", f"tts_{h}.meta.json")
 
@@ -119,11 +138,11 @@ class TestGateMetrics(unittest.TestCase):
             out1 = os.path.join(tmp, "v1.wav")
             out2 = os.path.join(tmp, "v2.wav")
             try:
-                p1, dur1, b1 = synthesize_voiceover_with_timings(test_text, out_path=out1)
+                p1, dur1, b1 = synthesize_voiceover_with_timings(test_text, voice="TestVoice", rate="+18%", out_path=out1)
                 self.assertTrue(os.path.exists(frozen_wav), "TTS should freeze generated audio to assets/")
                 self.assertTrue(os.path.exists(frozen_meta), "TTS should freeze sentence metadata to assets/")
 
-                p2, dur2, b2 = synthesize_voiceover_with_timings(test_text, out_path=out2)
+                p2, dur2, b2 = synthesize_voiceover_with_timings(test_text, voice="TestVoice", rate="+18%", out_path=out2)
                 with open(out1, "rb") as f1, open(out2, "rb") as f2:
                     self.assertEqual(f1.read(), f2.read(), "Reused TTS must be 100% bit-exact")
                 self.assertAlmostEqual(dur1, dur2, places=3)
@@ -140,10 +159,14 @@ class TestGateMetrics(unittest.TestCase):
         import json
         from core.audio import prepare_shot_audio, measure_audio_loudness, measure_audio_silence
 
-        audio_spec = {
-            "bgm": "ambient",
-        }
         with tempfile.TemporaryDirectory() as tmp:
+            bgm = os.path.join(tmp, "music.wav")
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                "-i", "sine=frequency=220:duration=6.0",
+                "-ar", "44100", "-ac", "2", bgm
+            ], check=True)
+            audio_spec = {"bgm": bgm}
             out_m4a = os.path.join(tmp, "bgm_only.m4a")
             wav_path = prepare_shot_audio(audio_spec, duration_in_frames=90, fps=30, out_path=out_m4a)
             self.assertTrue(os.path.exists(wav_path))
@@ -187,8 +210,8 @@ class TestGateMetrics(unittest.TestCase):
             self.assertGreaterEqual(lufs, -19.0)
             self.assertLessEqual(lufs, -13.0)
 
-    def test_10_sync_spec_audio_paces_captions_without_voiceover(self):
-        """sync-audio automatically paces captions items across durationInFrames when shot has no voiceover."""
+    def test_10_sync_spec_audio_without_voiceover_preserves_authored_tracks(self):
+        """sync-audio without voiceover is a no-op: authored captions/events stay untouched."""
         import tempfile
         import json
         from core.audio import sync_spec_audio
@@ -197,23 +220,11 @@ class TestGateMetrics(unittest.TestCase):
             "id": "music-cards-shot",
             "fps": 30,
             "durationInFrames": 120,
-            "audio": {"bgm": "ambient"},
-            "layers": [
-                {"id": "bg", "type": "code", "draw": "grid", "rect": [0, 0, 1080, 1920], "z": 0},
-                {
-                    "id": "captions",
-                    "type": "code",
-                    "draw": "captions",
-                    "rect": [60, 1600, 960, 80],
-                    "z": 10,
-                    "params": {
-                        "items": [
-                            {"text": "第一张海报视觉呈现"},
-                            {"text": "第二张核心数据卡片"},
-                        ]
-                    },
-                },
-            ],
+            "layers": [],
+            "tracks": {"captions": [
+                {"frame": 0, "end_frame": 60, "text": "第一张海报视觉呈现"},
+                {"frame": 61, "text": "第二张核心数据卡片"},
+            ], "events": [{"frame": 30, "kind": "contact"}]},
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -221,13 +232,9 @@ class TestGateMetrics(unittest.TestCase):
             with open(p, "w") as f:
                 json.dump(spec, f)
             res = sync_spec_audio(p)
-            self.assertEqual(res.get("mode"), "captions_paced_without_voiceover")
+            self.assertEqual(res.get("status"), "no_voiceover")
             with open(p) as f:
-                updated = json.load(f)
-            items = updated["layers"][1]["params"]["items"]
-            self.assertEqual(items[0]["frame"], 0)
-            self.assertGreater(items[1]["frame"], items[0]["frame"])
-            self.assertEqual(items[1]["hl"], "数据卡片")
+                self.assertEqual(json.load(f), spec)
 
 
 if __name__ == "__main__":

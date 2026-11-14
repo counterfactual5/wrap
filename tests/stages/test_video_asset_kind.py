@@ -113,13 +113,21 @@ class TestFreezeHint(unittest.TestCase):
 
 
 class TestS5Criteria(unittest.TestCase):
-    def test_00_the_duration_criterion_exists(self):
-        s5 = _load("s5_media", os.path.join(ROOT, "stages", "05_inspect.py"))
-        joined = " ".join(s5.AUDIT_CRITERIA)
-        self.assertIn("source_duration", joined)
-        self.assertIn("source_resolution", joined,
-                      "the earlier criterion must not be lost")
-        self.assertGreaterEqual(len(s5.AUDIT_CRITERIA), 6)
+    def test_00_audit_criteria_are_project_owned(self):
+        """S5 carries no preset aesthetic checklist: the audit criteria in the
+        inspection record are the spec's own `checklist`, verbatim. The clip
+        facts a reviewer needs (source duration / resolution cost) come from
+        the prepared manifest row, not from hardcoded criteria strings."""
+        s5 = _load("s5_media2", os.path.join(ROOT, "stages", "05_inspect.py"))
+        self.assertFalse(hasattr(s5, "AUDIT_CRITERIA"),
+                         "the preset aesthetic criteria list came back")
+        spec = {"id": "s", "fps": 30, "durationInFrames": 30,
+                "layers": [], "gates": [],
+                "checklist": ["source_duration: judge the loop"],
+                "tracks": {"captions": [], "events": []}}
+        checklist = s5.extract_checklist(spec)
+        self.assertEqual(checklist["project_checklist"],
+                         ["source_duration: judge the loop"])
 
 
 if __name__ == "__main__":

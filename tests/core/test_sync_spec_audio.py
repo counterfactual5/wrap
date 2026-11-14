@@ -10,26 +10,17 @@ from core.audio import sync_spec_audio, synthesize_voiceover_with_timings
 
 
 class TestSyncSpecAudio(unittest.TestCase):
-    def test_paces_all_nonempty_caption_layers_without_voiceover(self):
-        spec = {"id": "shot", "durationInFrames": 120, "layers": [
-            {"type": "code", "draw": "captions", "params": {"items": []}},
-            {"type": "code", "draw": "captions", "params": {"items": [{"text": "第一句"}, {"text": "第二句"}]}},
-            {"type": "code", "draw": "captions", "params": {"items": [{"text": "另一句"}, {"text": "最后一句", "hl": "保留"}]}},
-        ]}
+    def test_without_voiceover_preserves_authored_track(self):
+        spec = {"id": "shot", "fps": 30, "durationInFrames": 120, "layers": [],
+                "tracks": {"captions": [{"frame": 12, "end_frame": 80, "text": "Authored"}]}}
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "spec.json")
             with open(path, "w") as f:
                 json.dump(spec, f)
             result = sync_spec_audio(path)
             with open(path) as f:
-                layers = json.load(f)["layers"]
-        self.assertEqual(result["updated_caption_layers"], 2)
-        for layer in layers[1:]:
-            items = layer["params"]["items"]
-            self.assertEqual(items[0]["frame"], 0)
-            self.assertGreater(items[1]["frame"], 0)
-            self.assertIn("end_frame", items[1])
-        self.assertEqual(layers[2]["params"]["items"][1]["hl"], "保留")
+                self.assertEqual(json.load(f), spec)
+        self.assertEqual(result["status"], "no_voiceover")
 
     def test_concurrent_synthesis_isolates_intermediate_audio(self):
         barrier = threading.Barrier(2)
@@ -49,7 +40,7 @@ class TestSyncSpecAudio(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             def run(text):
                 path = os.path.join(tmp, text + ".wav")
-                synthesize_voiceover_with_timings(text, out_path=path)
+                synthesize_voiceover_with_timings(text, voice="TestVoice", out_path=path)
                 with open(path) as f:
                     return f.read()
 
@@ -78,7 +69,7 @@ class TestSyncSpecAudio(unittest.TestCase):
             for i in range(2):
                 path = os.path.join(tmp, f"{i}.json")
                 with open(path, "w") as f:
-                    json.dump({"id": "same", "audio": {"voiceover": str(i)}}, f)
+                    json.dump({"id": "same", "audio": {"voiceover": str(i), "voice": "TestVoice"}}, f)
                 specs.append(path)
             with patch("core.audio.sync.synthesize_voiceover_with_timings", side_effect=synthesize):
                 with ThreadPoolExecutor(max_workers=2) as pool:

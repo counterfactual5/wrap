@@ -1,7 +1,4 @@
-// Generic keyframe & skeletal puppet engine: expression lives in the spec
-// (layer.anim, parent, pivot, gait, spring, poses, flipX, depth, clipRect).
-// This file is the TypeScript mirror of renderers/quartz/compose.swift — the two
-// must evaluate the same kinematics frame for frame.
+// Generic interpolation and spring integration; project code owns choreography.
 import type {Anim, Ease, Keyframe, Layer} from './spec';
 
 export const applyEase = (t: number, ease: Ease): number => {
@@ -50,7 +47,7 @@ export interface TransformState {
   scale: number;
   rotate: number;
   opacity: number;
-  depth: number;
+
   flipX: boolean;
 }
 
@@ -61,84 +58,10 @@ export const evalBaseAnim = (layer: Layer, frame: number): TransformState => {
   const scale = channelValue(anim?.scale, frame, 1);
   const rotate = channelValue(anim?.rotate, frame, 0);
   const opacity = channelValue(anim?.opacity, frame, 1);
-  const baseDepth = layer.type === 'ai' && typeof layer.depth === 'number' ? layer.depth : 0;
-  const depth = Math.max(0, Math.min(1, channelValue(anim?.depth, frame, baseDepth)));
+
   const baseFlip = layer.flipX ? 1 : 0;
   const flipVal = channelValue(anim?.flipX, frame, baseFlip);
-  return {x, y, scale, rotate, opacity, depth, flipX: flipVal >= 0.5};
-};
-
-const evalGaitModulation = (
-  layer: Layer,
-  frame: number,
-  fps: number,
-  layerMap: Record<string, Layer>
-): {dx: number; dy: number; drot: number} => {
-  const gait = layer.gait;
-  const parentLayer = layer.parent ? layerMap[layer.parent] : undefined;
-  const parentGait = parentLayer ? parentLayer.gait : undefined;
-
-  if (!gait) {
-    if (parentGait && parentGait.mode === 'shudder') {
-      const range = parentGait.range;
-      if (range && (frame < range[0] || frame > range[1])) return {dx: 0, dy: 0, drot: 0};
-      const freq = parentGait.freq ?? 10;
-      const sway = parentGait.sway ?? 3.2;
-      const t = frame / Math.max(1, fps);
-      const phase = t * freq * 2 * Math.PI + (layer.id.length % 5) * 0.9;
-      return {dx: 0, dy: 0, drot: sway * 1.35 * Math.sin(phase * 1.7)};
-    }
-    return {dx: 0, dy: 0, drot: 0};
-  }
-
-  if (gait.range && (frame < gait.range[0] || frame > gait.range[1])) {
-    return {dx: 0, dy: 0, drot: 0};
-  }
-
-  let vx = 0;
-  if (layer.anim?.x && layer.anim.x.length >= 2) {
-    vx = channelValue(layer.anim.x, frame + 1, 0) - channelValue(layer.anim.x, frame - 1, 0);
-  } else if (parentLayer?.anim?.x && parentLayer.anim.x.length >= 2) {
-    vx = channelValue(parentLayer.anim.x, frame + 1, 0) - channelValue(parentLayer.anim.x, frame - 1, 0);
-  }
-  const speedFactor = Math.min(1.6, Math.max(0.35, Math.abs(vx) * 0.18));
-  const freq = gait.freq ?? 3.2;
-  const bob = gait.bob ?? 6.0;
-  const sway = gait.sway ?? 2.2;
-  const phOff = gait.phase ?? 0;
-  const t = frame / Math.max(1, fps);
-  const phase = t * freq * 2 * Math.PI + phOff;
-
-  if (gait.mode === 'puppet') {
-    const qPhase = Math.round((phase / (2 * Math.PI)) * 12) * ((2 * Math.PI) / 12);
-    return {
-      dx: 0,
-      dy: -Math.abs(Math.sin(qPhase)) * bob * speedFactor,
-      drot: Math.sin(qPhase) * sway * speedFactor + Math.sin(phase * 3.5) * 0.6,
-    };
-  }
-  if (gait.mode === 'walk') {
-    return {
-      dx: 0,
-      dy: -Math.abs(Math.sin(phase)) * bob * speedFactor,
-      drot: Math.cos(phase) * sway * speedFactor,
-    };
-  }
-  if (gait.mode === 'float') {
-    return {
-      dx: Math.cos(phase * 0.5) * (bob * 0.4),
-      dy: Math.sin(phase) * bob,
-      drot: Math.sin(phase * 0.7) * sway,
-    };
-  }
-  if (gait.mode === 'shudder') {
-    return {
-      dx: Math.sin(phase * 2.3) * (bob * 0.65),
-      dy: Math.cos(phase * 1.9) * (bob * 0.45),
-      drot: Math.sin(phase * 2.7) * sway,
-    };
-  }
-  return {dx: 0, dy: 0, drot: 0};
+  return {x, y, scale, rotate, opacity, flipX: flipVal >= 0.5};
 };
 
 const selectAnimChannel = (anim: Anim | undefined, name: string): Keyframe[] | undefined => {
@@ -159,11 +82,15 @@ const computeSpringOffset = (
 ): number => {
   const sp = layer.spring;
   if (!sp) return 0.0;
-  const omega = sp.omega ?? 18.0;
-  const zeta = sp.zeta ?? 0.25;
-  const coupling = sp.coupling ?? 0.45;
-  const maxAccel = Math.max(1.0, sp.maxAccel ?? 4500.0);
-  const targetCh = sp.channel ?? 'rotate';
+  if (sp.omega === undefined || sp.zeta === undefined || sp.coupling === undefined ||
+      sp.maxAccel === undefined || sp.channel === undefined || sp.driverChannel === undefined) {
+    throw new Error(`spring on ${layer.id} is incomplete; the engine ships no defaults — declare omega, zeta, coupling, maxAccel, channel, driverChannel`);
+  }
+  const omega = sp.omega;
+  const zeta = sp.zeta;
+  const coupling = sp.coupling;
+  const maxAccel = Math.max(1.0, sp.maxAccel);
+  const targetCh = sp.channel;
   const driverAnim = parentLayer?.anim ?? layer.anim;
   const driverKfs = sp.driverChannel
     ? selectAnimChannel(driverAnim, sp.driverChannel)
@@ -197,13 +124,13 @@ export const evalLayerTransform = (
   layerMap: Record<string, Layer>
 ): TransformState => {
   const s = evalBaseAnim(layer, frame);
-  const g = evalGaitModulation(layer, frame, fps, layerMap);
+
   const parentLayer = layer.parent ? layerMap[layer.parent] : undefined;
   const spOffset = computeSpringOffset(layer, parentLayer, frame, fps);
   const spCh = layer.spring?.channel ?? 'rotate';
-  let sx = s.x + g.dx;
-  let sy = s.y + g.dy;
-  let srot = s.rotate + g.drot;
+  let sx = s.x;
+  let sy = s.y;
+  let srot = s.rotate;
   let sscale = s.scale;
   if (spOffset !== 0) {
     if (spCh === 'x') sx += spOffset;
@@ -221,7 +148,7 @@ export const evalLayerTransform = (
 };
 
 export const activeLayerIdForFrame = (layer: Layer, frame: number): string => {
-  if (layer.type !== 'ai' || !layer.poses || layer.poses.length === 0) return layer.id;
+  if ((layer.type !== 'ai' && layer.type !== 'image') || !layer.poses || layer.poses.length === 0) return layer.id;
   let chosenIdx = -1;
   let bestFrame = -1;
   layer.poses.forEach((p, idx) => {

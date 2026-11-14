@@ -75,21 +75,30 @@ class TestGenerationModels(unittest.TestCase):
             self.assertIs(video.VIDEO_MODELS["shared"], models.VIDEO_MODELS["shared"])
         self.assertNotIn("shared", models.VIDEO_MODELS)
 
-    def test_runtime_override_and_warning_patches(self):
+    def test_runtime_manifest_is_strict(self):
+        """POSTER_MODELS_JSON replaces the catalog and is VALIDATED: a
+        complete manifest applies verbatim; a discrete duration outside the
+        declared range or malformed JSON is a loud ValueError, never a
+        warning beside a stale catalog."""
         original = models.VIDEO_MODELS
         for target, caller in (("core.generation.models", models),):
             with self.subTest(target=target), mock.patch(target + ".VIDEO_MODELS", {}):
                 with mock.patch.dict(os.environ, {"POSTER_MODELS_JSON": json.dumps({
                         "custom": {"min_dur": 3, "max_dur": 8,
-                                   "resolutions": ["2K"], "durations": [2, 9]}})}):
+                                   "resolutions": ["2K"], "durations": [4, 8]}})}):
                     caller._load_env_models()
-                self.assertEqual(caller.video_duration_range("custom"), (2, 9))
-                self.assertEqual(caller.video_allowed_durations("custom"), (2, 9))
+                self.assertEqual(caller.video_duration_range("custom"), (3, 8))
+                self.assertEqual(caller.video_allowed_durations("custom"), (4, 8))
                 self.assertEqual(caller.video_resolutions("custom"), ("2K",))
-                with mock.patch.dict(os.environ, {"POSTER_MODELS_JSON": "{broken"}), \
-                        mock.patch(target + "._warn") as warn:
-                    caller._load_env_models()
-                    warn.assert_called_once()
+                with mock.patch.dict(os.environ, {"POSTER_MODELS_JSON": json.dumps({
+                        "custom": {"min_dur": 3, "max_dur": 8,
+                                   "resolutions": ["2K"], "durations": [2, 9]}})}):
+                    with self.assertRaises(ValueError) as ctx:
+                        caller._load_env_models()
+                self.assertIn("must stay within min_dur/max_dur", str(ctx.exception))
+                with mock.patch.dict(os.environ, {"POSTER_MODELS_JSON": "{broken"}):
+                    with self.assertRaises(ValueError):
+                        caller._load_env_models()
             self.assertIs(models.VIDEO_MODELS, original)
 
     def test_cold_import_orders_and_reload(self):

@@ -30,7 +30,7 @@ from core.spec.loader import load_spec
 
 def main():
     parser = argparse.ArgumentParser(description="S3: Compose layers into frames and mp4")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (required)")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)

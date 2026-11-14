@@ -1,15 +1,18 @@
-"""The first run of a native-backend pipeline.
+"""The first run of a pipeline with undeclared generation capability.
 
-Before any real asset exists, a newcomer hits two things:
+With the zero-template contract the failure modes a newcomer hits are:
 
-1. the connector CLI is not installed -> the failure must say what to do next,
-   not just hand back an errno;
-2. a zero-cost `--fixture` rehearsal leaves a placeholder in the ledger -> a
-   later real run must not ship that placeholder silently (the ledger is
-   authoritative, so reuse has to be visible).
+1. the connector CLI is not installed -> the failure must say what to do
+   next, not just hand back an errno;
+2. a model call with no declared capability must say exactly what to declare
+   (the env vars) — there is no built-in catalog to fall back to;
+3. a blank prompt is refused, not filled in from design defaults;
+4. a ledger row left over from a legacy `--fixture` rehearsal (the flag is
+   gone; test-side placeholders register themselves in tests/) must still be
+   visible in a later run — reuse of a `source: fixture` row is called out.
 
-And the zero-cost rehearsal path itself has to be findable in the docs: it is
-the only way to try the whole pipeline without paying for a generation.
+And the docs must document the zero-template contract itself: no placeholder
+assets in the production path, capability env vars named.
 
 Test doubles, not network calls: the CLI is invoked through a patched
 subprocess.run, and the S1 subprocess runs without the connector on PATH, so
@@ -60,26 +63,38 @@ def _missing_cli(*args, **kwargs):
     raise FileNotFoundError(2, "No such file or directory", "mcode-tools")
 
 
-class TestMissingConnectorGuidance(unittest.TestCase):
-    """A missing connector CLI must produce a message that says what to do."""
+class TestUndeclaredModelGuidance(unittest.TestCase):
+    """An undeclared model must produce a message that says what to do: the
+    capability catalogs are environment configuration, and every refusal
+    names the env var — there is no built-in catalog to fall back to."""
 
     def test_00_the_image_call_says_what_to_do(self):
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=_missing_cli):
-            with self.assertRaises(Exception) as ctx:
-                s1.call_generate_image("a prompt", "probe-asset")
-        msg = str(ctx.exception).lower()
-        self.assertIn("mcode-tools", msg)
-        self.assertIn("--fixture", msg)
-        self.assertIn("asset transport", msg)
+        with self.assertRaises(RuntimeError) as ctx:
+            s1.call_generate_image("a prompt", "probe-asset")
+        msg = str(ctx.exception)
+        self.assertIn("no image model capability is declared", msg)
+        self.assertIn("POSTER_IMAGE_CAPABILITIES_JSON", msg)
+        self.assertIn("name a model", msg)
 
     def test_01_the_video_call_says_the_same(self):
-        with mock.patch.object(gen_connector.subprocess, "run", side_effect=_missing_cli):
-            with self.assertRaises(Exception) as ctx:
-                s1.submit_video_generation("a prompt", model="MiniMax-H3-Max")
-        msg = str(ctx.exception).lower()
-        self.assertIn("mcode-tools", msg)
-        self.assertIn("--fixture", msg)
-        self.assertIn("asset transport", msg)
+        with self.assertRaises(RuntimeError) as ctx:
+            s1.submit_video_generation("a prompt")
+        msg = str(ctx.exception)
+        self.assertIn("no video model capability is declared", msg)
+        self.assertIn("POSTER_MODELS_JSON", msg)
+        self.assertIn("name a model", msg)
+
+    def test_02_the_blank_prompt_is_refused_before_anything_moves(self):
+        """Design defaults are no longer injected: a layer without an
+        explicit prompt is a loud refusal, not a synthesized brief."""
+        from tests.helpers import TEST_IMAGE_MODELS
+        from core.generation import models
+        with mock.patch.object(models, "IMAGE_MODELS", TEST_IMAGE_MODELS):
+            with self.assertRaises(RuntimeError) as ctx:
+                s1.call_generate_image("", "probe-asset", model="Test-Image",
+                                       aspect_ratio="1:1", resolution="1K")
+        self.assertIn("no prompt", str(ctx.exception))
+        self.assertIn("explicit", str(ctx.exception))
 
 
 class TestPlaceholderVisibility(unittest.TestCase):
@@ -135,23 +150,30 @@ class TestPlaceholderVisibility(unittest.TestCase):
 
 
 class TestDocsContract(unittest.TestCase):
-    """The zero-cost rehearsal path has to be documented, or nobody finds it."""
+    """The zero-template contract has to be documented, or the removed
+    vocabulary gets re-added by well-meaning future work."""
 
     def _text(self, path):
         with open(path) as f:
             return f.read()
 
-    def test_00_both_docs_document_the_zero_cost_rehearsal(self):
+    def test_00_both_docs_name_the_capability_env_vars(self):
+        for var in ("POSTER_MODELS_JSON", "POSTER_IMAGE_CAPABILITIES_JSON"):
+            for path in (README, SKILL):
+                with self.subTest(doc=os.path.basename(path), var=var):
+                    self.assertIn(var, self._text(path))
+
+    def test_01_both_docs_name_the_connector_as_transport_only(self):
         for path in (README, SKILL):
             with self.subTest(doc=os.path.basename(path)):
-                self.assertIn("fixture", self._text(path))
+                text = self._text(path).lower()
+                self.assertIn("mcode-tools", text)
 
-    def test_01_the_readme_lists_the_connector_as_a_prerequisite(self):
-        readme = self._text(README)
-        prereq = readme.split("### 1. Prerequisites", 1)[-1].split("###", 1)[0]
-        self.assertIn("mcode-tools", prereq)
-
-    def test_02_the_docs_say_a_fixture_is_a_placeholder(self):
+    def test_03_docs_keep_the_connector_out_of_the_no_generation_path(self):
+        """Running without the connector (frozen assets only) must be
+        documented as possible, so the absence of a backend is not mistaken
+        for the absence of the pipeline."""
         for path in (README, SKILL):
             with self.subTest(doc=os.path.basename(path)):
-                self.assertIn("placeholder", self._text(path).lower())
+                text = self._text(path).lower()
+                self.assertIn("frozen", text)

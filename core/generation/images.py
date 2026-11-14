@@ -7,6 +7,11 @@ Asset transport notes (mcode-tools connector):
 - The generator may return JPEG/WebP regardless of the requested format, so
   every download is normalized to a real PNG before it is frozen. The
   registration order is fixed: write true format -> verify magic -> freeze.
+
+Model / aspect / area are NEVER defaulted here: the call carries the
+explicit values the stage resolved (core/generation/models.py), or the
+env-declared ones. The connector tool is a transport adapter — it does not
+discover models or capabilities, and neither does this module.
 """
 import json
 import os
@@ -15,39 +20,56 @@ import time
 import urllib.request
 
 from core.runtime.config import ROOT
-from core.generation.connector import CALL_TIMEOUT, _run_connector
+from core.generation import models
+from core.generation.connector import CALL_TIMEOUT, _connector_call, _run_connector
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-# canvas ratio -> generator aspect_ratio. The generator offers a fixed set;
-# anything else falls back to the closest match rather than distorting.
-ASPECTS = {
-    (1, 1): "1:1",
-    (16, 9): "16:9",
-    (9, 16): "9:16",
-    (4, 3): "4:3",
-    (3, 4): "3:4",
-    (21, 9): "21:9",
-}
+def _aspect_value(name):
+    """'16:9' -> 16/9 as a float, or None for a string we cannot parse."""
+    parts = str(name).split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        w, h = float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    return w / h
 
 
-def aspect_for_canvas(w, h):
+def aspect_for_canvas(w, h, supported=None):
     """Derive the generator aspect_ratio from the shot's canvas.
 
-    The old code hardcoded 16:9, so a 1080x1920 vertical shot asked for a
-    landscape plate and S2 cropped it back. Pick the closest supported ratio
-    by canvas proportion."""
+    The candidate set is the DECLARED capability list (the env manifest via
+    models.image_aspect_ratios, or an explicit `supported` argument) — there
+    is no hardcoded ratio table in the engine anymore. With no declared
+    capability the function returns None: the caller then has to pass an
+    explicit aspect_ratio, and only the actual generation call fails.
+    """
+    if supported is None:
+        supported = models.image_aspect_ratios()
+    candidates = []
+    for name in supported:
+        value = _aspect_value(name)
+        if value is not None:
+            candidates.append((name, value))
+    if not candidates:
+        return None
     try:
         w, h = float(w), float(h)
     except (TypeError, ValueError):
-        return "1:1"
+        return None
     if w <= 0 or h <= 0:
-        return "1:1"
+        return None
     ratio = w / h
-    best, best_err = "1:1", None
-    for (aw, ah), name in ASPECTS.items():
-        err = abs(ratio - (aw / ah))
+    # Pick the closest declared ratio by canvas proportion rather than
+    # distorting the plate to a ratio the backend does not offer.
+    best, best_err = None, None
+    for name, value in candidates:
+        err = abs(ratio - value)
         if best_err is None or err < best_err:
             best, best_err = name, err
     return best
@@ -91,34 +113,43 @@ def ensure_png(src, dst):
 
 
 def build_prompt(style, layer_prompt=None):
-    """Build the generation prompt for one asset.
+    """The explicit prompt for one asset — no design defaults are injected.
 
-    The style file describes the episode's look; a layer's own `prompt`
-    describes THIS asset. When a layer states a prompt, it replaces the
-    style's subject and composition — appending them would hand the backend
-    two conflicting descriptions of the same image ("quantum tunneling" plus
-    "a snowy skyline"). The style's background and exclude fields stay as
-    global constraints either way."""
-    fields = style.get("promptFields", {})
-    parts = []
-    if layer_prompt and layer_prompt.strip():
-        parts.append(layer_prompt.strip())
-        keys = ("background", "exclude")
-    else:
-        keys = ("subject", "composition", "background", "exclude")
-    for key in keys:
-        if key in fields and fields[key].strip():
-            parts.append(fields[key].strip())
-    return ", ".join(parts)
+    Style files no longer contribute subject/composition/background/exclude
+    text to generation prompts: a layer (or one of its poses) states its
+    own `prompt`, and if it does not, the generation call asks for one
+    explicitly instead of silently synthesizing a design brief. The `style`
+    argument stays only for signature compatibility with callers that
+    already pass it."""
+    return (layer_prompt or "").strip()
 
 
-def call_generate_image(prompt, asset_name, aspect_ratio="16:9", resolution="2K",
-                        input_urls=None):
+def call_generate_image(prompt, asset_name, aspect_ratio=None, resolution=None,
+                        input_urls=None, model=None):
+    """Generate one image asset through the connector transport.
+
+    Nothing is defaulted: the model comes from the explicit argument or the
+    env-provided default (core/generation/models.py:resolve_image_model),
+    the aspect and area from explicit arguments, env capabilities, or the
+    model's sole declared value — and an empty prompt is refused before any
+    bytes move. The connector tool below is a transport adapter; the 'model'
+    field in the request is an explicit schema parameter, not a discovery
+    hook.
+    """
+    if not (prompt or "").strip():
+        raise RuntimeError(
+            f"no prompt for image generation of {asset_name!r} — give the "
+            f"layer (or pose) an explicit `prompt`; style design defaults are "
+            f"no longer injected")
+    model = models.resolve_image_model(model)
+    aspect_ratio = models.resolve_image_aspect(model, aspect_ratio)
+    resolution = models.resolve_image_area(model, resolution)
     tmp_dir = os.path.join(ROOT, ".tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     gen_file = os.path.join(tmp_dir, "gen.json")
     request = {
-        "prompt": prompt,
+        "model": model,
+        "prompt": prompt.strip(),
         "aspect_ratio": aspect_ratio,
         "area": resolution,
         "output_file": asset_name,
@@ -134,20 +165,7 @@ def call_generate_image(prompt, asset_name, aspect_ratio="16:9", resolution="2K"
         json.dump(payload, f, indent=2)
 
     print(f"Calling connector__matrix__generate_image with prompt:\n  {prompt}")
-    cmd = ["mcode-tools", "connector", "call", "connector__matrix__generate_image", "--args-file", gen_file]
-    try:
-        proc = _run_connector(cmd)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"image generation timed out after {CALL_TIMEOUT}s — the backend did "
-            f"not answer in time")
-    if proc.returncode != 0:
-        raise RuntimeError(f"mcode-tools connector call failed (code {proc.returncode}):\n{proc.stderr}")
-
-    try:
-        data = json.loads(proc.stdout)
-    except Exception as ex:
-        raise RuntimeError(f"Failed to parse connector response as JSON:\n{proc.stdout}") from ex
+    data = _connector_call("connector__matrix__generate_image", payload)
 
     # Expected: data contains success_items: [{"node_id": "...", "file_name": "..."}]
     success_items = data.get("success_items") or []

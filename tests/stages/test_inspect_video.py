@@ -32,6 +32,7 @@ def _spec(layers):
         "layers": layers,
         "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                    "lo": 0.0001, "hi": 0.3}],
+        "tracks": {"captions": [], "events": []},
     }
 
 
@@ -74,22 +75,22 @@ class TestVideoAssetsInChecklist(unittest.TestCase):
         checklist = s5.extract_checklist(_spec([_video_layer()]))
         self.assertGreater(sum(len(v) for v in checklist.values()), 0)
 
-    def test_04_the_other_layer_kinds_still_work(self):
+    def test_04_the_media_and_component_kinds_still_work(self):
+        """Only media (ai/video) and project components exist; the checklist
+        must name each of them for the reviewer."""
         spec = _spec([
-            {"id": "t", "type": "text", "text": "hello", "rect": [0, 0, 10, 10], "z": 0},
             {"id": "a", "type": "ai", "asset": "pic", "keyColor": "#070512",
              "blend": "normal", "rect": [0, 0, 10, 10], "z": 0},
-            {"id": "c", "type": "code", "draw": "grid", "rect": [0, 0, 10, 10], "z": 0},
-            {"id": "h", "type": "hud", "hudType": "badge", "rect": [0, 0, 10, 10], "z": 0},
-            {"id": "cd", "type": "card", "cardType": "quote", "title": "q",
-             "rect": [0, 0, 10, 10], "z": 0},
+            {"id": "v", "type": "video", "asset": "my-clip",
+             "rect": [0, 0, 10, 10], "z": 1},
+            {"id": "c", "type": "component", "component": "LowerThird",
+             "rect": [0, 0, 10, 10], "z": 2},
         ])
         checklist = s5.extract_checklist(spec)
-        self.assertEqual(len(checklist["texts"]), 1)
         self.assertEqual(len(checklist["ai_assets"]), 1)
-        self.assertEqual(len(checklist["code_draws"]), 1)
-        self.assertEqual(len(checklist["hud_types"]), 1)
-        self.assertEqual(len(checklist["cards"]), 1)
+        self.assertEqual(len(checklist["video_assets"]), 1)
+        self.assertEqual(len(checklist["components"]), 1)
+        self.assertEqual(checklist["components"][0]["component"], "LowerThird")
 
 
 class TestJudgeInstructions(unittest.TestCase):
@@ -101,11 +102,20 @@ class TestJudgeInstructions(unittest.TestCase):
         self.assertIn("my-clip", text)
         self.assertIn("video_assets", text)
 
-    def test_01_the_subject_criterion_covers_video_clips(self):
-        joined = " ".join(s5.AUDIT_CRITERIA)
-        subject = next(c for c in s5.AUDIT_CRITERIA if c.startswith("subject_fidelity"))
-        self.assertIn("video clip", subject)
-        self.assertIn("subject_fidelity", joined)
+    def test_01_the_project_checklist_is_carried_into_the_material(self):
+        """Audit criteria are PROJECT-OWNED (spec["checklist"]), not a preset
+        aesthetic list: whatever the author declares rides into the judge
+        material verbatim."""
+        spec = _spec([_video_layer()])
+        spec["checklist"] = [
+            "subject_fidelity: the clip's subject matches the prompt",
+            "source_duration: the loop or cut must look intentional",
+        ]
+        with mock.patch.object(s5.manifest, "verified", return_value=None):
+            checklist = s5.extract_checklist(spec)
+        text = s5.judge_instructions("clip-shot", "build/sheet.png", checklist)
+        self.assertIn("subject_fidelity", text)
+        self.assertIn("project checklist", text)
 
 
 if __name__ == "__main__":

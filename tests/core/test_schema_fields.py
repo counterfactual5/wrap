@@ -36,29 +36,6 @@ def _video(**extra):
     return layer
 
 
-class TestPlateValidation(unittest.TestCase):
-    def test_00_non_boolean_plate_is_rejected(self):
-        for bad in ("no", "false", 0, 1, [], {}):
-            with self.subTest(plate=bad):
-                errs = validate(_spec(_ai(plate=bad)))
-                self.assertTrue(any("plate" in e for e in errs),
-                                f"plate={bad!r} was accepted: {errs}")
-
-    def test_01_the_message_says_what_is_allowed(self):
-        errs = validate(_spec(_ai(plate="no")))
-        self.assertTrue(any("true or false" in e for e in errs), errs)
-
-    def test_02_boolean_plate_is_accepted(self):
-        self.assertEqual(validate(_spec(_ai(plate=True))), [])
-        self.assertEqual(validate(_spec(_ai(plate=False))), [])
-
-    def test_03_absent_plate_is_accepted(self):
-        self.assertEqual(validate(_spec(_ai())), [])
-
-    def test_04_video_layer_plate_is_checked_too(self):
-        errs = validate(_spec(_video(plate="x")))
-        self.assertTrue(any("plate" in e for e in errs), errs)
-        self.assertEqual(validate(_spec(_video(plate=False))), [])
 
 
 class TestOtherFieldsStillChecked(unittest.TestCase):
@@ -98,7 +75,7 @@ class TestShotIdSafety(unittest.TestCase):
             "canvas": {"w": 1080, "h": 1920},
             "fps": 30,
             "durationInFrames": 60,
-            "layers": [{"id": "bg", "type": "code", "draw": "grid",
+            "layers": [{"id": "bg", "type": "component", "component": "TestGraphic",
                         "rect": [0, 0, 1080, 1920], "z": 0}],
             "gates": [{"id": "m", "metric": "changed_pixel_ratio",
                        "lo": 0.0001, "hi": 0.15}],
@@ -121,40 +98,6 @@ class TestShotIdSafety(unittest.TestCase):
         self.assertTrue(any("build/" in e and "public/" in e for e in errs), errs)
 
 
-class TestVibeValidation(unittest.TestCase):
-    """`vibe: false` opts out of the baked ambience. The renderer compares it
-    strictly against false, so a non-boolean would run the opposite of what
-    the author wrote — the same class of bug as `plate`."""
-
-    def _spec(self, vibe):
-        return {
-            "id": "vibe-test",
-            "canvas": {"w": 1080, "h": 1920},
-            "fps": 30,
-            "durationInFrames": 60,
-            "layers": [{"id": "bg", "type": "code", "draw": "grid",
-                        "rect": [0, 0, 1080, 1920], "z": 0}],
-            "gates": [{"id": "m", "metric": "changed_pixel_ratio",
-                       "lo": 0.0001, "hi": 0.15}],
-            "vibe": vibe,
-        }
-
-    def test_00_booleans_are_accepted(self):
-        for vibe in (True, False):
-            with self.subTest(vibe=vibe):
-                self.assertEqual(validate(self._spec(vibe)), [])
-
-    def test_01_non_booleans_are_rejected(self):
-        for vibe in ("no", "false", 0, 1, []):
-            with self.subTest(vibe=vibe):
-                errs = validate(self._spec(vibe))
-                self.assertTrue(any("vibe must be" in e for e in errs),
-                                f"vibe={vibe!r} was accepted: {errs}")
-
-    def test_02_an_absent_vibe_is_accepted(self):
-        spec = self._spec(True)
-        del spec["vibe"]
-        self.assertEqual(validate(spec), [])
 
 
 class TestVideoZoomValidation(unittest.TestCase):
@@ -193,7 +136,7 @@ class TestVideoZoomValidation(unittest.TestCase):
         for layer_type in ("text", "hud", "card"):
             with self.subTest(layer_type=layer_type):
                 errs = validate(self._spec(layer_type, [1.0, 1.1]))
-                self.assertTrue(any("zoom is not supported" in e for e in errs),
+                self.assertTrue(any("zoom is unsupported" in e for e in errs),
                                 f"{layer_type} accepted a zoom: {errs}")
 
     def test_04_code_layer_zoom_is_accepted_for_the_draws_the_renderer_prepares(self):
@@ -201,23 +144,24 @@ class TestVideoZoomValidation(unittest.TestCase):
         # component that interpolates motion.zoom for ai layers.
         for draw in ("grid", "dots"):
             with self.subTest(draw=draw):
-                self.assertEqual(validate(self._spec("code", [1.0, 1.1], draw=draw)), [])
+                self.assertTrue(any("migration required" in e for e in validate(self._spec("code", [1.0, 1.1], draw=draw))))
 
-    def test_05_code_layer_zoom_is_refused_for_the_draws_the_renderer_ignores(self):
-        # CodeLayerComp reads only motion.pan; a zoom there would be silently
-        # dropped, so the validator has to keep refusing it.
-        for draw in ("bar", "field", "path", "captions"):
+    def test_05_legacy_draw_layers_are_refused_either_way(self):
+        """The removed procedural vocabulary is refused twice over: the layer
+        type and the draw field both name the migration, and a zoom on a
+        component layer is refused because the renderer cannot interpolate it."""
+        for draw in ("bar", "field", "path", "captions", "grid", "dots"):
             with self.subTest(draw=draw):
-                errs = validate(self._spec("code", [1.0, 1.1], draw=draw))
-                self.assertTrue(any("zoom is not supported" in e for e in errs),
-                                f"code/{draw} accepted a zoom: {errs}")
-                self.assertTrue(any("code" in e for e in errs),
-                                f"the message does not name the layer kind: {errs}")
-
-    def test_06_the_numeric_bounds_apply_to_code_layers_too(self):
-        errs = validate(self._spec("code", [0.5, 1.5], draw="grid"))
-        self.assertTrue(any("zoom must be" in e for e in errs), errs)
-
+                layer = {"id": "l", "type": "code", "draw": draw, "color": "#E03A3A",
+                         "rect": [0, 0, 1080, 1920], "z": 0,
+                         "motion": {"type": "geometric", "zoom": [1.0, 1.2]}}
+                spec = {"id": "zoom-refusal", "canvas": {"w": 1080, "h": 1920},
+                        "fps": 30, "durationInFrames": 60, "layers": [layer],
+                        "gates": [{"id": "m", "metric": "changed_pixel_ratio",
+                                   "lo": 0.0001, "hi": 0.15}]}
+                errs = validate(spec)
+                self.assertTrue(any("migration required" in e for e in errs), errs)
+                self.assertTrue(any("zoom is unsupported" in e for e in errs), errs)
 
 class TestNameValidation(unittest.TestCase):
     """Names that reach file paths must not be able to walk out of their
@@ -229,7 +173,7 @@ class TestNameValidation(unittest.TestCase):
             "canvas": {"w": 1080, "h": 1920},
             "fps": 30,
             "durationInFrames": 60,
-            "layers": [{"id": "bg", "type": "code", "draw": "grid",
+            "layers": [{"id": "bg", "type": "component", "component": "TestGraphic",
                         "rect": [0, 0, 1080, 1920], "z": 0}],
             "gates": [{"id": "m", "metric": "changed_pixel_ratio",
                        "lo": 0.0001, "hi": 0.15}],
@@ -308,55 +252,9 @@ class TestFieldTypeValidation(unittest.TestCase):
                                 f"playbackRate={bad!r} was accepted: {errs}")
         self.assertEqual(validate(self._spec({**layer, "playbackRate": 2})), [])
 
-    def test_01_text_field_types(self):
-        base = {"id": "t", "type": "text", "text": "x", "rect": [0, 0, 10, 10], "z": 0}
-        errs = validate(self._spec({**base, "fontSize": "big"}))
-        self.assertTrue(any("fontSize" in e for e in errs), errs)
-        errs = validate(self._spec({**base, "fontWeight": []}))
-        self.assertTrue(any("fontWeight" in e for e in errs), errs)
-        errs = validate(self._spec({**base, "subtext": 5}))
-        self.assertTrue(any("subtext" in e for e in errs), errs)
-        self.assertEqual(validate(self._spec({**base, "fontSize": 54,
-                                              "fontWeight": 800,
-                                              "subtext": "hi"})), [])
 
-    def test_02_card_and_hud_types_are_enumerated(self):
-        errs = validate(self._spec({"id": "c", "type": "card",
-                                    "cardType": "timeline",
-                                    "rect": [0, 0, 10, 10], "z": 0}))
-        self.assertTrue(any("cardType must be one of" in e for e in errs), errs)
-        errs = validate(self._spec({"id": "h", "type": "hud",
-                                    "hudType": "unknown",
-                                    "rect": [0, 0, 10, 10], "z": 0}))
-        self.assertTrue(any("hudType must be one of" in e for e in errs), errs)
-        for card in ("capsule", "formula", "quote"):
-            with self.subTest(card=card):
-                self.assertEqual(validate(self._spec(
-                    {"id": "c", "type": "card", "cardType": card,
-                     "rect": [0, 0, 10, 10], "z": 0})), [])
-        # "scanline" was in the docs and the TS type but had no renderer
-        # branch — it is not a drawable hud type.
-        for hud in ("badge", "telemetry", "equalizer", "progress"):
-            with self.subTest(hud=hud):
-                self.assertEqual(validate(self._spec(
-                    {"id": "h", "type": "hud", "hudType": hud,
-                     "rect": [0, 0, 10, 10], "z": 0})), [])
 
-    def test_03_scanline_is_not_a_hud_type(self):
-        """It was listed in the docs and the TS type but had no renderer
-        branch, so a spec using it drew nothing."""
-        errs = validate(self._spec({"id": "h", "type": "hud",
-                                    "hudType": "scanline",
-                                    "rect": [0, 0, 10, 10], "z": 0}))
-        self.assertTrue(any("hudType must be one of" in e for e in errs), errs)
 
-    def test_04_card_details_must_be_a_list_of_objects(self):
-        base = {"id": "c", "type": "card", "cardType": "quote",
-                "rect": [0, 0, 10, 10], "z": 0}
-        errs = validate(self._spec({**base, "details": "两行"}))
-        self.assertTrue(any("details must be" in e for e in errs), errs)
-        self.assertEqual(validate(self._spec(
-            {**base, "details": [{"label": "a", "desc": "b"}]})), [])
 
     def test_05_component_layer_validation(self):
         base = {"id": "comp", "type": "component", "rect": [0, 0, 100, 100], "z": 0}
@@ -425,13 +323,13 @@ class TestFieldTypeValidation(unittest.TestCase):
         s_cross_child = self._spec({**ai_base, "id": "hero"})
         s_cross_child["layers"].extend([
             {
-                "id": "label", "type": "text", "text": "hello",
+                "id": "label", "type": "component", "component": "Label", "props": {"text": "hello"},
                 "parent": "hero", "rect": [0, 0, 200, 60], "z": 2,
             },
             {
-                "id": "spark", "type": "code", "draw": "field",
+                "id": "spark", "type": "component", "component": "Particles",
                 "parent": "label", "rect": [0, 0, 200, 60], "z": 3,
-                "params": {"count": 8},
+                "props": {"count": 8},
             },
         ])
         self.assertEqual(validate(s_cross_child), [])
@@ -458,129 +356,7 @@ class TestFieldTypeValidation(unittest.TestCase):
         self.assertEqual(w["anim"]["rotate"], [[0, 15], [59, 15]])
         self.assertEqual(validate(nxt), [])
 
-    def test_10_rig_tools_pivot_split_and_poses(self):
-        import os
-        import tempfile
-        from core import rig
-        from core.runtime import manifest
-        from core.media.png import write_png
-        from tests.helpers import preserve_manifest
 
-        # 1. Exact source-to-canvas pivot math (including aspect-preserving contain pad)
-        piv = rig.source_to_canvas_pivot(896, 1200, [260, 290, 448, 600], 638, 612)
-        self.assertEqual(piv, [579, 596])
-
-        # 2. Test inspect_sprite, split_sprite, and derive_pose_preset with temporary assets
-        tmp_src = "test-rig-hero"
-        tmp_body = "test-rig-body"
-        tmp_part = "test-rig-part"
-        tmp_pose = "test-rig-shatter"
-        created_files = [
-            os.path.join(rig.ROOT, "assets", f"{n}.png")
-            for n in (tmp_src, tmp_body, tmp_part, tmp_pose)
-        ] + [os.path.join(rig.ROOT, "build", f"inspect_sprite_{tmp_src}.png")]
-
-        with preserve_manifest():
-            try:
-                w, h = 120, 160
-                buf = bytearray(b"\xff\xff\xff" * (w * h))
-                # Draw a dark body (x: 30..70, y: 30..130) and a weapon (x: 70..100, y: 20..120)
-                for y in range(20, 130):
-                    for x in range(30, 100):
-                        if (x <= 70 and y >= 30) or (x >= 70 and y <= 120):
-                            idx = (y * w + x) * 3
-                            buf[idx:idx + 3] = b"\x80\x20\x10"
-                src_rel = f"assets/{tmp_src}.png"
-                write_png(os.path.join(rig.ROOT, src_rel), w, h, bytes(buf))
-                manifest.register("assets", tmp_src, src_rel, source="test")
-
-                insp = rig.inspect_sprite(tmp_src, rect=[100, 100, 240, 320], joint=[70, 75])
-                self.assertEqual(insp["canvas_pivot"], [240, 250])
-                self.assertTrue(os.path.exists(os.path.join(rig.ROOT, insp["annotated_image"])))
-
-                sp = rig.split_sprite(
-                    tmp_src, tmp_body, tmp_part,
-                    box=[70, 15, 105, 125], joint=[70, 75],
-                    joint_radius=8, rect=[100, 100, 240, 320],
-                )
-                self.assertEqual(sp["canvas_pivot"], [240, 250])
-                self.assertIsNotNone(manifest.verified("assets", tmp_body))
-                self.assertIsNotNone(manifest.verified("assets", tmp_part))
-
-                dp = rig.derive_pose_preset(tmp_body, tmp_pose, preset="shatter")
-                self.assertEqual(dp["preset"], "shatter")
-                self.assertIsNotNone(manifest.verified("assets", tmp_pose))
-            finally:
-                for p in created_files:
-                    if os.path.exists(p):
-                        os.remove(p)
-
-    def test_11_gait_eases_and_caption_voiceover_sync(self):
-        import os
-        import tempfile
-        from core import audio
-        from core.spec.state import carry_state_from
-
-        ai_base = _ai()
-        # 1. Validate gait modes and parameters
-        self.assertTrue(any("gait.mode" in e for e in validate(self._spec({**ai_base, "gait": {"mode": "teleport"}}))))
-        self.assertTrue(any("gait.freq" in e for e in validate(self._spec({**ai_base, "gait": {"mode": "puppet", "freq": 0}}))))
-        self.assertTrue(any("gait.range" in e for e in validate(self._spec({**ai_base, "gait": {"mode": "shudder", "range": [50, 20]}}))))
-        # 2. Validate new eases (snap, overshoot, step) + valid gait
-        valid_layer = {
-            **ai_base,
-            "gait": {"mode": "puppet", "freq": 4.2, "bob": 9, "sway": 4.0, "range": [0, 80]},
-            "anim": {
-                "x": [[0, -120], [40, 20, "snap"], [75, 220, "overshoot"], [100, 220, "step"]],
-            },
-        }
-        self.assertEqual(validate(self._spec(valid_layer)), [])
-
-        # 3. carry_state_from strips range on persistent gait and drops transient shudder
-        carried = carry_state_from(self._spec(valid_layer), "shot-next")
-        self.assertEqual(carried["layers"][0]["gait"], {"mode": "puppet", "freq": 4.2, "bob": 9, "sway": 4.0})
-        shudder_spec = self._spec({**ai_base, "gait": {"mode": "shudder", "range": [10, 30]}})
-        carried_shudder = carry_state_from(shudder_spec, "shot-next")
-        self.assertNotIn("gait", carried_shudder["layers"][0])
-
-        # 4. Validate caption-voiceover agreement (rejects mismatched script, accepts matching clauses)
-        vo_text = "今天我们来聊聊这个话题，它背后的原理其实并不复杂。"
-        bad_cap = {
-            "id": "caps",
-            "type": "code",
-            "draw": "captions",
-            "rect": [100, 900, 800, 100],
-            "z": 5,
-            "params": {
-                "items": [{"frame": 0, "text": "完全无关的另一句话，和旁白没有任何对应关系。"}]
-            },
-        }
-        s_bad = self._spec(bad_cap)
-        s_bad["audio"] = {"voiceover": vo_text}
-        errs = validate(s_bad)
-        self.assertTrue(any("does not match audio.voiceover" in e for e in errs), errs)
-
-        clauses = audio.clauses_from_boundaries(
-            vo_text,
-            [{"type": "SentenceBoundary", "offset_sec": 0.1, "duration_sec": 4.5, "text": vo_text}],
-            total_duration=4.8,
-            fps=30,
-        )
-        self.assertGreaterEqual(len(clauses), 2)
-        good_cap = {
-            **bad_cap,
-            "params": {"items": [{"frame": c["frame"], "text": c["text"], "hl": c["hl"]} for c in clauses]},
-        }
-        s_good = self._spec(good_cap)
-        s_good["audio"] = {"voiceover": vo_text}
-        self.assertEqual(validate(s_good), [])
-
-        # 5. Test opera percussion BGM synthesis
-        with tempfile.TemporaryDirectory() as d:
-            wav_path = os.path.join(d, "opera.wav")
-            audio.generate_opera_bgm(1.5, fps=30, punches=[15, 30], out_path=wav_path)
-            self.assertTrue(os.path.exists(wav_path))
-            self.assertGreater(os.path.getsize(wav_path), 10000)
 
     def test_12_joint_derives_pivot_and_rejects_guessed_pivot(self):
         """A hinge pivot is a point on the source picture; a hand-guessed canvas
@@ -765,110 +541,3 @@ class TestFieldTypeValidation(unittest.TestCase):
                             os.remove(f)
                         except OSError:
                             pass
-
-    def test_16_puppet_quad_limb_topology_contract(self):
-        """Anatomy Topology Contract: A humanoid puppet with articulated limbs must have
-        both dual legs (front + back) and dual arms (front + back) to prevent amputee defects."""
-        base_spec = {
-            "id": "puppet-test",
-            "canvas": {"w": 1920, "h": 1080},
-            "fps": 30,
-            "durationInFrames": 60,
-            "gates": [{"id": "m", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],
-            "layers": [
-                {
-                    "id": "hero", "type": "ai", "asset": "hero-torso",
-                    "rect": [200, 200, 200, 400], "z": 10,
-                    "keyColor": "#ffffff", "blend": "normal"
-                },
-                {
-                    "id": "hero-arm-front", "type": "ai", "asset": "hero-arm",
-                    "parent": "hero", "rect": [200, 200, 100, 200], "z": 12,
-                    "kit": {"type": "limb", "socket": [50, 100], "joint": [20, 20]},
-                    "keyColor": "#ffffff", "blend": "normal"
-                },
-                {
-                    "id": "hero-arm-back", "type": "ai", "asset": "hero-arm-back",
-                    "parent": "hero", "rect": [200, 200, 100, 200], "z": 6,
-                    "kit": {"type": "limb", "socket": [40, 95], "joint": [20, 20]},
-                    "keyColor": "#ffffff", "blend": "normal"
-                }
-            ]
-        }
-
-        # 1. Torso + Dual Arms (no legs articulated) -> PASS
-        errs = validate(base_spec)
-        self.assertEqual(errs, [])
-
-        # 2. Torso + Dual Arms + ONLY 1 LEG -> FAILS with one-legged defect warning
-        bad_leg_spec = dict(base_spec)
-        bad_leg_spec["layers"] = list(base_spec["layers"]) + [
-            {
-                "id": "hero-leg", "type": "ai", "asset": "hero-leg",
-                "parent": "hero", "rect": [200, 200, 100, 200], "z": 9,
-                "kit": {"type": "limb", "socket": [50, 350], "joint": [20, 20]},
-                "keyColor": "#ffffff", "blend": "normal"
-            }
-        ]
-        errs = validate(bad_leg_spec)
-        self.assertTrue(any("humanoid puppet has only 1 leg" in e for e in errs),
-                        f"Single-legged amputee puppet should be caught: {errs}")
-
-        # 3. Torso + Dual Legs + ONLY 1 ARM -> FAILS with one-armed defect warning
-        bad_arm_spec = {
-            "id": "puppet-test",
-            "canvas": {"w": 1920, "h": 1080},
-            "fps": 30,
-            "durationInFrames": 60,
-            "gates": [{"id": "m", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],
-            "layers": [
-                {
-                    "id": "hero", "type": "ai", "asset": "hero-torso",
-                    "rect": [200, 200, 200, 400], "z": 10,
-                    "keyColor": "#ffffff", "blend": "normal"
-                },
-                {
-                    "id": "hero-arm-front", "type": "ai", "asset": "hero-arm",
-                    "parent": "hero", "rect": [200, 200, 100, 200], "z": 12,
-                    "kit": {"type": "limb", "socket": [50, 100], "joint": [20, 20]},
-                    "keyColor": "#ffffff", "blend": "normal"
-                },
-                {
-                    "id": "hero-leg-front", "type": "ai", "asset": "hero-leg",
-                    "parent": "hero", "rect": [200, 200, 100, 200], "z": 9,
-                    "kit": {"type": "limb", "socket": [50, 350], "joint": [20, 20]},
-                    "keyColor": "#ffffff", "blend": "normal"
-                },
-                {
-                    "id": "hero-leg-back", "type": "ai", "asset": "hero-leg",
-                    "parent": "hero", "rect": [200, 200, 100, 200], "z": 8,
-                    "kit": {"type": "limb", "socket": [40, 345], "joint": [20, 20]},
-                    "keyColor": "#ffffff", "blend": "normal"
-                }
-            ]
-        }
-        errs = validate(bad_arm_spec)
-        self.assertTrue(any("humanoid puppet has only 1 arm" in e for e in errs),
-                        f"Single-armed amputee puppet should be caught: {errs}")
-
-        # 4. Torso + Dual Arms + Dual Legs (Complete 4 Limbs) -> PASS
-        good_spec = dict(base_spec)
-        good_spec["layers"] = list(base_spec["layers"]) + [
-            {
-                "id": "hero-leg-front", "type": "ai", "asset": "hero-leg",
-                "parent": "hero", "rect": [200, 200, 100, 200], "z": 9,
-                "kit": {"type": "limb", "socket": [50, 350], "joint": [20, 20]},
-                "keyColor": "#ffffff", "blend": "normal"
-            },
-            {
-                "id": "hero-leg-back", "type": "ai", "asset": "hero-leg",
-                "parent": "hero", "rect": [200, 200, 100, 200], "z": 8,
-                "kit": {"type": "limb", "socket": [40, 345], "joint": [20, 20]},
-                "keyColor": "#ffffff", "blend": "normal"
-            }
-        ]
-        errs = validate(good_spec)
-        self.assertEqual(errs, [])
-
-
-

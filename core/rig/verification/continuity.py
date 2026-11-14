@@ -42,33 +42,7 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
             s_data = _json.load(f)
         rep = verify_shot_stagecraft(s_data)
         shot_reports.append(rep)
-        if rep["frozen_characters"]:
-            errors.append(f"{rep['shot_id']}: frozen character(s) without motion: {rep['frozen_characters']}")
-        if rep["wireframe_paths"]:
-            errors.append(
-                f"{rep['shot_id']}: crude wireframe 'code: path' layer(s) {rep['wireframe_paths']} on shadow-puppet stage — "
-                f"replace with carved oxhide filigree cutout prop assets (role='prop', cutout=True)!"
-            )
-        if rep.get("stale_props"):
-            errors.append(
-                f"{rep['shot_id']}: stale stationary ground prop(s) {rep['stale_props']} remain visible during/after stage scroll transition — "
-                f"fade out (opacity -> 0) before the scenery scrolls!"
-            )
-        if rep.get("weak_shudder_acting"):
-            errors.append(
-                f"{rep['shot_id']}: character(s) {rep['weak_shudder_acting']} with gait.mode='shudder' lack deep kneeling/forward-pitching agony posture or bare-arm pose!"
-            )
-        if rep.get("caption_action_desync"):
-            errors.append(
-                f"{rep['shot_id']}: caption-to-acting desynchronization detected: {rep['caption_action_desync']}"
-            )
-        if len(rep.get("root_characters", [])) >= 3 and not rep.get("turnaround_characters"):
-            errors.append(
-                f"{rep['shot_id']}: all {len(rep['root_characters'])} characters remain locked facing a single direction — "
-                f"use flipX or anim.flipX so characters turn to face each other during dialogue, slander, or kowtowing!"
-            )
-        if not rep["narrative_props"]:
-            errors.append(f"{rep['shot_id']}: missing narrative stagecraft props/effects ('砌末')")
+        errors.extend(rep["errors"])
 
     handoffs = []
     for i in range(len(shot_reports) - 1):
@@ -76,7 +50,7 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
         next_rep = shot_reports[i + 1]
         end_bg = curr_rep["end_backdrop"]
         next_start_bg = next_rep["start_backdrop"]
-        seamless_bg = (end_bg == next_start_bg) or curr_rep["has_in_shot_scroll"] or next_rep["has_in_shot_scroll"]
+        seamless_bg = (end_bg == next_start_bg)
         exact_bg = (end_bg == next_start_bg)
         bg_ok = exact_bg if require_seamless_handoff else seamless_bg
 
@@ -84,7 +58,7 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
         char_jumps = []
         end_st = curr_rep.get("end_states", {})
         start_st = next_rep.get("start_states", {})
-        is_continuous_stage = bool(end_st) or (end_bg is not None and end_bg == next_start_bg) or curr_rep["has_in_shot_scroll"] or next_rep["has_in_shot_scroll"]
+        is_continuous_stage = bool(end_st) or (end_bg is not None and end_bg == next_start_bg)
         for cid, st1 in start_st.items():
             op1 = st1["opacity"]
             if op1 < 0.20:
@@ -97,20 +71,6 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
                         f"{cid} teleports by {jump:.1f}px across cut ({curr_rep['shot_id']} end=({st0['x']}, {st0['y']}) -> "
                         f"{next_rep['shot_id']} start=({st1['x']}, {st1['y']}))"
                     )
-            elif is_continuous_stage:
-                cw, ch = st1.get("canvas", [1920, 1080])
-                rx, ry, rw, rh = st1.get("rect", [0, 0, 300, 400])
-                cx = st1["x"] + rw * 0.5
-                cy = st1["y"] + rh * 0.5
-                dx = st1.get("dx", 0.0)
-                dy = st1.get("dy", 0.0)
-                in_mid_stage_x = (cw * 0.18 < cx < cw * 0.82) and (st1["x"] >= 0) and (st1["x"] + rw <= cw)
-                in_mid_stage_y = (ch * 0.15 < cy < ch * 0.88) and (st1["y"] >= 0) and (st1["y"] + rh <= ch)
-                if in_mid_stage_x and in_mid_stage_y and abs(dx) < 340.0 and abs(dy) < 220.0:
-                    char_jumps.append(
-                        f"{cid} pops in mid-stage at frame 0 of {next_rep['shot_id']} (x={st1['x']}, y={st1['y']}, opacity={op1}); "
-                        f"start off-stage (outside central stage [18%..82% W] or |anim.x|>=360) or fade in (opacity=0 at frame 0)"
-                    )
 
         status = "PASS" if (bg_ok and not char_jumps) else ("CHAR_JUMP" if char_jumps else "HARD_CUT_JUMP")
         handoffs.append({
@@ -118,7 +78,6 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
             "to_shot": next_rep["shot_id"],
             "end_backdrop": end_bg,
             "next_start_backdrop": next_start_bg,
-            "in_shot_scroll": curr_rep["has_in_shot_scroll"] or next_rep["has_in_shot_scroll"],
             "char_jumps": char_jumps,
             "status": status,
         })

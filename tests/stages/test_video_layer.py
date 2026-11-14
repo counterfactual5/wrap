@@ -3,7 +3,11 @@
 A video layer is a first-class asset type: the spec declares it, S1 freezes
 a clip for it, S2 prepares a scaled copy. These tests cover the contract
 without spending generation credits — the backend is stubbed and the clip
-used is the deterministic local fixture.
+used is a deterministic local test clip (tests.helpers.make_test_clip).
+
+Model capabilities are ENV-DECLARED (POSTER_MODELS_JSON); there is no
+built-in catalog. In-process tests patch `core.generation.models.VIDEO_MODELS`
+with the test manifest; subprocess-based tests pass tests.helpers.env_with_models().
 """
 import importlib.util
 import json
@@ -16,7 +20,13 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, ROOT)
 
+from core.spec.layers import validate_video_generation
 from core.spec.shot import validate
+from core.generation import models
+from tests.helpers import (
+    TEST_IMAGE_MODELS, TEST_MODELS_JSON, TEST_VIDEO_MODELS,
+    env_with_models, make_test_clip, write_fixture,
+)
 
 _spec = importlib.util.spec_from_file_location(
     "s1_generate_v", os.path.join(ROOT, "stages", "01_generate.py")
@@ -46,43 +56,43 @@ def _video_spec(**over):
     return spec
 
 
-class TestVideoSpecValidation(unittest.TestCase):
-    def test_00_video_layer_is_a_valid_type(self):
-        errs = validate(_video_spec())
-        self.assertEqual(errs, [], f"a well-formed video layer was rejected: {errs}")
+class TestDeclaredModels(unittest.TestCase):
+    """Capabilities are declared per environment; every refusal names what to do."""
 
-    def test_01_video_layer_requires_asset(self):
-        spec = _video_spec()
-        del spec["layers"][0]["asset"]
-        errs = validate(spec)
-        self.assertTrue(any("asset" in e for e in errs), errs)
+    def setUp(self):
+        self._patch = mock.patch.dict(models.VIDEO_MODELS, TEST_VIDEO_MODELS)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
 
-    def test_02_video_layer_rejects_bad_fit(self):
-        spec = _video_spec()
-        spec["layers"][0]["fit"] = "squish"
-        errs = validate(spec)
-        self.assertTrue(any("fit" in e for e in errs), errs)
+    def test_00_an_empty_catalog_refuses_with_the_env_instruction(self):
+        with mock.patch.object(models, "VIDEO_MODELS", {}):
+            with self.assertRaises(RuntimeError) as ctx:
+                models.resolve_video_model("Test-Max")
+        self.assertIn("POSTER_MODELS_JSON", str(ctx.exception))
+        self.assertIn("no fallback", str(ctx.exception))
 
-    def test_03_video_layer_rejects_bad_trim(self):
-        spec = _video_spec()
-        spec["layers"][0]["trim"] = [5, 1]  # end before start
-        errs = validate(spec)
-        self.assertTrue(any("trim" in e for e in errs), errs)
+    def test_01_an_unknown_model_is_refused_without_fallback(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            models.resolve_video_model("SomeOtherModel")
+        self.assertIn("SomeOtherModel", str(ctx.exception))
+        self.assertIn("Test-Max", str(ctx.exception))
 
-    def test_04_video_layer_accepts_valid_trim(self):
-        spec = _video_spec()
-        spec["layers"][0]["trim"] = [0.5, 3.0]
-        self.assertEqual(validate(spec), [])
-
-    def test_05_video_layer_rejects_non_boolean_loop(self):
-        spec = _video_spec()
-        spec["layers"][0]["loop"] = "yes"
-        errs = validate(spec)
-        self.assertTrue(any("loop" in e for e in errs), errs)
+    def test_02_the_production_fixture_writer_is_a_tombstone(self):
+        """No placeholder may be written by the pipeline: test media belongs
+        to test support code (tests.helpers.make_test_clip)."""
+        from core.generation.fixtures import _write_video_fixture
+        with self.assertRaises(RuntimeError) as ctx:
+            _write_video_fixture("/tmp/never.mp4")
+        self.assertIn("removed", str(ctx.exception))
 
 
 class TestVideoTransport(unittest.TestCase):
     """S1 must drive the async submit -> poll -> download path."""
+
+    def setUp(self):
+        self._patch = mock.patch.dict(models.VIDEO_MODELS, TEST_VIDEO_MODELS)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
 
     def test_00_submit_returns_task_id(self):
         captured = {}
@@ -94,17 +104,17 @@ class TestVideoTransport(unittest.TestCase):
 
         with mock.patch.object(gen_video, "_connector_call", side_effect=fake_call):
             task_id, model = s1.submit_video_generation(
-                "a calm wave", model="MiniMax-H3-Max", duration=5,
+                "a calm wave", model="Test-Max", duration=5,
                 ratio="9:16", resolution="768P")
         self.assertEqual(task_id, "999")
-        self.assertEqual(model, "MiniMax-H3-Max")
+        self.assertEqual(model, "Test-Max")
         self.assertEqual(captured["tool"], "connector__matrix__submit_video_generation")
         self.assertEqual(captured["payload"]["duration"], 5)
         self.assertEqual(captured["payload"]["ratio"], "9:16")
 
     def test_01_submit_rejects_duration_outside_model_range(self):
         with self.assertRaises(RuntimeError) as ctx:
-            s1.submit_video_generation("x", model="MiniMax-H3-Max", duration=2)
+            s1.submit_video_generation("x", model="Test-Max", duration=2, resolution="768P")
         self.assertIn("duration", str(ctx.exception))
 
     def test_02_submit_rejects_unknown_model(self):
@@ -113,7 +123,7 @@ class TestVideoTransport(unittest.TestCase):
 
     def test_03_submit_rejects_unsupported_resolution(self):
         with self.assertRaises(RuntimeError) as ctx:
-            s1.submit_video_generation("x", model="MiniMax-H3-Max", duration=5,
+            s1.submit_video_generation("x", model="Test-Max", duration=5,
                                        resolution="2K")
         self.assertIn("resolution", str(ctx.exception))
 
@@ -131,7 +141,7 @@ class TestVideoTransport(unittest.TestCase):
 
         with mock.patch.object(gen_video, "query_video_generation", side_effect=fake_query), \
              mock.patch.object(gen_video.time, "sleep"):
-            data = s1.wait_for_video("42", "MiniMax-H3-Max", interval=0)
+            data = s1.wait_for_video("42", "Test-Max", interval=0)
         self.assertEqual(data["status"], "succeeded")
         self.assertEqual(len(calls), 3)
 
@@ -139,7 +149,7 @@ class TestVideoTransport(unittest.TestCase):
         with mock.patch.object(gen_video, "query_video_generation",
                                return_value={"status": "failed", "detail": "nope"}):
             with self.assertRaises(RuntimeError) as ctx:
-                s1.wait_for_video("42", "MiniMax-H3-Max", interval=0)
+                s1.wait_for_video("42", "Test-Max", interval=0)
         self.assertIn("failed", str(ctx.exception))
 
     def test_06_download_uses_node_id_when_url_absent(self):
@@ -150,35 +160,14 @@ class TestVideoTransport(unittest.TestCase):
         df.assert_called_once_with("https://x.invalid/v.mp4", "/tmp/out.mp4")
 
 
-class TestVideoModelCatalog(unittest.TestCase):
-    """The catalog is the doc's source of truth for model capabilities."""
+class TestLocalClipFixture(unittest.TestCase):
+    """Test media must be a real, playable mp4 built by test support code."""
 
-    def test_00_known_models(self):
-        self.assertIn("MiniMax-H3", s1.VIDEO_MODELS)
-        self.assertIn("MiniMax-H3-Max", s1.VIDEO_MODELS)
-        self.assertIn("MiniMax-Hailuo-2.3", s1.VIDEO_MODELS)
-
-    def test_01_h3_has_native_audio_hailuo_does_not(self):
-        self.assertTrue(s1.VIDEO_MODELS["MiniMax-H3"]["audio"])
-        self.assertFalse(s1.VIDEO_MODELS["MiniMax-Hailuo-2.3"]["audio"])
-
-    def test_02_duration_ranges_match_backend_contract(self):
-        self.assertEqual((s1.VIDEO_MODELS["MiniMax-H3"]["min_dur"],
-                          s1.VIDEO_MODELS["MiniMax-H3"]["max_dur"]), (4, 15))
-        self.assertEqual((s1.VIDEO_MODELS["MiniMax-H3-Max"]["min_dur"],
-                          s1.VIDEO_MODELS["MiniMax-H3-Max"]["max_dur"]), (5, 15))
-        self.assertEqual((s1.VIDEO_MODELS["MiniMax-Hailuo-2.3"]["min_dur"],
-                          s1.VIDEO_MODELS["MiniMax-Hailuo-2.3"]["max_dur"]), (6, 10))
-
-
-class TestVideoFixture(unittest.TestCase):
-    """The fixture path must produce a real, playable mp4 without credits."""
-
-    def test_00_fixture_is_a_real_mp4(self):
+    def test_00_clip_is_a_real_mp4(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "clip.mp4")
-            s1._write_video_fixture(out, seconds=1)
+            make_test_clip(out, seconds=1)
             self.assertTrue(os.path.exists(out))
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries",
@@ -191,10 +180,10 @@ class TestVideoFixture(unittest.TestCase):
 class TestVideoEndToEnd(unittest.TestCase):
     """A spec with a video layer must survive S1 -> S4 end to end.
 
-    Uses the fixture transport (no generation credits): S1 writes a local
-    deterministic clip, S2 scales it, S3 renders it, S4 gates it. A video
-    layer that renders but freezes would fail the motion/freeze gates —
-    which is exactly the class of bug this path exists to catch.
+    The clip is registered as explicit test media (tests.helpers), so S1
+    reuses it — no generation, no connector. A video layer that renders but
+    freezes would fail the motion/freeze gates — which is exactly the class
+    of bug this path exists to catch.
     """
 
     def test_00_video_spec_runs_through_the_gates(self):
@@ -203,36 +192,35 @@ class TestVideoEndToEnd(unittest.TestCase):
             "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
             "fps": 30,
             "durationInFrames": 60,
-            "vibe": False,
-            "style": "tests/fixtures/style-quantum.json",
             "layers": [
                 {"id": "clip", "type": "video", "asset": "video-e2e-clip",
-                 "rect": [0, 0, 1080, 1920], "z": 0, "plate": False},
-                {"id": "title", "type": "text", "text": "video layer",
-                 "rect": [60, 1500, 960, 120], "fontSize": 72, "z": 2},
+                 "model": "Test-Max", "resolution": "768P",
+                 "prompt": "a moving test clip",
+                 "rect": [0, 0, 1080, 1920], "z": 0},
             ],
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio",
                        "lo": 0.0001, "hi": 0.15}],
         }
-        # The temp spec lives under .tmp/ (gitignored): a spec file in spec/ would
-        # be an untracked file, and a tree snapshot taken while it exists
-        # would read the file's removal as "the tree changed".
         spec_path = os.path.join(ROOT, ".tmp", "video-e2e.poster.json")
         with open(spec_path, "w") as f:
             json.dump(spec, f, indent=2)
 
         from tests.helpers import preserve_manifest
         with preserve_manifest():
+            clip_rel = "assets/video-e2e-clip.mp4"
+            clip_path = os.path.join(ROOT, clip_rel)
             try:
-                # --fixture: build the clip locally. The test must never call
-                # the generation backend — it would spend credits and be flaky.
-                for stage, extra in (("01_generate.py", ["--fixture"]),
-                                     ("02_prepare.py", []),
-                                     ("03_compose.py", [])):
+                make_test_clip(clip_path, seconds=3)
+                from core.runtime import manifest
+                manifest.register("assets", "video-e2e-clip", clip_rel,
+                                  source="test-media")
+
+                for stage in ("01_generate.py", "02_prepare.py", "03_compose.py"):
                     res = subprocess.run(
                         [sys.executable, os.path.join("stages", stage),
-                         "--spec", spec_path] + extra,
-                        cwd=ROOT, capture_output=True, text=True)
+                         "--spec", spec_path],
+                        cwd=ROOT, capture_output=True, text=True,
+                        env=env_with_models())
                     self.assertEqual(res.returncode, 0,
                                      f"{stage} failed:\n{res.stdout}\n{res.stderr}")
 
@@ -255,34 +243,43 @@ class TestVideoEndToEnd(unittest.TestCase):
                 self.assertGreater(motion["value"], 0.0001,
                                    "video layer rendered a frozen image")
             finally:
-                # Remove the asset file; the ledger is restored wholesale by
-                # preserve_manifest (a row-by-row cleanup would leave the rows
-                # S2/S3 added for this shot behind, and the working tree dirty).
-                for path in (spec_path,
-                             os.path.join(ROOT, "assets", "video-e2e-clip.mp4")):
+                for path in (spec_path, clip_path):
                     if os.path.exists(path):
                         os.remove(path)
 
 
 class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
-    """Task C: Video first_frame / last_frame / reference_images validation and S1 unified dispatch."""
+    """Video first_frame / last_frame / reference validation and S1 dispatch.
+
+    Structural references are checked by `validate` (what a spec may name);
+    model CAPABILITY checks happen at generation time via
+    core.spec.layers.validate_video_generation against the env catalog.
+    """
+
+    def setUp(self):
+        self._patch = mock.patch.dict(models.VIDEO_MODELS, TEST_VIDEO_MODELS)
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
 
     def test_00_first_frame_payload_has_input_image_url_first_frame_and_adaptive_ratio(self):
-        """A video layer declaring first_frame sends input_image.url, reference_type='first_frame', and ratio='adaptive' across all 3 origins (code grid/dots, ai asset, manifest asset)."""
+        """A video layer declaring first_frame sends input_image.url,
+        reference_type='first_frame', and ratio='adaptive' (ai origin, and a
+        frozen manifest asset origin)."""
         from tests.helpers import preserve_manifest
 
-        for origin_kind, first_ref in (("code", "bg"), ("manifest", "city-silhouette"), ("ai", "ai-plate")):
+        for origin_kind, first_ref in (("manifest", "city-silhouette"), ("ai", "ai-plate")):
             with self.subTest(origin=origin_kind):
                 layers = [
-                    {"id": "bg", "type": "code", "draw": "grid", "rect": [0, 0, 1080, 1920], "z": 0},
                     {"id": "clip", "type": "video", "asset": f"vid-{origin_kind}",
-                     "model": "MiniMax-H3-Max", "duration": 6,
+                     "model": "Test-Max", "duration": 6, "resolution": "768P",
+                     "prompt": "a clip starting on the plate",
                      "first_frame": first_ref,
                      "rect": [0, 0, 1080, 1920], "z": 2},
                 ]
                 if origin_kind == "ai":
-                    layers.insert(1, {
+                    layers.insert(0, {
                         "id": "plate", "type": "ai", "asset": "ai-plate",
+                        "prompt": "a still plate",
                         "keyColor": "#070512", "blend": "normal",
                         "rect": [0, 0, 1080, 1920], "z": 1,
                     })
@@ -291,7 +288,6 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
                     "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
                     "fps": 30,
                     "durationInFrames": 60,
-                    "style": "tests/fixtures/style.json",
                     "layers": layers,
                     "gates": [{"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],
                 }
@@ -320,9 +316,8 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
 
                 def fake_download(url, target_path, attempts=3):
                     if target_path.endswith(".mp4"):
-                        s1._write_video_fixture(target_path, seconds=1)
+                        make_test_clip(target_path, seconds=1)
                     else:
-                        from core.media.draw import write_fixture
                         write_fixture(target_path, w=320, h=320)
 
                 def fake_gen_image(prompt, asset_name, **kw):
@@ -348,106 +343,108 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
                         self.assertEqual(captured_video_payload["reference_type"], "first_frame")
                         self.assertEqual(captured_video_payload["ratio"], "adaptive")
                     finally:
-                        for p in (
+                        for rel in (
                             spec_path,
                             os.path.join(ROOT, "assets", f"vid-{origin_kind}.mp4"),
                             os.path.join(ROOT, "assets", "ai-plate.png"),
-                            os.path.join(ROOT, "build", "prepared", f"vf-{origin_kind}", "bg.png"),
+                            os.path.join(ROOT, "build", "prepared", f"vf-{origin_kind}"),
                         ):
-                            if os.path.exists(p):
-                                os.remove(p)
+                            import shutil
+                            if os.path.isdir(rel):
+                                shutil.rmtree(rel, ignore_errors=True)
+                            elif os.path.exists(rel):
+                                os.remove(rel)
 
-    def test_01_unsupported_model_capabilities_rejected_in_validate(self):
-        """Models that do not support last_frame or reference_images are rejected during validate()."""
-        # 1. Hailuo-2.3 does not support last_frame
-        s_hailuo_lf = _video_spec()
-        s_hailuo_lf["layers"][0].update({
-            "model": "MiniMax-Hailuo-2.3",
-            "duration": 6,
-            "first_frame": "city-silhouette",
-            "last_frame": "city-silhouette",
+    def test_01_capability_refusals_happen_at_generation_time(self):
+        """Structural `validate` no longer inspects model catalogs (frozen
+        assets must validate without any declared model); the capability
+        table is consulted by validate_video_generation, right before S1
+        spends anything."""
+        # 1. structural validate accepts an arbitrary model name...
+        s_any = _video_spec()
+        s_any["layers"][0]["model"] = "Anything-At-All"
+        self.assertEqual(validate(s_any), [])
+        # 2. ...but the generation-time check refuses an undeclared one.
+        errs = validate_video_generation(s_any["layers"][0], "Anything-At-All")
+        self.assertTrue(any("No configured video capabilities" in e for e in errs), errs)
+
+        # 3. a declared model without last_frame support is refused there.
+        s_lf = _video_spec()
+        s_lf["layers"][0].update({
+            "model": "Test-NoLF", "duration": 6, "resolution": "768P",
+            "first_frame": "city-silhouette", "last_frame": "city-silhouette",
         })
-        errs = validate(s_hailuo_lf)
+        errs = validate_video_generation(s_lf["layers"][0], "Test-NoLF")
         self.assertTrue(any("does not support last_frame" in e for e in errs), errs)
 
-        # 2. H3-Max and Hailuo-2.3 do not support reference_images (only MiniMax-H3 does)
-        for m in ("MiniMax-H3-Max", "MiniMax-Hailuo-2.3"):
-            with self.subTest(model=m):
-                s_ref = _video_spec()
-                s_ref["layers"][0].update({
-                    "model": m,
-                    "duration": 6,
-                    "reference_images": ["city-silhouette"],
-                })
-                errs = validate(s_ref)
-                self.assertTrue(any("does not support reference_images" in e for e in errs), errs)
-
-        # 3. MiniMax-H3 accepts both first_frame + last_frame and reference_images
-        s_h3 = _video_spec()
-        s_h3["layers"][0].update({
-            "model": "MiniMax-H3",
-            "duration": 6,
-            "first_frame": "city-silhouette",
-            "last_frame": "city-silhouette",
+        # 4. a declared model without reference_media support is refused.
+        s_ref = _video_spec()
+        s_ref["layers"][0].update({
+            "model": "Test-NoLF", "duration": 6, "resolution": "768P",
             "reference_images": ["city-silhouette"],
         })
-        self.assertEqual(validate(s_h3), [])
+        errs = validate_video_generation(s_ref["layers"][0], "Test-NoLF")
+        self.assertTrue(any("does not support reference_images" in e for e in errs), errs)
 
-        # 4. Non-PNG code layer (e.g. draw='bar') as first_frame is rejected at validate()
-        s_bar_ref = _video_spec()
-        s_bar_ref["layers"].insert(0, {
-            "id": "bar-layer", "type": "code", "draw": "bar",
-            "color": "#ff0000", "rect": [0, 0, 200, 50], "z": 1,
+        # 5. a fully capable model accepts both.
+        s_ok = _video_spec()
+        s_ok["layers"][0].update({
+            "model": "Test-Max", "duration": 6, "resolution": "768P",
+            "first_frame": "city-silhouette", "last_frame": "city-silhouette",
+            "reference_images": ["city-silhouette"],
         })
-        s_bar_ref["layers"][1]["first_frame"] = "bar-layer"
-        errs = validate(s_bar_ref)
-        self.assertTrue(any("only ['dots', 'grid'] code layers render to a static PNG" in e for e in errs), errs)
+        self.assertEqual(validate_video_generation(s_ok["layers"][0], "Test-Max"), [])
+
+        # 6. a component layer cannot anchor a first_frame — only ai layers
+        # (or frozen manifest assets) render to a static image.
+        s_comp = _video_spec()
+        s_comp["layers"].insert(0, {
+            "id": "comp", "type": "component", "component": "Probe",
+            "rect": [0, 0, 200, 50], "z": 1,
+        })
+        s_comp["layers"][1]["first_frame"] = "comp"
+        errs = validate(s_comp)
+        self.assertTrue(any("must reference an ai layer" in e for e in errs), errs)
 
     def test_02_discrete_duration_rejected_and_snapped(self):
-        """Hailuo-2.3 accepts 6 or 10 seconds and nothing between.
-
-        Its duration is an API enum, not a range: a 7s request is rejected by
-        the backend, so the validator must refuse it and the clip length must
-        land on a value the backend actually accepts.
-        """
-        # 1. validate() refuses a duration the API's enum would reject
+        """A discrete duration enum (e.g. 6 or 10 seconds and nothing between)
+        is refused by the generation-time check and snapped by the clip
+        length picker, before anything is spent."""
+        # 1. the generation-time check refuses a duration the enum rejects
         s7 = _video_spec()
-        s7["layers"][0].update({"model": "MiniMax-Hailuo-2.3", "duration": 7})
-        errs = validate(s7)
+        s7["layers"][0].update({"model": "Test-Discrete", "duration": 7})
+        errs = validate_video_generation(s7["layers"][0], "Test-Discrete")
         self.assertTrue(any("duration must be one of [6, 10]s" in e for e in errs), errs)
 
-        # 2. the values the enum does accept pass
+        # 2. the values the enum accepts pass
         for ok_dur in (6, 10):
             with self.subTest(duration=ok_dur):
                 s_ok = _video_spec()
-                s_ok["layers"][0].update({"model": "MiniMax-Hailuo-2.3", "duration": ok_dur})
-                self.assertEqual(validate(s_ok), [])
+                s_ok["layers"][0].update({"model": "Test-Discrete", "duration": ok_dur})
+                self.assertEqual(validate_video_generation(s_ok["layers"][0], "Test-Discrete"), [])
 
         # 3. a continuous-range model is unaffected
         s_h3 = _video_spec()
-        s_h3["layers"][0].update({"model": "MiniMax-H3", "duration": 7})
-        self.assertEqual(validate(s_h3), [])
+        s_h3["layers"][0].update({"model": "Test-Max", "duration": 7})
+        self.assertEqual(validate_video_generation(s_h3["layers"][0], "Test-Max"), [])
 
         # 4. the transport refuses it too, before spending anything
         with self.assertRaises(RuntimeError) as ctx:
-            s1.submit_video_generation("a calm wave", model="MiniMax-Hailuo-2.3", duration=7)
+            s1.submit_video_generation("a calm wave", model="Test-Discrete", duration=7)
         self.assertIn("one of [6, 10]", str(ctx.exception))
 
     def test_03_clip_duration_snaps_to_an_accepted_value(self):
         """A shot length the API cannot express is rounded UP to one it can."""
-        H = "MiniMax-Hailuo-2.3"
-        self.assertEqual(s1._clip_duration(3, H), 6)
-        self.assertEqual(s1._clip_duration(6, H), 6)
-        self.assertEqual(s1._clip_duration(7, H), 10)
-        self.assertEqual(s1._clip_duration(9, H), 10)
-        self.assertEqual(s1._clip_duration(12, H), 10)
-        # 1080P and the legacy subject mode cap Hailuo at 6s
-        self.assertEqual(s1._clip_duration(7, H, resolution="1080P"), 6)
-        self.assertEqual(s1._clip_duration(9, H, resolution="768P", reference_type="subject"), 6)
+        D = "Test-Discrete"
+        self.assertEqual(s1._clip_duration(3, D), 6)
+        self.assertEqual(s1._clip_duration(6, D), 6)
+        self.assertEqual(s1._clip_duration(7, D), 10)
+        self.assertEqual(s1._clip_duration(9, D), 10)
+        self.assertEqual(s1._clip_duration(12, D), 10)
         # a continuous-range model keeps its plain rounding
-        self.assertEqual(s1._clip_duration(7, "MiniMax-H3"), 7)
-        self.assertEqual(s1._clip_duration(3, "MiniMax-H3"), 4)
-        self.assertEqual(s1._clip_duration(20, "MiniMax-H3"), 15)
+        self.assertEqual(s1._clip_duration(7, "Test-Max"), 7)
+        self.assertEqual(s1._clip_duration(3, "Test-Max"), 4)
+        self.assertEqual(s1._clip_duration(20, "Test-Max"), 15)
 
     def test_04_unwired_reference_media_rejected(self):
         """reference_videos / reference_audios would be silently dropped.
@@ -460,95 +457,105 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
             with self.subTest(field=field):
                 s = _video_spec()
                 s["layers"][0].update({
-                    "model": "MiniMax-H3", "duration": 6,
+                    "model": "Test-Max", "duration": 6,
                     field: ["city-silhouette"],
                 })
                 errs = validate(s)
                 self.assertTrue(any("is not supported yet" in e for e in errs), errs)
 
-    def test_05_duration_capability_survives_env_override(self):
-        """POSTER_MODELS_JSON can override a model's accepted durations.
+    def test_05_env_manifest_is_strict_and_typed(self):
+        """POSTER_MODELS_JSON fully replaces the (empty) built-in catalog.
 
-        The override path normalizes `durations` into a tuple the same way it
-        does `resolutions`; without that, a JSON list would reach the
-        capability table in a different shape than the built-in one. Run in a
-        subprocess so the reload cannot leak into the other tests.
-        """
-        env = dict(os.environ)
-        env["POSTER_MODELS_JSON"] = json.dumps({
-            "MiniMax-Hailuo-2.3": {"durations": [4, 8]},
-        })
+        A complete manifest is applied and `durations` is normalized to a
+        tuple; a partial entry is REFUSED at import — no half-declared model
+        may reach a paid call. Run in subprocesses so import-time state
+        cannot leak."""
+        # A complete override applies, durations tuple-ized.
+        env = env_with_models()
         code = (
             "import sys; sys.path.insert(0, %r)\n"
             "from core.generation import models\n"
-            "print(models.video_allowed_durations('MiniMax-Hailuo-2.3'))\n"
+            "print(models.video_allowed_durations('Test-Discrete'))\n"
         ) % ROOT
         out = subprocess.run([sys.executable, "-c", code], capture_output=True,
                              text=True, env=env, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(out.stdout.strip(), "(4, 8)")
+        self.assertEqual(out.stdout.strip(), "(6, 10)")
 
-    def test_06_hailuo_subject_reference_type_rejected_in_validate(self):
-        """P1-6: MiniMax-Hailuo-2.3 reference_type='subject' fails upstream and must be rejected by validate() before billing."""
+        # A partial entry is refused with the missing capability names.
+        bad = env_with_models(
+            POSTER_MODELS_JSON=json.dumps({"Half-Declared": {"durations": [4, 8]}}))
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                             text=True, env=bad, timeout=60)
+        self.assertNotEqual(out.returncode, 0,
+                            "a partial capability manifest must be refused")
+        self.assertIn("missing required capabilities", out.stderr)
+
+    def test_06_subject_reference_type_rejected_at_generation_time(self):
+        """A reference_type the model declares unsupported (it fails upstream
+        AFTER billing) is refused before the call."""
         s_subj = _video_spec()
         s_subj["layers"][0].update({
-            "model": "MiniMax-Hailuo-2.3",
+            "model": "Test-Subjectless",
             "duration": 6,
+            "resolution": "768P",
             "first_frame": "city-silhouette",
             "reference_type": "subject",
         })
-        errs = validate(s_subj)
+        errs = validate_video_generation(s_subj["layers"][0], "Test-Subjectless")
         self.assertTrue(
-            any("MiniMax-Hailuo-2.3 reference_type must be one of ['first_frame'], got 'subject'" in e for e in errs),
+            any("reference_type must be one of ['first_frame'], got 'subject'" in e for e in errs),
             errs,
         )
-        self.assertTrue(
-            any("video_generation_failed" in e for e in errs),
-            errs,
-        )
-
     def test_07_ai_layer_id_reference_and_multi_image_references(self):
         """Free composition:
         1. Referencing an 'ai' layer by its layer ID (when layer.id != layer.asset) works in validate() and S1;
-        2. 'ai' layers accept reference_images (1..16) and reject non-static code layers at validate() time;
+        2. 'ai' layers accept reference_images (1..16) and reject non-ai layer references at validate() time;
         3. S1 uploads all reference_images for 'ai' layers in topological order.
         """
         from tests.helpers import preserve_manifest
 
-        # Reject non-static code layer (draw='field') on ai.input_asset and ai.reference_images
+        # A component layer is not a static image: ai.reference_images refuses it.
         bad_spec = {
             "id": "ai-bad-ref",
             "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
             "fps": 30,
             "durationInFrames": 60,
             "layers": [
-                {"id": "particles", "type": "code", "draw": "field", "rect": [0, 0, 1080, 1920], "z": 0},
+                {"id": "particles", "type": "component", "component": "Particles",
+                 "rect": [0, 0, 1080, 1920], "z": 0},
                 {"id": "hero", "type": "ai", "asset": "hero-img", "keyColor": "#070512", "blend": "normal",
                  "input_asset": "particles", "rect": [0, 0, 1080, 1920], "z": 1},
             ],
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],
         }
         errs = validate(bad_spec)
-        self.assertTrue(any("only ['dots', 'grid'] code layers render to a static PNG" in e for e in errs), errs)
+        self.assertTrue(any("must reference an ai layer" in e for e in errs), errs)
 
-        # Valid chain: code grid ('bg-grid') + manifest asset ('city-silhouette') -> ai layer ('hero-layer', asset 'hero-fused') -> video ('clip', first_frame='hero-layer')
+        # Valid chain: manifest asset ('city-silhouette') + ai plate ('plate', asset 'plate-a')
+        # -> fused ai layer ('hero-layer', asset 'hero-fused') -> video ('clip', first_frame='hero-layer').
+        # The video layer is declared BEFORE its dependencies in spec['layers']
+        # to verify S1's topological sort.
         combo_spec = {
             "id": "combo-chain",
             "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
             "fps": 30,
             "durationInFrames": 60,
-            "style": "tests/fixtures/style.json",
             "layers": [
-                {"id": "bg-grid", "type": "code", "draw": "grid", "rect": [0, 0, 1080, 1920], "z": 0},
-                # Put video layer BEFORE hero-layer in spec['layers'] to verify topological sort by layer.id!
                 {"id": "clip", "type": "video", "asset": "combo-vid",
-                 "model": "MiniMax-H3-Max", "duration": 6,
+                 "model": "Test-Max", "duration": 6, "resolution": "768P",
+                 "prompt": "a clip anchored on the fused plate",
                  "first_frame": "hero-layer",
                  "rect": [0, 0, 1080, 1920], "z": 1},
                 {"id": "hero-layer", "type": "ai", "asset": "hero-fused",
+                 "prompt": "a fused plate",
                  "keyColor": "#070512", "blend": "normal",
-                 "reference_images": ["bg-grid", "city-silhouette"],
+                 "reference_images": ["plate", "city-silhouette"],
                  "rect": [0, 0, 1080, 1920], "z": 2},
+                {"id": "plate", "type": "ai", "asset": "plate-a",
+                 "prompt": "a base plate",
+                 "keyColor": "#070512", "blend": "normal",
+                 "rect": [0, 0, 1080, 1920], "z": 3},
             ],
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],
         }
@@ -580,9 +587,8 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
 
         def fake_download(url, target_path, attempts=3):
             if target_path.endswith(".mp4"):
-                s1._write_video_fixture(target_path, seconds=1)
+                make_test_clip(target_path, seconds=1)
             else:
-                from core.media.draw import write_fixture
                 write_fixture(target_path, w=320, h=320)
 
         with preserve_manifest():
@@ -597,21 +603,26 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
                      mock.patch.object(sys, "argv", ["01_generate.py", "--spec", spec_path, "--force"]):
                     rc = s1.main()
                 self.assertEqual(rc, 0)
-                # Verify topological order: ai ('hero-fused') generated BEFORE video ('combo-vid')
-                self.assertEqual([k for k, _ in gen_order], ["ai", "video"])
+                # Topological order: base plate -> fused ai -> video.
+                self.assertEqual([k for k, _ in gen_order], ["ai", "ai", "video"])
+                self.assertEqual(gen_order[0][1], "plate-a")
+                self.assertEqual(gen_order[1][1], "hero-fused")
                 self.assertEqual(len(captured_img_urls), 2)
-                self.assertTrue(any("bg-grid.png" in u for u in captured_img_urls))
-                self.assertTrue(any("city-silhouette.png" in u for u in captured_img_urls))
-                self.assertTrue(gen_order[1][1].endswith("/hero-fused.png"))
+                self.assertTrue(any(u.endswith("city-silhouette.png") for u in captured_img_urls))
+                self.assertTrue(gen_order[2][1].endswith("/hero-fused.png"))
             finally:
-                for p in (
+                import shutil
+                for rel in (
                     spec_path,
                     os.path.join(ROOT, "assets", "hero-fused.png"),
+                    os.path.join(ROOT, "assets", "plate-a.png"),
                     os.path.join(ROOT, "assets", "combo-vid.mp4"),
-                    os.path.join(ROOT, "build", "prepared", "combo-chain", "bg-grid.png"),
+                    os.path.join(ROOT, "build", "prepared", "combo-chain"),
                 ):
-                    if os.path.exists(p):
-                        os.remove(p)
+                    if os.path.isdir(rel):
+                        shutil.rmtree(rel, ignore_errors=True)
+                    elif os.path.exists(rel):
+                        os.remove(rel)
 
     def test_08_multi_layer_same_asset_different_rects_prepared_cleanly(self):
         """Two AI layers in the same shot sharing one asset with different rects do not clobber each other in S2/S3."""
@@ -624,7 +635,6 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
             "canvas": {"w": 1080, "h": 1920, "bg": "#070512"},
             "fps": 30,
             "durationInFrames": 30,
-            "style": "tests/fixtures/style.json",
             "layers": [
                 {"id": "lantern-big", "type": "ai", "asset": "city-silhouette",
                  "keyColor": "#070512", "blend": "normal", "cutout": True,
@@ -657,8 +667,3 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
                 if os.path.exists(spec_path):
                     os.remove(spec_path)
                 shutil.rmtree(os.path.join(ROOT, "build", "prepared", "shared-asset-shot"), ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()
-

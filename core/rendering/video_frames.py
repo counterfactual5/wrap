@@ -1,6 +1,4 @@
-"""Extract a prepared clip's frames with Remotion's <Video> semantics, plus
-the solid-PNG fill for frames the renderer leaves empty and the routing
-check for the Quartz fast path."""
+"""Extract prepared video frames with transparent empty regions."""
 import math
 import os
 import shutil
@@ -15,7 +13,7 @@ from core.rendering.timeline import video_timeline
 def _write_solid_png(path, w, h, rgba):
     """Stdlib-only solid RGBA PNG — the fill for frames Remotion leaves empty
     (a trimmed, non-looping <Video> unmounts once its window ends, and the
-    layer's plate background shows instead of the clip)."""
+    layer becomes transparent)."""
     def chunk(tag, data):
         body = tag + data
         return (struct.pack(">I", len(data)) + body
@@ -28,29 +26,12 @@ def _write_solid_png(path, w, h, rgba):
         f.write(chunk(b"IEND", b""))
 
 
-def _quartz_fast_path_layer(spec):
-    """The video layer a direct full-frame extraction can serve, or None.
-
-    Writing extracted frames straight into the frames dir IS the composed
-    shot only when the single video layer's rect is the whole canvas; any
-    other rect has to go through the Swift compositor, which positions the
-    clip like Remotion's absolutely-positioned wrapper div."""
-    layers = spec.get("layers", [])
-    if len(layers) != 1 or layers[0].get("type") != "video":
-        return None
-    rect = layers[0].get("rect") or [0, 0, spec["canvas"]["w"], spec["canvas"]["h"]]
-    if rect != [0, 0, spec["canvas"]["w"], spec["canvas"]["h"]]:
-        return None
-    return layers[0]
-
-
 def _extract_video_frames(layer, clip_path, out_dir, n_frames, fps, rw, rh):
     """Extract a prepared clip's frames with Remotion's <Video> semantics.
 
     Two steps, mirroring remotion 4.0.529 exactly:
       1. ffmpeg pulls the trim window once, fitted to the layer rect
-         (cover = center-crop, contain = letterbox in the plate background
-         #030509 — transparent when plate:false, so lower layers show through
+         (cover = center-crop, contain = transparent letterbox, so lower layers show through
          exactly like the renderer's wrapper div does);
       2. each composition frame picks window frame
          floor((i mod (window / rate)) * rate) — the frame <Loop> plus the
@@ -60,20 +41,19 @@ def _extract_video_frames(layer, clip_path, out_dir, n_frames, fps, rw, rh):
     Past the window: a looping clip repeats it; a non-looping untrimmed clip
     clamps on its last frame (the <video> element does); a non-looping
     trimmed clip unmounts (its <Sequence> ends) and the fill frames stand in
-    for the plate background."""
+    for the transparent layer."""
     shutil.rmtree(out_dir, ignore_errors=True)
     window_dir = os.path.join(out_dir, "_window")
     os.makedirs(window_dir)
 
     t0, t1, rate = video_timeline(layer, fps)
     fit = layer.get("fit") or "cover"
-    plate = layer.get("plate") is not False
     vf = []
     if t0 > 0 or t1 is not None:
         vf.append(f"trim=start={t0}" + (f":end={t1}" if t1 is not None else ""))
         vf.append("setpts=PTS-STARTPTS")
     if fit == "contain":
-        pad = "0x030509@1.0" if plate else "black@0.0"
+        pad = "black@0.0"
         vf.append(f"scale={rw}:{rh}:force_original_aspect_ratio=decrease,"
                   f"format=rgba,pad={rw}:{rh}:(ow-iw)/2:(oh-ih)/2:color={pad}")
     else:
@@ -89,7 +69,9 @@ def _extract_video_frames(layer, clip_path, out_dir, n_frames, fps, rw, rh):
         subprocess.run(cmd, check=True, cwd=ROOT)
         window = sorted(f for f in os.listdir(window_dir) if f.endswith(".png"))
         wframes = len(window)
-        fill = (3, 5, 9, 255) if plate else (0, 0, 0, 0)
+        if not wframes:
+            raise RuntimeError(f"video produced no decodable frames: {clip_path}")
+        fill = (0, 0, 0, 0)
         for i in range(n_frames):
             if not wframes:
                 j = None
@@ -101,7 +83,7 @@ def _extract_video_frames(layer, clip_path, out_dir, n_frames, fps, rw, rh):
                 j = int(i * rate)
                 if j >= wframes:
                     # Untrimmed: the <video> element clamps on its last frame.
-                    # Trimmed: the <Sequence> unmounts and the plate shows.
+                    # Trimmed: the <Sequence> unmounts and the layer becomes transparent.
                     j = wframes - 1 if layer.get("trim") is None else None
             dst = os.path.join(out_dir, f"{i + 1:05d}.png")
             if j is None:

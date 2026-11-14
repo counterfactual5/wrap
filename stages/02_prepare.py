@@ -14,7 +14,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from core.runtime import manifest
-from core.media.draw import dots, grid
 from core.quality.pixels import edge_key_purity, read_rgb
 from core.media.png import read_size, write_png
 from core.runtime.config import ROOT
@@ -88,18 +87,13 @@ def _video_source_info(path):
 
 def main():
     parser = argparse.ArgumentParser(description="S2: Prepare layers and verify key purity")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (required)")
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
     shot_id = spec.get("id", "shot-01")
     W, H = spec["canvas"]["w"], spec["canvas"]["h"]
     FPS = spec.get("fps", 30)
-    style_path = os.path.join(ROOT, spec.get("style", "tests/fixtures/style.json"))
-    palette = {}
-    if os.path.exists(style_path):
-        with open(style_path) as f:
-            palette = json.load(f).get("palette", {})
     # Prepared artifacts are namespaced per shot: build/prepared/{shot_id}/.
     # A shared build/prepared/{id}.png let whichever shot ran S2 last win the
     # filename (dark-style shots silently reused a light grid), the same
@@ -110,11 +104,6 @@ def main():
     prepared_asset_configs = {}
 
     for L in spec["layers"]:
-        if L["type"] == "code" and L["draw"] in ("grid", "dots"):
-            from core.media.draw import prepare_code_layer
-            rel, _ = prepare_code_layer(spec, L, palette=palette, root=ROOT)
-            print(f"drew {rel} ({L['draw']})")
-
         if L["type"] not in ("ai", "video"):
             continue
 
@@ -221,11 +210,21 @@ def main():
         lrect = L.get("rect", [0, 0, W, H])
         rw, rh = lrect[2], lrect[3]
         cutout = bool(L.get("cutout"))
+        # The renderer draws the prepared image inside the layer rect with
+        # objectFit: layer.fit ?? 'cover' (remotion/Shot.tsx MediaLayer), so the
+        # prepared file must already respect that geometry — the source aspect
+        # ratio is always preserved, never stretched or blind-cropped:
+        # - cover: scaled to cover the box, centre-cropped to it;
+        # - contain: scaled to fit inside the box, centred on a transparent
+        #   canvas (the joint/socket pivot math in core/media/geometry.py
+        #   assumes exactly this contain mapping);
+        # - cutout: keyed sprite (below), which is contain-shaped plus colorkey.
+        fit = L.get("fit") or "cover"
+        pw = math.ceil(rw * zmax * 1.04 / 2) * 2          # headroom so zoom never exposes an edge
+        ph = math.ceil(rh * zmax * 1.04 / 2) * 2
         if cutout:
             # Foreground cutout sprite: key out keyColor to true RGBA transparency
             # and scale with decrease + transparent pad so limbs/weapons are never cropped.
-            pw = math.ceil(rw * zmax * 1.04 / 2) * 2
-            ph = math.ceil(rh * zmax * 1.04 / 2) * 2
             key_hex = L.get("keyColor", "#000000").lstrip("#")
             sim = L.get("cutoutSimilarity", 0.14)
             blend = L.get("cutoutBlend", 0.06)
@@ -235,19 +234,26 @@ def main():
                 f"scale={pw}:{ph}:force_original_aspect_ratio=decrease:flags=lanczos,"
                 f"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:color=0x00000000"
             )
-        elif rw == W and rh == H:
-            pw = math.ceil(W * zmax * 1.04 / 2) * 2          # headroom so zoom never exposes an edge
-            ph = round(pw * H / W / 2) * 2
-            vf = f"scale={pw}:{ph}:flags=lanczos,format=rgb24"
+        elif fit == "contain":
+            # fit:'contain' — the whole image stays visible inside the rect and
+            # the letterbox is transparent so lower layers show through, exactly
+            # like the renderer's objectFit:'contain' (same chain as
+            # core/rendering/video_frames.py uses for contain clips).
+            vf = (
+                f"format=rgba,"
+                f"scale={pw}:{ph}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad={pw}:{ph}:(ow-iw)/2:(oh-ih)/2:color=black@0.0"
+            )
         else:
-            # Subregion layer: scale to cover bounding box preserving source aspect ratio (never stretch!)
-            pw = math.ceil(rw * zmax * 1.04 / 2) * 2
-            ph = math.ceil(rh * zmax * 1.04 / 2) * 2
-            vf = f"scale={pw}:{ph}:force_original_aspect_ratio=increase:flags=lanczos,crop={pw}:{ph},format=rgb24"
+            # fit:'cover' (the default) — cover the box preserving the source
+            # aspect and crop the centre. Full-canvas layers take this path
+            # too: forcing scale to the canvas ratio would stretch any source
+            # whose aspect differs from the canvas.
+            vf = (f"scale={pw}:{ph}:force_original_aspect_ratio=increase:flags=lanczos,"
+                  f"crop={pw}:{ph},format=rgb24")
 
         is_opaque_backdrop = (
-            L.get("plate") is False
-            and L.get("blend") == "normal"
+            L.get("blend") == "normal"
             and not L.get("cutout")
         )
 
@@ -274,7 +280,7 @@ def main():
             else:
                 purity = 1.0
                 if g is not None and is_opaque_backdrop:
-                    print(f"{asset_name}: full-bleed opaque backdrop (plate:false, blend:normal) — edge_key_purity exempt")
+                    print(f"{asset_name}: full-bleed opaque backdrop (blend:normal) — edge_key_purity exempt")
 
             cfg_sig = (pw, ph, cutout, vf)
             prev_sig = prepared_asset_configs.get(asset_name)

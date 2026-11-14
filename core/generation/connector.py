@@ -2,6 +2,14 @@
 
 Every external call is bounded and retried here, so a hung or flaky backend
 fails the stage instead of hanging the whole pipeline before its gates run.
+
+Positioning: this module is a TRANSPORT ADAPTER — it moves JSON payloads and
+files to and from a generation backend through the `mcode-tools` CLI. It
+performs NO model or capability discovery: which models exist and what they
+accept is declared explicitly by the environment (POSTER_MODELS_JSON,
+POSTER_IMAGE_CAPABILITIES_JSON — see core/generation/models.py) or by the
+call's own parameters. Do not read this transport as an auto-discovery
+mechanism.
 """
 import json
 import os
@@ -17,17 +25,20 @@ CALL_TIMEOUT = 180
 # The native backends are driven through the `mcode-tools` CLI. A missing CLI
 # is the most common first-run failure, and the raw errno ("No such file or
 # directory: 'mcode-tools'") tells the newcomer nothing — so the failure says
-# what the CLI is, how to rehearse the whole pipeline for free, and how to
-# substitute the transport.
+# what the CLI is, how to install it, and how to substitute the transport.
+# (There is no fixture rehearsal mode to point at: the pipeline generates for
+# real, or it does not run.)
 CONNECTOR_MISSING_HELP = (
     "the connector CLI `mcode-tools` is not on PATH — the native generation "
     "backends (image / video) are driven through it.\n"
     "  * install it (it ships with the MCode runtime), or\n"
-    "  * rehearse the whole pipeline for free: pass `--fixture` to S1 — it "
-    "writes deterministic placeholder assets instead of calling a model, or\n"
     "  * substitute the transport and register the asset by hand: see the "
     "Skill's 'Asset Transport' section (HF Spaces, public-domain sources; "
-    "register with source= and credit=)."
+    "register with source= and credit=).\n"
+    "Note: the connector is a transport adapter only — it does not discover "
+    "models or capabilities. Declare what your backend supports with "
+    "POSTER_MODELS_JSON / POSTER_IMAGE_CAPABILITIES_JSON (or pass explicit "
+    "model/size parameters)."
 )
 
 

@@ -1,19 +1,4 @@
-"""The Remotion render driver: spec + prepared assets as inline props, then
-`npx remotion render`, with the native Quartz compositor as an explicitly
-requested or provably environmental fallback.
-
-A fallback is the last resort, not a default. A broken bundle, a missing
-prepared asset or a bad spec is a real error: rendering it natively would
-produce a different picture (the native compositor does not implement the
-renderer's font shaping) or fail later with a message that has nothing to do
-with the cause. Only the one failure the compositor exists for — headless
-Chromium cannot run in this environment — falls back, and only when the
-renderer's own output says so (see _BROWSER_ENVIRONMENT_MARKERS).
-
-Every failure path names what the renderer reported and how it was invoked, so
-a failed render is diagnosable from the log alone instead of from a bare exit
-code.
-"""
+"""Render project artwork with Remotion; failures never substitute a design backend."""
 import base64
 import json
 import os
@@ -24,39 +9,7 @@ from core.runtime import manifest
 from core.runtime.config import ENGINE_ROOT, ROOT
 from core.rendering.quartz import _render_quartz_fallback
 
-# Marks a render the Quartz compositor produced, on the same
-# `key=value` line S3 prints its summary on (stages/03_compose.py appends
-# frames=/sha256=/encoder= to whatever this driver prints). Without it a
-# native frame sequence is indistinguishable from a Chromium one in a log.
 RENDERER_REMOTION = "remotion"
-RENDERER_QUARTZ = "quartz"
-
-# Headless Chromium's launch/browser failures as the installed renderer
-# (@remotion/renderer) actually words them. Only these count as "the browser
-# could not run here": a crash inside a page is a render error, not an
-# environment error, and must not silently become a Quartz render.
-#
-# Every marker is a full phrase the renderer itself prints — never a bare errno
-# or a stack-frame token like `spawn `: a bundle error routinely carries a file
-# name that happens to contain `EACCES`-like text, and a false positive here
-# silently re-draws the shot with the native compositor.
-_BROWSER_ENVIRONMENT_MARKERS = (
-    # browser/BrowserRunner.js: waitForWSEndpoint() — the browser process never
-    # produced a DevTools endpoint (exec failed, crashed on launch, sandbox).
-    "Failed to launch the browser process",
-    # browser/BrowserRunner.js: the browser never connected within the timeout.
-    "while trying to connect to the browser",
-    # get-local-browser-executable.js: nothing installed to launch.
-    "No browser found for rendering frames",
-    # ensure-browser.js: an explicit browserExecutable path that does not exist.
-    "but the path doesn't exist",
-    # browser/BrowserPage.js: the renderer process died under the page.
-    "Page crashed!",
-    # ProtocolError — the target/session died underneath the renderer.
-    "Target closed",
-    "Session closed",
-    "browser has disconnected",
-)
 
 
 def build_props(spec):
@@ -74,15 +27,15 @@ def build_props(spec):
     shot_id = spec.get("id", "shot-01")
     props = {"spec": spec, "prepared": {}, "preparedVideos": {}, "preparedPoses": {}}
     for L in spec["layers"]:
-        if L["type"] == "ai":
+        if L["type"] in ("ai", "image"):
             layer_scoped = f"{shot_id}/{L['id']}__layer"
             key = layer_scoped if manifest.verified("prepared", layer_scoped) is not None else f"{shot_id}/{L['asset']}"
         elif L["type"] == "video":
             key = f"{shot_id}/{L['asset']}"
-        elif L["type"] == "code" and L["draw"] in ("grid", "dots"):
-            key = f"{shot_id}/{L['id']}"
+        elif L["type"] == "component":
+            continue
         else:
-            continue  # bar is a solid-color CSS div; no asset needed
+            raise RuntimeError(f"unsupported layer type: {L['type']}")
         row = manifest.verified("prepared", key)
         if row is None:
             raise RuntimeError(
@@ -111,7 +64,7 @@ def build_props(spec):
             continue
         with open(os.path.join(ROOT, row["path"]), "rb") as f:
             props["prepared"][L["id"]] = "data:image/png;base64," + base64.b64encode(f.read()).decode()
-        if L["type"] == "ai" and L.get("poses"):
+        if L["type"] in ("ai", "image") and L.get("poses"):
             pose_map = {}
             for p in L["poses"]:
                 pa = p.get("asset")
@@ -147,14 +100,6 @@ def _error_context(cmd, proc):
     return "\n".join(parts)
 
 
-def _looks_like_browser_environment_failure(stream):
-    """True only when the renderer's own output says the browser could not run
-    in this environment. Anything else — a bundle error, a missing module, a
-    bad composition — is ours to fix, not the environment's."""
-    text = stream or ""
-    return any(marker in text for marker in _BROWSER_ENVIRONMENT_MARKERS)
-
-
 def _raise_no_frames(ex, cmd, out_dir, shot_id):
     """The renderer exited without leaving a usable frame sequence.
 
@@ -174,7 +119,6 @@ def _raise_no_frames(ex, cmd, out_dir, shot_id):
 
 def render_remotion(spec, out_dir, shot_id):
     if os.environ.get("POSTER_FORCE_QUARTZ") == "1":
-        print(f"renderer={RENDERER_QUARTZ} (POSTER_FORCE_QUARTZ=1)")
         _render_quartz_fallback(spec, out_dir, shot_id)
         return
     props = build_props(spec)
@@ -239,22 +183,10 @@ def render_remotion(spec, out_dir, shot_id):
             f"NODE_BIN points at it.\n"
             f"invoked: {' '.join(cmd)}\n  (cwd={ENGINE_ROOT})") from ex
     except subprocess.CalledProcessError as ex:
-        stream = ((ex.stderr or "") + "\n" + (ex.stdout or "")).strip()
-        if not _looks_like_browser_environment_failure(stream):
-            raise RuntimeError(
-                f"the Remotion renderer failed for shot {shot_id!r} "
-                f"(exit {ex.returncode}); this is a render error, not a "
-                f"browser-environment failure — no native fallback was "
-                f"attempted.\n"
-                f"{_error_context(cmd, ex)}") from ex
-        # Drop the partial frame sequence only now: the retry re-creates the
-        # tree from scratch, and a leftover rm/ would be renumbered as output.
-        shutil.rmtree(os.path.join(out_dir, "rm"), ignore_errors=True)
-        print("  [S3] headless Chromium cannot start in this environment; "
-              "using the native Quartz compositor...")
-        print(f"renderer={RENDERER_QUARTZ} (browser unavailable: {ex.returncode})")
-        _render_quartz_fallback(spec, out_dir, shot_id)
-        return
+        raise RuntimeError(
+            f"the Remotion renderer failed for shot {shot_id!r} "
+            f"(exit {ex.returncode}); no fallback was attempted.\n"
+            f"{_error_context(cmd, ex)}") from ex
     except OSError as ex:
         # Renumbering failed: the renderer exited 0 but wrote no usable frame
         # sequence. Report the cause and what was actually on disk.

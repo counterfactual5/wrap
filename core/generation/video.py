@@ -21,17 +21,24 @@ VIDEO_POLL_INTERVAL = 15
 VIDEO_POLL_TIMEOUT = 2400  # 40 min upper bound for high-resolution video renders
 
 
-def submit_video_generation(prompt, model=None, duration=6,
-                            ratio="9:16", resolution="768P",
+def submit_video_generation(prompt, model=None, duration=None,
+                            ratio=None, resolution=None,
                             input_image=None, reference_type=None,
                             last_frame_image=None, reference_images=None,
                             reference_videos=None, reference_audios=None):
-    """Submit one asynchronous video task; returns (task_id, model)."""
-    model = model or models.DEFAULT_VIDEO_MODEL
-    spec = VIDEO_MODELS.get(model)
-    if spec is None:
-        raise RuntimeError(
-            f"unknown video model {model!r}; known: {sorted(VIDEO_MODELS)}")
+    """Submit one asynchronous video task; returns (task_id, model).
+
+    The returned model is the one the task actually runs on: the explicit
+    argument, else the env-provided default. An UNKNOWN model is refused —
+    there is no fallback to any other model, and the later poll must use
+    exactly this model (see query_video_generation)."""
+    model = models.resolve_video_model(model)
+    spec = models.require_video_spec(model)
+    resolution = models.resolve_video_resolution(model, resolution)
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise RuntimeError("video generation requires an explicit non-empty prompt")
+    if duration is None:
+        raise RuntimeError("video generation requires an explicit duration")
     if not (spec["min_dur"] <= duration <= spec["max_dur"]):
         raise RuntimeError(
             f"{model} duration must be {spec['min_dur']}-{spec['max_dur']}s, got {duration}")
@@ -67,8 +74,13 @@ def submit_video_generation(prompt, model=None, duration=6,
             raise RuntimeError(
                 f"{model} reference_type {eff_ref_type!r} duration must be <= {max_rt_dur}s, got {duration}")
 
-    # Keyframe and multimodal reference modes require ratio="adaptive"
+    # This is a transport constraint of the current matrix adapter, not a
+    # discovered model capability.
     eff_ratio = "adaptive" if (input_image is not None or last_frame_image is not None or reference_images) else ratio
+    if not isinstance(eff_ratio, str) or not eff_ratio.strip():
+        raise RuntimeError("video generation requires an explicit ratio")
+    if spec.get("ratios") and eff_ratio not in spec["ratios"]:
+        raise RuntimeError(f"{model} ratio must be one of {list(spec['ratios'])}")
 
     payload = {
         "model": model,
@@ -111,8 +123,18 @@ def submit_video_generation(prompt, model=None, duration=6,
 
 
 def query_video_generation(task_id, model=None):
-    """Poll one video task; returns the task payload (status + node_id/url)."""
-    model = model or models.DEFAULT_VIDEO_MODEL
+    """Poll one video task; returns the task payload (status + node_id/url).
+
+    `model` is the model the task was SUBMITTED with (the second value of
+    submit_video_generation's return pair). The query is issued against that
+    same model — never against a default, and never against any other
+    model: a poll on the wrong model would report on a task that does not
+    exist there."""
+    if model is None:
+        raise RuntimeError(
+            "query_video_generation needs the model the task was submitted "
+            "with — pass submit_video_generation's returned model; there is "
+            "no default to fall back to")
     data = _connector_call(
         "connector__matrix__query_video_generation",
         {"task_id": task_id, "model": model})
@@ -129,8 +151,13 @@ def wait_for_video(task_id, model=None, timeout=VIDEO_POLL_TIMEOUT,
     a transient poll failure as a stage error threw away a render that was
     still in flight. Keep waiting instead; the deadline (and a cap on
     consecutive failures, so a broken auth cannot spin for the full window)
-    are the only real bounds."""
-    model = model or models.DEFAULT_VIDEO_MODEL
+    are the only real bounds. `model` is the one the task was submitted
+    with — a missing model fails up front, never via a default substitution."""
+    if model is None:
+        raise RuntimeError(
+            "wait_for_video needs the model the task was submitted with "
+            "(submit_video_generation returns it) — there is no default to "
+            "fall back to")
     deadline = time.time() + timeout
     attempt = 0
     consecutive_failures = 0
@@ -182,19 +209,23 @@ def download_video(data, target_path):
 def _clip_duration(shot_seconds, model=None, resolution=None, reference_type=None):
     """How long to ask the video model for, given the shot's length.
 
-    The model only accepts a bounded duration range (defined in core/generation/models.py),
-    and a shot may be shorter than the minimum (a 2s shot cannot be rendered as
-    a 2s clip). Round the shot length UP into the model's range: a longer clip
-    is trimmed to the shot by the renderer, while a shorter one would leave the
-    shot's tail frozen.
+    The model only accepts a bounded duration range (declared in the
+    capability catalog, core/generation/models.py), and a shot may be
+    shorter than the minimum (a 2s shot cannot be rendered as a 2s clip).
+    Round the shot length UP into the model's range: a longer clip is
+    trimmed to the shot by the renderer, while a shorter one would leave
+    the shot's tail frozen.
 
-    Some models accept only a DISCRETE set of durations (Hailuo: 6 or 10
-    seconds, nothing between), and the resolution and the reference mode can
-    cap the range further (Hailuo 1080P and its legacy subject mode: 6s).
-    The result has to be a duration the backend actually accepts — asking for
-    7 seconds is rejected by the API, not rounded for us."""
-    model = model or models.DEFAULT_VIDEO_MODEL
-    spec = VIDEO_MODELS.get(model, VIDEO_MODELS[models.DEFAULT_VIDEO_MODEL])
+    Some models accept only a DISCRETE set of durations (e.g. 6 or 10
+    seconds, nothing between), and the resolution and the reference mode
+    can cap the range further. The result has to be a duration the
+    backend actually accepts — asking for 7 seconds where the API offers
+    [6, 10] is rejected by the API, not rounded for us.
+
+    The model is the one resolved for this call: an unknown model is
+    refused outright, never substituted with a default."""
+    model = models.resolve_video_model(model)
+    spec = models.require_video_spec(model)
     lo, hi = spec["min_dur"], spec["max_dur"]
 
     # The tightest cap the backend imposes on top of the model's own range.
@@ -207,13 +238,17 @@ def _clip_duration(shot_seconds, model=None, resolution=None, reference_type=Non
     want = lo if shot_seconds <= 0 else int(math.ceil(shot_seconds))
 
     allowed = models.video_allowed_durations(model)
+    if upper < lo:
+        raise RuntimeError(f"{model} duration cap {upper}s is below minimum {lo}s")
     if allowed is None:
         return max(lo, min(upper, want))
 
     # Discrete set: the smallest accepted value that is >= want, else the
     # largest one (a shot longer than the model's longest clip gets the
-    # longest clip and loops). A cap below the floor wins over the set.
-    candidates = [v for v in sorted(allowed) if v <= upper] or [min(allowed)]
+    # longest clip and loops). Impossible capability combinations fail.
+    candidates = [v for v in sorted(allowed) if lo <= v <= upper]
+    if not candidates:
+        raise RuntimeError(f"{model} has no allowed duration under the selected capability caps")
     for value in candidates:
         if value >= want:
             return value

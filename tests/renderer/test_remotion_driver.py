@@ -1,28 +1,6 @@
-"""The S3 render driver must fail on its own errors and fall back only on a
-proven browser-environment failure.
-
-`render_remotion` used to treat every `CalledProcessError` and
-`FileNotFoundError` as "Chromium is blocked by the sandbox" and silently
-re-render with the native Quartz compositor. That turned a broken bundle, a
-typo in a spec or a missing `npx` into a different picture — or a second,
-unrelated failure — while the log claimed a sandbox problem that never
-happened.
-
-The contract pinned here:
-  - a bundle/code error fails, naming the renderer's own output;
-  - a missing file (no `npx`, no prepared asset) fails — never falls back;
-  - only the renderer's explicit "the browser could not start" errors fall
-    back, and they say which renderer actually drew the frames;
-  - `POSTER_FORCE_QUARTZ=1` still goes straight to Quartz.
-
-The double is `subprocess.Popen` (not `subprocess.run`): `run` is a plain
-function that does `with Popen(...)` and then raises `CalledProcessError`
-itself, so a stub at the `run` level would still open a real process. The
-fake plays both parts — the process `run` drives, and the context manager it
-enters — so the driver exercises its real error handling. No Node, no
-Chromium, no Swift.
-"""
+"""Render errors retain diagnostics and never switch to substitute artwork."""
 import io
+import json
 import os
 import subprocess
 import sys
@@ -38,14 +16,13 @@ from core.rendering import remotion  # noqa: E402
 
 
 def _spec(frames=4):
-    # A bar layer needs no prepared asset, so build_props() succeeds without a
-    # manifest row and the test reaches the renderer call itself.
+    # Project components use no implicit assets.
     return {
         "id": "render-driver-test",
         "canvas": {"w": 64, "h": 48, "bg": "#000000"},
         "fps": 30,
         "durationInFrames": frames,
-        "layers": [{"id": "bar", "type": "code", "draw": "bar",
+        "layers": [{"id": "scene", "type": "component", "component": "Scene",
                     "rect": [0, 0, 64, 48], "z": 0}],
     }
 
@@ -108,6 +85,12 @@ class _DriverCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.out_dir = os.path.join(self._tmp.name, "frames")
+        root_patch = mock.patch.object(remotion, "ROOT", self._tmp.name)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+        env_patch = mock.patch.dict(os.environ, {"POSTER_FORCE_QUARTZ": "0"})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
         self.quartz = mock.Mock()
         patcher = mock.patch.object(remotion, "_render_quartz_fallback", self.quartz)
         patcher.start()
@@ -141,7 +124,7 @@ class TestRenderDriverFailurePolicy(_DriverCase):
             stderr="Error: Bundle failed with code 1\n  at bundle (webpack)\n"))
 
         self.assertIsInstance(result, RuntimeError, result)
-        self.assertIn("render error, not a browser-environment failure", str(result))
+        self.assertIn("no fallback was attempted", str(result))
         self.assertIn("Bundle failed with code 1", str(result))
         self.quartz.assert_not_called()
         self.assertNotIn("Quartz compositor", out)
@@ -202,23 +185,13 @@ class TestRenderDriverFailurePolicy(_DriverCase):
         self.quartz.assert_not_called()
         self.assertFalse(os.path.isdir(os.path.join(self.out_dir, "rm")))
 
-    def _quartz_frame(self, got_spec, out_dir, shot_id):
-        os.makedirs(out_dir, exist_ok=True)
-        with open(os.path.join(out_dir, "00001.png"), "wb") as f:
-            f.write(b"quartz frame")
-
-    def test_05_a_page_crash_is_a_browser_environment_failure(self):
-        """`Page crashed!` is the renderer's wording for the browser process
-        dying under it (the restricted-sandbox SIGSEGV this fallback exists
-        for), so it falls back — and says which renderer drew the frames."""
-        self.quartz.side_effect = self._quartz_frame
+    def test_05_a_page_crash_fails_without_substitute(self):
         result, out, _ = self._run(_FakeProcess(
-            exit_code=1,
-            stderr="Error: Page crashed!\n  at Page.#onTargetCrashed (Target.js)\n"))
-
-        self.assertIsNone(result, result)
-        self.quartz.assert_called_once()
-        self.assertIn("renderer=quartz (browser unavailable: 1)", out)
+            exit_code=1, stderr="Error: Page crashed!"))
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("Page crashed!", str(result))
+        self.quartz.assert_not_called()
+        self.assertNotIn("renderer=quartz", out)
 
     def test_06_an_ordinary_crash_is_never_re_drawn(self):
         """A composition error is not a browser failure: it must stay a hard
@@ -229,51 +202,29 @@ class TestRenderDriverFailurePolicy(_DriverCase):
                    "  at Shot (Shot.tsx:42:11)\n"))
 
         self.assertIsInstance(result, RuntimeError, result)
-        self.assertIn("render error", str(result))
+        self.assertIn("renderer failed", str(result))
         self.quartz.assert_not_called()
 
-    def test_07_a_browser_launch_failure_falls_back(self):
-        """The one case the compositor exists for: the browser process never
-        came up inside this environment."""
-        self.quartz.side_effect = self._quartz_frame
-        result, out, _ = self._run(_FakeProcess(
-            exit_code=1,
-            stderr="Error: Failed to launch the browser process!\n"
-                   "  at waitForWSEndpoint (index.mjs)\n"
-                   "Timed out after 30000 ms while trying to connect to the browser!\n"))
+    def test_07_browser_failures_preserve_context_without_fallback(self):
+        for message in ("Failed to launch the browser process", "Target closed",
+                        "No browser found for rendering frames", "Session closed"):
+            with self.subTest(message=message):
+                result, out, _ = self._run(_FakeProcess(exit_code=1, stderr=message))
+                self.assertIsInstance(result, RuntimeError)
+                self.assertIn(message, str(result))
+                self.assertIn("npx remotion render", str(result))
+                self.quartz.assert_not_called()
+                self.assertNotIn("renderer=quartz", out)
 
-        self.assertIsNone(result, result)
-        self.quartz.assert_called_once()
-        self.assertEqual(self._frames(), ["00001.png"])
-        self.assertIn("Quartz compositor", out)
-        self.assertIn("renderer=quartz (browser unavailable: 1)", out)
-        self.assertNotIn("sandbox", out)
-
-    def test_08_an_explicit_browser_error_falls_back_and_records_the_choice(self):
-        """A target-closed failure the renderer itself attributes to the
-        browser still falls back, and the log says which renderer drew the
-        frames."""
-        self.quartz.side_effect = self._quartz_frame
-        result, out, _ = self._run(_FakeProcess(
-            exit_code=1,
-            stderr="Protocol error (Page.captureScreenshot): Target closed. "
-                   "https://www.remotion.dev/docs/target-closed\n"))
-
-        self.assertIsNone(result, result)
-        self.quartz.assert_called_once()
-        self.assertIn("renderer=quartz (browser unavailable: 1)", out)
-
-    def test_09_poster_force_quartz_skips_the_renderer_entirely(self):
-        spec = _spec()
-        self.quartz.side_effect = self._quartz_frame
-        result, out, popen = self._run(mock.Mock(), spec=spec,
-                                       env={"POSTER_FORCE_QUARTZ": "1"})
-
-        self.assertIsNone(result, result)
-        self.assertEqual(_calls(popen), [])
-        self.quartz.assert_called_once_with(spec, self.out_dir, spec["id"])
-        self.assertEqual(self._frames(), ["00001.png"])
-        self.assertIn("renderer=quartz (POSTER_FORCE_QUARTZ=1)", out)
+    def test_09_explicit_quartz_request_reports_removal(self):
+        from core.rendering.quartz import _render_quartz_fallback
+        self.quartz.side_effect = _render_quartz_fallback
+        result, out, popen = self._run(mock.Mock(), env={"POSTER_FORCE_QUARTZ": "1"})
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("已移除内置Quartz设计后端", str(result))
+        popen.assert_not_called()
+        self.assertFalse(os.path.exists(self.out_dir))
+        self.assertNotIn("renderer=quartz", out)
 
     def test_10_a_successful_remotion_render_reports_its_renderer(self):
         """The choice is logged on the success path too, so a log always says
@@ -297,47 +248,71 @@ class TestRenderDriverFailurePolicy(_DriverCase):
         self.assertIn("rendered 4 frames", out)
 
 
-class TestBrowserEnvironmentDetection(unittest.TestCase):
-    """The marker list is the whole safety margin: too narrow and a real
-    sandbox failure becomes a hard error, too wide and a render error is
-    silently re-drawn by the native compositor."""
+class TestPreparedProps(unittest.TestCase):
+    def test_component_props_and_tracks_pass_through_without_palette(self):
+        spec = _spec()
+        spec["tracks"] = {"captions": [{"frame": 0, "end_frame": 3, "text": "Hello"}],
+                          "events": [{"frame": 2, "anything": {"nested": True}}]}
+        spec["layers"][0]["props"] = {"colors": ["project-owned"], "nested": {"a": 1}}
+        with mock.patch.object(remotion.manifest, "verified") as verified:
+            props = remotion.build_props(spec)
+        self.assertEqual(props["spec"], spec)
+        self.assertEqual(set(props), {"spec", "prepared", "preparedVideos", "preparedPoses"})
+        verified.assert_not_called()
 
-    def test_00_recognises_the_renderers_own_wording(self):
-        for stream in (
-            "Error: Failed to launch the browser process!\n",
-            "Timed out after 30000 ms while trying to connect to the browser!",
-            "TypeError: No browser found for rendering frames!",
-            "Protocol error (Page.captureScreenshot): Target closed.",
-            "Protocol error (Runtime.callFunctionOn): Session closed.",
-            "Navigation failed because browser has disconnected!",
-            "Error: Page crashed!",
-            "Error: `browserExecutable` was specified as '/x' but the path doesn't exist.",
-        ):
-            with self.subTest(stream=stream.splitlines()[0]):
-                self.assertTrue(remotion._looks_like_browser_environment_failure(stream))
+    def test_old_code_layer_is_rejected_not_prepared(self):
+        spec = _spec()
+        spec["layers"][0].update(type="code", draw="grid")
+        with self.assertRaisesRegex(RuntimeError, "unsupported layer type: code"):
+            remotion.build_props(spec)
 
-    def test_01_ignores_render_errors(self):
-        for stream in (
-            "Error: Bundle failed with code 1",
-            "TypeError: Cannot read properties of undefined (reading 'map')",
-            "Error: A delayRender() was called but not cleared after 30000ms",
-            "SyntaxError: Unexpected token '}' in bundle",
-            "",
-        ):
-            with self.subTest(stream=stream or "(empty)"):
-                self.assertFalse(remotion._looks_like_browser_environment_failure(stream))
+    def test_image_alias_and_pose_use_verified_prepared_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "image.png"), "wb") as f:
+                f.write(b"verified-image")
+            spec = _spec()
+            spec["layers"] = [{"id": "image", "type": "image", "asset": "base",
+                               "poses": [{"frame": 2, "asset": "pose"}]}]
+            with mock.patch.object(remotion, "ROOT", root), mock.patch.object(
+                    remotion.manifest, "verified", return_value={"path": "image.png"}) as verified:
+                props = remotion.build_props(spec)
+            self.assertEqual(props["prepared"]["image"], "data:image/png;base64,dmVyaWZpZWQtaW1hZ2U=")
+            self.assertEqual(props["preparedPoses"]["image"]["pose"], props["prepared"]["image"])
+            self.assertIn(mock.call("prepared", "render-driver-test/pose"), verified.call_args_list)
 
-    def test_02_ignores_a_bare_errno_or_stack_token(self):
-        """A render error whose stack happens to carry `spawn`/`ENOENT` (or a
-        path containing one) must stay a hard error: the marker list keys on
-        the renderer's own failure wording, never on a bare errno."""
-        for stream in (
-            "Error: spawn chrome-headless-shell ENOENT\n  at ChildProcess.spawn",
-            "Error: EACCES: permission denied, open '/assets/EACCES.png'",
-            "Error: bundle failed\n  at spawn (webpack.js:1:1)",
-        ):
-            with self.subTest(stream=stream.splitlines()[0]):
-                self.assertFalse(remotion._looks_like_browser_environment_failure(stream))
+    def test_missing_pose_is_not_replaced_by_base_image(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "base.png"), "wb") as f:
+                f.write(b"base")
+            spec = _spec()
+            spec["layers"] = [{"id": "image", "type": "ai", "asset": "base",
+                               "poses": [{"frame": 2, "asset": "missing"}]}]
+            def row(kind, key):
+                return None if key.endswith("/missing") else {"path": "base.png"}
+            with mock.patch.object(remotion, "ROOT", root), mock.patch.object(
+                    remotion.manifest, "verified", side_effect=row):
+                with self.assertRaisesRegex(RuntimeError, "missing.*not manifest-verified"):
+                    remotion.build_props(spec)
+
+    def test_video_staging_cannot_escape_prepared_directory(self):
+        spec = _spec()
+        spec["layers"] = [{"id": "clip", "type": "video", "asset": "../../../escape"}]
+        with mock.patch.object(remotion.manifest, "verified", return_value={"path": "clip.mp4"}):
+            with self.assertRaisesRegex(RuntimeError, "outside public/prepared"):
+                remotion.build_props(spec)
+
+    def test_video_is_staged_and_shared_by_layer_id(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "clip.mp4"), "wb") as f:
+                f.write(b"verified-clip")
+            spec = _spec()
+            spec["layers"].append({"id": "clip", "type": "video", "asset": "source"})
+            with mock.patch.object(remotion, "ROOT", root), mock.patch.object(remotion, "ENGINE_ROOT", root), \
+                    mock.patch.object(remotion.manifest, "verified", return_value={"path": "clip.mp4"}):
+                props = remotion.build_props(spec)
+            rel = props["preparedVideos"]["clip"]
+            with open(os.path.join(root, "public", rel), "rb") as f:
+                self.assertEqual(f.read(), b"verified-clip")
 
 
 if __name__ == "__main__":

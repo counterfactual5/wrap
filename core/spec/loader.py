@@ -9,7 +9,8 @@ from .shot import validate
 
 
 def load_spec(path=None):
-    path = path or os.path.join(ROOT, "tests", "fixtures", "shot-01.poster.json")
+    if not path:
+        raise ValueError("An explicit spec path is required")
     with open(path) as f:
         spec = json.load(f)
     errs = validate(spec)

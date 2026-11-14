@@ -14,8 +14,6 @@ Stdlib-only pixel utilities for 2D sprite & skeletal choreography:
   emits ready-to-paste Remotion layer JSON templates.
 - `derive_poses_from_sheet`: slices a multi-pose horizontal sprite sheet (`cols=N`) into
   individual center-aligned pose assets registered in `manifest.json`.
-- `derive_pose_preset`: deterministically derives combat/transformation pose states
-  (`disguise`, `shatter`, `recoil`) from a base sprite using inverse mapping (zero Moiré).
 """
 import math
 import os
@@ -41,16 +39,12 @@ from .kits import (
 )
 from .poses import (
     derive_poses_from_sheet,
-    derive_pose_preset,
 )
 from .kinematics import (
     solve_2bone_ik,
     solve_leg_ground_lock,
     solve_spring_damper_track,
     eval_channel,
-)
-from .choreography import (
-    generate_puppet_choreography,
 )
 from .verification import (
     verify_puppet_rig,

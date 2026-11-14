@@ -9,37 +9,25 @@ from core.generation import models
 
 from .channels import (
     validate_anim,
-    validate_captions_against_voiceover,
-    validate_gait,
     validate_spring,
 )
+from . import constants
 from .constants import (
     BLENDS,
-    CARD_TYPES,
-    DRAWS,
     HEX,
-    HUD_TYPES,
     LAYER_ROLES,
-    LAYER_TYPES,
     VIDEO_RATIOS,
-    ZOOMABLE_CODE_DRAWS,
 )
 from .naming import valid_name
 
 
 def zoom_supported(layer):
-    """Whether the renderer actually interpolates motion.zoom for this layer.
+    """Whether the renderer interpolates motion.zoom for this layer.
 
-    The renderer does it in PreparedLayer (ai layers, and the code layers
-    drawn as grid / dots, which S2 prepares as an image) and in
-    VideoLayerComp. CodeLayerComp reads only motion.pan, and the text / hud /
-    card layers scale through the anim "scale" channel — promising a
-    motion.zoom there would promise something the renderer never draws.
+    Only ai and video layers do — a camera move on an image or clip.
+    Component layers scale through the anim "scale" channel instead.
     """
-    ltype = layer.get("type")
-    if ltype in ("ai", "video"):
-        return True
-    return ltype == "code" and layer.get("draw") in ZOOMABLE_CODE_DRAWS
+    return layer.get("type") in ("ai", "video")
 
 
 def _check_img_ref(lid, ref_val, field_label, kind_label, layer_by_id, ai_asset_set, errs):
@@ -48,15 +36,12 @@ def _check_img_ref(lid, ref_val, field_label, kind_label, layer_by_id, ai_asset_
         e(f"{lid}: {field_label} must be a non-empty string")
         return
     if "/" in ref_val or ref_val.endswith(".png") or not valid_name(ref_val):
-        e(f"{lid}: {kind_label} {field_label} must name a manifest asset or static code layer id (got {ref_val!r})")
+        e(f"{lid}: {kind_label} {field_label} must name a manifest asset (got {ref_val!r})")
         return
     if ref_val in layer_by_id and ref_val not in ai_asset_set:
         target_l = layer_by_id[ref_val]
-        if target_l.get("type") == "code" and target_l.get("draw") not in ZOOMABLE_CODE_DRAWS:
-            e(f"{lid}: {kind_label} {field_label} {ref_val!r} references code layer with draw={target_l.get('draw')!r} — "
-              f"only {sorted(ZOOMABLE_CODE_DRAWS)} code layers render to a static PNG")
-        elif target_l.get("type") not in ("code", "ai"):
-            e(f"{lid}: {kind_label} {field_label} {ref_val!r} cannot reference a {target_l.get('type')!r} layer")
+        if target_l.get("type") != "ai":
+            e(f"{lid}: {field_label} must reference an ai layer or a frozen image asset")
 
 
 def _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs):
@@ -119,7 +104,7 @@ def _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs):
                     _check_img_ref(lid, item, rk, "ai", layer_by_id, ai_asset_set, errs)
 
 
-def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs):
+def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs, generation_model=None):
     e = errs.append
     # A video layer references a frozen video asset (mp4). It has no
     # key color: edge keying is a still-image concept, so the purity
@@ -154,34 +139,8 @@ def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs):
     # Generation parameters are validated against the backend catalog
     # (core/generation/models.py) so a typo or an out-of-range duration is caught
     # here — before a paid call, not after it.
-    model = L.get("model")
-    # The effective model is what the layer will actually use: its own
-    # "model", or the environment default when it declares none. If the
-    # default is not in the catalog (a bad POSTER_VIDEO_MODEL), say so
-    # here — the validator's job is to report the problem, not to
-    # crash two lines later on an unpack of None.
-    if model is None:
-        default_model = models.DEFAULT_VIDEO_MODEL
-        if default_model in models.VIDEO_MODELS:
-            eff_model = default_model
-        else:
-            eff_model = None
-            e(f"{lid}: the default video model {default_model!r} "
-              f"(POSTER_VIDEO_MODEL) is not in the capability catalog; "
-              f"choose one of {sorted(models.VIDEO_MODELS)}")
-    elif model in models.VIDEO_MODELS:
-        eff_model = model
-    else:
-        eff_model = None
-    if model is not None:
-        if model not in models.VIDEO_MODELS:
-            e(f"{lid}: video model {model!r} is unknown; "
-              f"choose one of {sorted(models.VIDEO_MODELS)}")
-        else:
-            res = L.get("resolution")
-            if res is not None and res not in models.video_resolutions(model):
-                e(f"{lid}: {model} resolution must be one of "
-                  f"{list(models.video_resolutions(model))}, got {res!r}")
+    # Model availability belongs to generation, not frozen-asset validation.
+    eff_model = generation_model
     dur = L.get("duration")
     if dur is not None:
         if not isinstance(dur, int) or isinstance(dur, bool) or dur <= 0:
@@ -261,24 +220,16 @@ def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs):
               f"dropped from the request. Use reference_images instead.")
 
 
-def _validate_code_layer(L, lid, spec, errs):
-    e = errs.append
-    if L.get("draw") not in DRAWS:
-        e(f"{lid}: draw must be one of {sorted(DRAWS)}")
-    if L.get("draw") == "bar" and not HEX.match(L.get("color", "")):
-        e(f"{lid}: bar needs color #rrggbb")
-    if "params" in L and not isinstance(L["params"], dict):
-        e(f"{lid}: params must be an object (primitive parameters)")
-    if L.get("draw") == "captions" and isinstance(L.get("params"), dict):
-        vo = (spec.get("audio") or {}).get("voiceover") if isinstance(spec.get("audio"), dict) else None
-        if isinstance(vo, str) and vo.strip():
-            validate_captions_against_voiceover(L["params"].get("items"), vo, lid, errs)
-
-
 def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
     """Validate one layer of a shot, appending any problem to `errs`."""
     e = errs.append
+    if not isinstance(L, dict):
+        e("layer must be an object")
+        return
     lid = L.get("id", "?")
+    removed = {"draw", "params", "text", "subtext", "fontSize", "fontWeight", "color", "hudType", "cardType", "details", "title", "quote", "plate", "gait", "depth", "translucent", "shadowColor", "controlRod", "rodAnchor", "rodAnchors", "punch", "vibe", "vibe_grade"}
+    for key in sorted(removed.intersection(L)):
+        e(f"{lid}: migration required: removed field {key!r}; author visuals in component props, captions/events in tracks")
     if lid in ids:
         e(f"duplicate layer id {lid}")
     ids.add(lid)
@@ -294,8 +245,8 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
     if L.get("z") in zs:
         e(f"{lid}: duplicate z {L.get('z')}")
     zs.add(L.get("z"))
-    if L.get("type") not in LAYER_TYPES:
-        e(f"{lid}: type must be one of {sorted(LAYER_TYPES)}")
+    if L.get("type") not in constants.LAYER_TYPES:
+        e(f"{lid}: migration required: type must be one of {sorted(constants.LAYER_TYPES)}; author legacy visuals as project components")
     r = L.get("rect")
     if not (isinstance(r, list) and len(r) == 4 and all(isinstance(v, int) for v in r)):
         e(f"{lid}: rect must be [x,y,w,h] ints")
@@ -361,85 +312,20 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
                     rval = kit[k_rad]
                     if isinstance(rval, bool) or not isinstance(rval, (int, float)) or rval <= 0:
                         e(f"{lid}: kit.{k_rad} must be a positive number")
-    if L.get("type") in ("ai", "video"):
-        # plate is the card-chrome switch (false = full bleed). The
-        # renderer compares it strictly against false, so a non-boolean
-        # value would render the OPPOSITE of what the author wrote —
-        # "plate": "no" would draw the chrome the author asked to drop.
-        plate = L.get("plate")
-        if plate is not None and not isinstance(plate, bool):
-            e(f"{lid}: plate must be a boolean (true or false), got {plate!r}")
     if L.get("type") == "ai":
         _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs)
     if L.get("type") == "video":
         _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs)
-    if L.get("type") == "code":
-        _validate_code_layer(L, lid, spec, errs)
     if "anim" in L:
         validate_anim(L["anim"], lid, errs)
-    if "gait" in L and L["gait"] is not None:
-        validate_gait(L["gait"], lid, errs)
     if "spring" in L and L["spring"] is not None:
         validate_spring(L["spring"], lid, errs)
     if "role" in L and L["role"] is not None:
         if L["role"] not in LAYER_ROLES:
             e(f"{lid}: role must be one of {sorted(LAYER_ROLES)} (got {L['role']!r})")
-    if "shadowColor" in L and L["shadowColor"] is not None:
-        if not HEX.match(str(L["shadowColor"])):
-            e(f"{lid}: shadowColor must be #rrggbb (got {L['shadowColor']!r})")
-    if "translucent" in L and L["translucent"] is not None:
-        if not isinstance(L["translucent"], bool):
-            e(f"{lid}: translucent must be a boolean (got {L['translucent']!r})")
     if "flipX" in L and L["flipX"] is not None:
         if not isinstance(L["flipX"], bool):
             e(f"{lid}: flipX must be a boolean (got {L['flipX']!r})")
-    if "controlRod" in L and L["controlRod"] is not None:
-        if not isinstance(L["controlRod"], bool):
-            e(f"{lid}: controlRod must be a boolean (got {L['controlRod']!r})")
-    if "rodAnchor" in L and L["rodAnchor"] is not None:
-        ra = L["rodAnchor"]
-        if not (isinstance(ra, list) and len(ra) == 2
-                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in ra)):
-            e(f"{lid}: rodAnchor must be [rx, ry] normalized floats in [0, 1]")
-    if "rodAnchors" in L and L["rodAnchors"] is not None:
-        ras = L["rodAnchors"]
-        if not (isinstance(ras, list) and len(ras) >= 1 and all(
-                isinstance(pt, list) and len(pt) == 2
-                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in pt)
-                for pt in ras)):
-            e(f"{lid}: rodAnchors must be a non-empty list of [rx, ry] normalized floats in [0, 1]")
-    if L.get("type") == "text":
-        if not L.get("text"):
-            e(f"{lid}: text layer needs 'text'")
-        size = L.get("fontSize")
-        if size is not None and not (isinstance(size, (int, float))
-                                     and not isinstance(size, bool) and size > 0):
-            e(f"{lid}: text fontSize must be a positive number (got {size!r})")
-        weight = L.get("fontWeight")
-        if weight is not None and not (isinstance(weight, (str, int, float))
-                                       and not isinstance(weight, bool)):
-            e(f"{lid}: text fontWeight must be a string or number (got {weight!r})")
-        if "subtext" in L and not isinstance(L["subtext"], str):
-            e(f"{lid}: text subtext must be a string")
-    if L.get("type") == "hud":
-        if not L.get("hudType"):
-            e(f"{lid}: hud layer needs 'hudType'")
-        elif L["hudType"] not in HUD_TYPES:
-            # The renderer dispatches on this value; an unknown one draws
-            # nothing while the spec still claims the layer exists.
-            e(f"{lid}: hudType must be one of {sorted(HUD_TYPES)} "
-              f"(got {L['hudType']!r})")
-    if L.get("type") == "card":
-        if not L.get("cardType"):
-            e(f"{lid}: card layer needs 'cardType'")
-        elif L["cardType"] not in CARD_TYPES:
-            e(f"{lid}: cardType must be one of {sorted(CARD_TYPES)} "
-              f"(got {L['cardType']!r})")
-        details = L.get("details")
-        if details is not None and not (
-                isinstance(details, list)
-                and all(isinstance(d, dict) for d in details)):
-            e(f"{lid}: card details must be a list of objects")
     if L.get("type") == "component":
         comp_name = L.get("component")
         if not comp_name:
@@ -462,58 +348,17 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
             # The validator must not refuse what the renderer can do — and
             # must not promise what it cannot. The message names the layer
             # kind so the author knows which channel to use instead.
-            if L.get("type") == "code":
-                e(f"{lid}: zoom is not supported on code layers drawn as "
-                  f"{L.get('draw')!r} — only {sorted(ZOOMABLE_CODE_DRAWS)} "
-                  f"go through the prepared-image path; use the anim "
-                  f"'scale' channel for the other draws")
-            else:
-                e(f"{lid}: zoom is not supported on {L.get('type')} layers "
-                  f"— scale them with the anim 'scale' channel instead")
-        if p is not None and L.get("draw") != "bar":
-            e(f"{lid}: pan only supported on 'bar' layers")
+            e(f"{lid}: zoom is unsupported; use anim.scale")
+        if p is not None:
+            e(f"{lid}: migration required: motion.pan removed; use anim.x")
 
 
-def validate_puppet_topology(spec, errs):
-    """Anatomy Topology Contract: Ensure articulated humanoid puppets do not suffer from
-    missing limbs (the single-leg or single-arm amputee defects).
-
-    If an articulated puppet root layer has child limbs (parent points to it):
-    - If lower limbs ('leg') are articulated, at least 2 legs (e.g. leg-front and leg-back)
-      must be declared to form a complete standing/stepping pair.
-    - If upper limbs ('arm' / 'weapon') are articulated on a humanoid character
-      (declared via `role: "humanoid"` or having a bipedal leg pair), at least 2 arms
-      must be declared to form a complete pair.
-    """
-    layers = spec.get("layers", [])
-    layer_map = {L.get("id"): L for L in layers if L.get("id")}
-    parents_with_limbs = set()
-    for L in layers:
-        par_id = L.get("parent")
-        if par_id and (L.get("kit") or L.get("joint") or "leg" in L.get("id", "").lower() or "arm" in L.get("id", "").lower()):
-            parents_with_limbs.add(par_id)
-
-    for pid in parents_with_limbs:
-        par_layer = layer_map.get(pid, {})
-        is_humanoid = par_layer.get("role") == "humanoid"
-        child_legs = [
-            L for L in layers
-            if L.get("parent") == pid and ("leg" in L.get("id", "").lower() or "leg" in str(L.get("asset", "")).lower())
-        ]
-        if len(child_legs) == 1:
-            errs.append(
-                f"{pid}: humanoid puppet has only 1 leg ({child_legs[0]['id']}) declared — "
-                f"missing rear leg causes one-legged amputee visual defect. "
-                f"Declare both front and back legs (e.g. '{pid}-leg-front' and '{pid}-leg-back')."
-            )
-
-        child_arms = [
-            L for L in layers
-            if L.get("parent") == pid and ("arm" in L.get("id", "").lower() or "arm" in str(L.get("asset", "")).lower())
-        ]
-        if len(child_arms) == 1 and (len(child_legs) >= 2 or is_humanoid):
-            errs.append(
-                f"{pid}: humanoid puppet has only 1 arm ({child_arms[0]['id']}) declared — "
-                f"missing rear counterbalance arm causes one-armed amputee visual defect. "
-                f"Declare both front and back arms (e.g. '{pid}-arm-front' and '{pid}-arm-back')."
-            )
+def validate_video_generation(layer, model):
+    errors = []
+    if model not in models.VIDEO_MODELS:
+        return [f"No configured video capabilities for {model!r}"]
+    resolution = layer.get("resolution")
+    if resolution is not None and resolution not in models.video_resolutions(model):
+        errors.append(f"{model}: unsupported resolution {resolution!r}")
+    _validate_video_layer(layer, layer.get("id", "?"), {}, set(), errors, generation_model=model)
+    return errors

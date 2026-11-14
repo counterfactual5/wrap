@@ -46,17 +46,6 @@ def _split_sentence_clauses(sentence, max_chars=20):
     return merged
 
 
-def _extract_highlight(clause_text):
-    """Pick a meaningful 2..4 character phrase at the tail of a clause for subtitle highlighting."""
-    cleaned = re.sub(r"[，。！？；：、“”‘’（）()·\s,.!?;:\-—]+$", "", clause_text.strip())
-    # Split by internal punctuation and take the last segment
-    segs = [s.strip() for s in re.split(r"[，、；：·,;:]+", cleaned) if s.strip()]
-    tail = segs[-1] if segs else cleaned
-    if len(tail) <= 4:
-        return tail
-    return tail[-4:]
-
-
 def clauses_from_boundaries(text, boundaries, total_duration, fps=30, max_chars=20):
     """Build frame-accurate caption items from TTS sentence boundaries and total duration."""
     text = (text or "").strip()
@@ -103,8 +92,6 @@ def clauses_from_boundaries(text, boundaries, total_duration, fps=30, max_chars=
                 "frame": f_start,
                 "end_frame": f_end,
                 "text": c_text,
-                "hl": _extract_highlight(c_text),
-                "size": 36,
             })
             c_cursor += c_dur
     return items

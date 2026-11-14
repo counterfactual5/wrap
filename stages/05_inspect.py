@@ -4,8 +4,9 @@ Two modes:
 
 1. Evidence generation (default):
    Generates a tiled contact sheet from the rendered shot video and extracts an
-   inspection checklist against the spec's declared layers (texts, cards, AI
-   assets, video clips, draw types, HUD). Writes build/contact_sheet_{shot_id}.png
+   inspection inventory of the spec's declared resources (ai assets, video
+   clips, project components) plus the project-declared `spec.checklist`.
+   Writes build/contact_sheet_{shot_id}.png
    and build/inspection_{shot_id}.json, and registers a *pending* visual audit
    entry in build/gates/{shot_id}.json (pass=null, status=pending_judge). Nothing here
    claims the shot looks right — that verdict belongs to a judge (model or
@@ -38,71 +39,29 @@ from core.spec.loader import load_spec
 
 
 def extract_checklist(spec):
-    texts = []
-    cards = []
-    ai_assets = []
-    code_draws = []
-    hud_types = []
-    video_assets = []
-    components = []
+    """Extract the project-declared resources and checklist.
 
-    shot_id = spec.get("id", "shot-01")
+    The spec's user checklist, when present, must be a non-empty array of
+    strings — a typo there is a malformed project, not an absent checklist.
+    """
+    declared = spec.get("checklist", [])
+    if not isinstance(declared, list) or any(not isinstance(item, str) or not item.strip() for item in declared):
+        raise ValueError("spec.checklist must be an array of non-empty strings")
+    checklist = {"ai_assets": [], "video_assets": [], "components": [],
+                 "project_checklist": declared}
     for layer in spec.get("layers", []):
-        ltype = layer.get("type")
-        if ltype == "text":
-            if layer.get("text"):
-                texts.append({"id": layer.get("id"), "text": layer.get("text"), "subtext": layer.get("subtext")})
-        elif ltype == "card":
-            cards.append({
-                "id": layer.get("id"),
-                "cardType": layer.get("cardType"),
-                "title": layer.get("title"),
-                "quote": layer.get("quote")
-            })
-        elif ltype == "ai":
-            ai_entry = {"id": layer.get("id"), "asset": layer.get("asset")}
-            if layer.get("parent"):
-                ai_entry["parent"] = layer.get("parent")
-            if layer.get("pivot"):
-                ai_entry["pivot"] = layer.get("pivot")
-            if layer.get("poses"):
-                ai_entry["poses"] = [p.get("asset") for p in layer["poses"]]
-            if layer.get("gait"):
-                ai_entry["gait"] = layer.get("gait", {}).get("mode")
-            ai_assets.append(ai_entry)
-        elif ltype == "code":
-            code_draws.append({"id": layer.get("id"), "draw": layer.get("draw")})
-        elif ltype == "hud":
-            hud_types.append({"id": layer.get("id"), "hudType": layer.get("hudType")})
-        elif ltype == "component":
-            components.append({"id": layer.get("id"), "component": layer.get("component")})
-        elif ltype == "video":
-            # The clip's own facts live in the prepared manifest row S2 wrote
-            # (source_duration / shot_duration / upscale). Reading them here
-            # gives the reviewer what the material IS and whether it was
-            # enlarged — without them the shot's subject is invisible in the
-            # review material.
+        kind = layer.get("type")
+        if kind == "component":
+            checklist["components"].append({"id": layer.get("id"), "component": layer.get("component")})
+        elif kind in ("ai", "video"):
             entry = {"id": layer.get("id"), "asset": layer.get("asset")}
-            row = None
-            try:
-                row = manifest.verified("prepared", f"{shot_id}/{layer.get('asset')}")
-            except Exception:
-                row = None
-            if row:
+            if kind == "video":
+                row = manifest.verified("prepared", f"{spec['id']}/{layer.get('asset')}") or {}
                 for field in ("source_duration", "shot_duration", "upscale"):
                     if row.get(field) is not None:
                         entry[field] = row[field]
-            video_assets.append(entry)
-
-    return {
-        "texts": texts,
-        "cards": cards,
-        "ai_assets": ai_assets,
-        "code_draws": code_draws,
-        "hud_types": hud_types,
-        "video_assets": video_assets,
-        "components": components
-    }
+            checklist[kind + "_assets"].append(entry)
+    return checklist
 
 
 def probe_video_dims(mp4_path):
@@ -118,9 +77,10 @@ def probe_video_dims(mp4_path):
 
 def contact_sheet_cell(vw, vh, long_side=640):
     """Tile cell size that preserves the video's aspect ratio. The old hardcoded
-    scale=360:640 squashed any landscape (16:9) shot into a portrait cell."""
+    scale=360:640 squashed any landscape (16:9) shot into a portrait cell. If
+    ffprobe cannot determine the dimensions, keep a neutral square cell."""
     if not vw or not vh:
-        return 360, 640  # probe failed: keep the historical portrait default
+        return (long_side, long_side)
     if vh >= vw:
         return round(long_side * vw / vh), long_side
     return long_side, round(long_side * vh / vw)
@@ -129,7 +89,9 @@ def contact_sheet_cell(vw, vh, long_side=640):
 def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"):
     cols, rows = map(int, grid.split("x"))
     total_samples = cols * rows
-    step = max(1, duration_frames // total_samples)
+    # Sample exactly total_samples frames, evenly spread across the shot; short
+    # shots use every frame.
+    step = max(1, (duration_frames + total_samples - 1) // total_samples)
 
     vw, vh = probe_video_dims(mp4_path)
     cw, ch = contact_sheet_cell(vw, vh)
@@ -147,37 +109,6 @@ def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"
     subprocess.run(cmd, check=True)
     return out_sheet_path
 
-
-AUDIT_CRITERIA = [
-    "text_legibility: All title/subtitle/quote texts readable without character corruption or overlap",
-    "subject_fidelity: Visual subject matches the declared asset of its layer — an AI image, "
-    "a video clip, or a Code draw — without stretch",
-    "source_resolution: If the shot's asset was upscaled to reach the canvas size (the "
-    "prepared manifest row records source_size and upscale), judge whether the resulting "
-    "softness is acceptable — a clip generated below the canvas resolution is enlarged, "
-    "and the enlargement eats fine detail",
-    "source_duration: If the shot's clip is shorter or longer than the shot itself (the "
-    "prepared manifest row records source_duration and shot_duration), judge whether the "
-    "repetition or the cut is intentional — a short clip loops or freezes at the tail",
-    "motion_coherence: Motion animates smoothly and logically across contact sheet frames",
-    "composition_diversity: This shot's skeleton (layout zones, title/caption/HUD placement, "
-    "entrance style) must differ from sibling shots in the same episode — an identical "
-    "badge/title/box/capsule stack repeated across sheets is a FAIL even when every frame is clean",
-    "spatial_coherence: Foreground layers and sprites must respect the 2D/3D perspective and "
-    "physical aperture of the background plate — never float across stage pillars, frames, or "
-    "borders where the subject cannot physically exist (use clipRect or orthographic plates)",
-    "craft_authenticity: Complex organic, cultural, or traditional subjects (e.g. shadow puppets, "
-    "portraits, creatures) must use authentic high-detail AI/art assets rather than simplistic "
-    "geometric SVG stick-figures, and optical blending (cutout/multiply/screen) must match the medium",
-    "articulated_choreography: In action/combat/character shots, characters must not slide across "
-    "the canvas as a single rigid static PNG without limb/weapon swing or posture change — verify "
-    "child weapon/limb layers (parent + pivot) visibly swing across contact sheet frames, "
-    "multi-pose states (poses) switch on impact with coupled target reaction, and moving characters "
-    "declare gait (puppet/walk/shudder) + operatic staccato timing (snap/overshoot + hold/亮相)",
-    "caption_voice_sync: When both audio.voiceover and captions are present, subtitle clauses must "
-    "share the exact same text as audio.voiceover and switch on TTS speech boundaries (via sync-audio) "
-    "with zero truncated speech",
-]
 
 
 def sibling_sheets(shot_id):
@@ -219,19 +150,10 @@ def upsert_gate_entry(shot_id, pass_, status, sheet_rel, checklist_items, notes=
 
 def judge_instructions(shot_id, sheet_rel, checklist):
     """The prompt a driving agent (or human) consumes to judge the sheet."""
-    items = {k: [e.get("text") or e.get("title") or e.get("asset") or e.get("draw") or e.get("hudType") or e.get("id") for e in v]
-             for k, v in checklist.items()}
-    siblings = sibling_sheets(shot_id)
-    sib_line = (f"  sibling sheets (compare skeletons against these):\n"
-                + "".join(f"    - {s}\n" for s in siblings) if siblings else "")
     return (
-        f"\n[S5 judge] shot={shot_id}\n"
-        f"  sheet: {sheet_rel}\n"
-        f"  declared elements: {json.dumps(items, ensure_ascii=False)}\n"
-        f"{sib_line}"
-        f"  criteria:\n"
-        + "".join(f"    - {c}\n" for c in AUDIT_CRITERIA) +
-        f"  record: python3 pipeline.py judge --spec <spec> --verdict pass|fail --notes \"...\"\n"
+        f"\n[S5 judge] shot={shot_id}\n  sheet: {sheet_rel}\n"
+        f"  project checklist and declared resources: {json.dumps(checklist, ensure_ascii=False)}\n"
+        '  record: python3 pipeline.py judge --spec <spec> --verdict pass|fail --notes "..."\n'
     )
 
 
@@ -251,7 +173,9 @@ def generate(args):
     generate_contact_sheet(mp4_path, duration_frames, sheet_path, grid=args.grid)
 
     checklist = extract_checklist(spec)
-    total_items = sum(len(v) for v in checklist.values())
+    total_resources = (len(checklist["ai_assets"]) + len(checklist["video_assets"])
+                       + len(checklist["components"]))
+    total_checklist_items = len(checklist["project_checklist"])
 
     inspection_record = {
         "shot_id": shot_id,
@@ -259,8 +183,9 @@ def generate(args):
         "grid": args.grid,
         "durationInFrames": duration_frames,
         "checklist": checklist,
-        "total_checklist_items": total_items,
-        "audit_criteria": AUDIT_CRITERIA,
+        "total_resources": total_resources,
+        "total_checklist_items": total_checklist_items,
+        "audit_criteria": spec.get("checklist", []),
         "verdict": "pending_judge",
         "notes": None,
     }
@@ -269,9 +194,10 @@ def generate(args):
     with open(inspect_json, "w") as f:
         json.dump(inspection_record, f, indent=2, ensure_ascii=False)
 
-    upsert_gate_entry(shot_id, None, "pending_judge", sheet_rel, total_items)
+    upsert_gate_entry(shot_id, None, "pending_judge", sheet_rel, total_checklist_items)
 
-    print(f"PENDING visual_inspect contact_sheet_tile  {sheet_rel}  [{total_items} checklist items]")
+    print(f"PENDING visual_inspect contact_sheet_tile  {sheet_rel}  "
+          f"[{total_resources} resources, {total_checklist_items} checklist items]")
     print(judge_instructions(shot_id, sheet_rel, checklist))
     return 0
 
@@ -305,7 +231,7 @@ def record(args):
 
 def main():
     parser = argparse.ArgumentParser(description="S5: Visual Self-Audit Inspection")
-    parser.add_argument("--spec", default=None, help="Path to spec file (default: tests/fixtures/shot-01.poster.json)")
+    parser.add_argument("--spec", default=None, help="Path to spec file (required)")
     parser.add_argument("--grid", default="3x3", help="Contact sheet grid layout (default: 3x3)")
     parser.add_argument("--record", choices=["pass", "fail"], default=None,
                         help="Record a judge verdict instead of generating evidence")
