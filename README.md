@@ -1,56 +1,33 @@
-# Poster Video Pipeline (Code-Driven Single-Shot)
+# wrap — Zero-Template Video Pipeline
 
-A deterministic, code-driven video synthesis pipeline that compiles a structured shot specification (`spec/*.poster.json`) into 1080p 30fps video using 3 layers:
-1. **Code Background** (Procedural `grid` or `dots`)
-2. **AI Subject** (City silhouette, blend: multiply, edge keying)
-3. **Code Foreground** (Animated geometric accent `bar`)
+A deterministic, code-driven video synthesis pipeline. A structured shot
+specification (`spec/*.poster.json`) compiles through 5 decoupled stages
+into a gated 1080p video.
 
-AI subject layers may be still images or video clips. The pipeline drives native generation backends through `mcode-tools connector` — see [Native Generation Backends](#native-generation-backends).
+**The engine ships no design.** No palettes, no built-in components, no
+preset scenes, no preset audio, no placeholder assets, no built-in model
+catalog. It provides:
 
----
+- **Asset production** — the authoring LLM inspects currently available tools
+  (MCP tools, CLI commands) and decides the modality. If image/video tools exist,
+  the LLM uses them (directly or via project `models.json` / env vars); if no
+  generation tools exist in the session, the LLM authors procedural `component`
+  layers or reuses frozen manifest assets (which needs no model at all).
+- **Generic media compositing** — three layer types: `ai` (generated/frozen
+  still), `video` (generated/frozen clip), `component` (the project's own
+  React component), plus geometric choreography: keyframes, 2D parenting,
+  springs, camera zoom, clip timing.
+- **Broadcast audio** — optional TTS voiceover (mastered to −16 LUFS),
+  explicit-file music, or a compliant silent track.
+- **Deterministic verification** — zero-dependency pixel/audio metrics,
+  quality gates, contact-sheet judge loop.
 
-## Native Generation Backends
-
-The pipeline calls native image and video models through the connector, then
-freezes the result into `manifest.json` by sha256 — the same lockfile contract
-as any other asset. Once frozen, a clip is reused forever; re-renders stay
-bit-exact.
-
-**Images** — `connector__matrix__generate_image` (text-to-image, image-to-image
-via `input_urls`). S1 derives the request's aspect ratio from the spec canvas
-and normalizes the download to a true PNG before registering it.
-
-**Video** — `connector__matrix__submit_video_generation` +
-`connector__matrix__query_video_generation`. Asynchronous: submit returns a
-`task_id`, the task is polled until it succeeds, the clip is downloaded and
-frozen. A `type: "video"` layer in the spec consumes it.
-
-A video layer may also declare `first_frame` (aliases: `input_asset`,
-`input_image`), `last_frame`, `reference_type` and `reference_images`. The
-reference is resolved from any static source — a `code` layer (`grid`/`dots`),
-an `ai` layer asset, or a manually registered `manifest` asset — through one
-shared upload path, and the request switches to `ratio: "adaptive"` because
-keyframe mode does not take a concrete ratio. `reference_videos` /
-`reference_audios` are refused by `validate`: the backend accepts them, but
-S1 cannot resolve a video or audio source, so accepting them would silently
-drop the reference.
-
-Clip length is not a free number. Some backends accept a discrete set rather
-than a range — Hailuo-2.3 takes 6 or 10 seconds and nothing between, and
-1080P caps it at 6 — so `validate` rejects a duration the backend would
-refuse, and S1 rounds the shot length *up* to an accepted value (a 7-second
-shot asks for 10 and is trimmed back).
-
-| Model | Duration | Resolution | Native audio |
-|---|---|---|---|
-| `MiniMax-H3` | 4–15s | 768P, 2K | yes |
-| `MiniMax-H3-Max` | 5–15s | 480P, 768P | yes (~20s turnaround) |
-| `MiniMax-Hailuo-2.3` | 6/10s | 768P, 1080P | no |
-
-A video layer renders through Remotion's `Video` component; the clip is scaled
-to cover its rect and re-encoded at the shot's frame rate in S2. Audio
-ownership is exclusive — either the clip's native track or the pipeline's TTS
-chain is the main track, never both (see the Skill's "Audio ownership" rule).
+Everything visual is authored per video in the project's own components
+(`<project>/remotion-custom.tsx`, see below) and generated assets. Old
+vocabulary (`code` draws, `text`/`hud`/`card` layers, palettes, `vibe`/
+`plate`/`punches`, `gait`/`depth` presets, BGM presets, `--fixture`)
+validates to an explicit `migration required` error — it never renders
+silently.
 
 ---
 
@@ -60,252 +37,227 @@ chain is the main track, never both (see the Skill's "Audio ownership" rule).
 spec/*.json ───► [ S1: Generate ] ───► assets/*.png | *.mp4 ───► (manifest lockfile)
                          │
                          ▼
-                 [ S2: Prepare  ] ───► build/prepared/{shot}/*.png | *.mp4 (Fail-fast: key purity >= 0.98; video layers skip keying)
+                 [ S2: Prepare  ] ───► build/prepared/{shot}/*.png | *.mp4 (fail-fast key purity ≥ 0.98; clips re-encoded to shot fps)
                          │
                          ▼
-                 [ S3: Compose  ] ───► build/frames/{shot}/*.png + build/*.mp4 (Remotion render engine)
+                 [ S3: Compose  ] ───► build/frames/{shot}/*.png + build/{shot}.mp4 (Remotion render engine)
                          │
                          ▼
-                 [ S4: Gate     ] ───► build/gates/{shot}.json (Zero-dependency rawvideo pixel metrics + audio QC)
+                 [ S4: Gate     ] ───► build/gates/{shot}.json (zero-dependency rawvideo pixel metrics + audio QC)
                          │
                          ▼
                  [ S5: Inspect  ] ───► build/contact_sheet_{shot}.png + build/inspection_{shot}.json (verdict pending judge)
 ```
 
-| Stage | Command / Script | Inputs | Outputs | Exit Code Contract |
-|---|---|---|---|---|
-| **S1** | `stages/01_generate.py` | `spec/`, `manifest.json` | `assets/*.png`, `manifest.json` | `0` = Assets ready & verified; `1` = Error |
-| **S2** | `stages/02_prepare.py` | `assets/`, `spec/` | `build/prepared/{shot}/*.png` | `0` = Scaled & pure; `1` = Blocked by key purity `< 0.98` |
-| **S3** | `stages/03_compose.py` (Remotion) | `build/prepared/{shot}/`, `spec/` | `build/frames/{shot}/%05d.png`, `build/*.mp4` | `0` = 150 frames & MP4 encoded |
-| **S4** | `stages/04_gate.py` | `build/frames/{shot}/`, `build/*.mp4` | `build/gates/{shot}.json` | `0` = All gates pass; `1` = Quality violation |
-| **S5** | `stages/05_inspect.py` | `build/{shot}.mp4`, `spec/` | `build/contact_sheet_{shot}.png`, `build/inspection_{shot}.json` | `0` = Evidence generated (verdict `pending_judge`) |
-| **S5+** | `pipeline.py judge --verdict pass\|fail` | contact sheet + checklist | verdict in `inspection_{shot}.json` + `build/gates/{shot}.json` | `0` = judged pass; `1` = judged fail |
+| Stage | Script | Contract | Exit |
+|---|---|---|---|
+| **S1** | `stages/01_generate.py` | Fetch/generate assets into `assets/`, freeze sha256; generation parameters validated against declared capabilities *before* the call | `0` / `1` |
+| **S2** | `stages/02_prepare.py` | Key purity ≥ 0.98, aspect-true scaling, clip re-encode to shot fps → `build/prepared/{shot}/` | `0` / `1` |
+| **S3** | `stages/03_compose.py` | Remotion render → frames + mp4 (BT.709, mastered audio); renderer failures are hard errors with the renderer's own output | `0` / `1` |
+| **S4** | `stages/04_gate.py` | Motion/accent/purity/freeze + audio QC (LUFS in [−19, −13], AV sync ≤ 100 ms); color gates must declare their `color` explicitly | `0` / `1` |
+| **S5** | `stages/05_inspect.py` | Contact sheet + project-declared checklist; verdict `pending_judge` | `0` |
+| **S5+** | `pipeline.py judge` | Judge (model or human) records the verdict; `fail` is a hard gate | `0` / `1` |
 
-S5 splits evidence from verdict: the pipeline never claims a shot *looks* right — a judge (model or human) reads the contact sheet against the spec-declared checklist and records the verdict, which then becomes a hard gate. Prepared artifacts are namespaced per shot (`build/prepared/{shot_id}/`) so a shared `bg` layer can no longer let one shot's style silently overwrite another's.
+S5 splits evidence from verdict: the pipeline never claims a shot *looks*
+right — a judge reads the contact sheet against the spec's checklist.
 
----
+### Layer vocabulary (the whole of it)
 
-## Core Invariants
+- **`ai`** — a still image: `asset`, generation `prompt`/`input_asset`/
+  `reference_images`, `keyColor`+`blend` keying, `cutout`, `poses`
+  (frame-switched sprite swaps), `motion.zoom`, `fit`.
+- **`video`** — a clip: `asset`, generation `model`/`duration`/
+  `resolution`/`first_frame`/`last_frame`/`reference_images`, `trim`,
+  `playbackRate`, `loop`, `muted`, `fit`, `motion.zoom`.
+- **`component`** — a project-registered React component: `component` name +
+  opaque `props`. The component owns its positioning and every visual
+  choice; the engine throws on an unregistered name or missing media.
 
-1. **Manifest Authority (Lockfile Pattern)**:
-   AI asset generation and TTS speech synthesis are non-reentrant (no seed parameter / network jitter). Once generated, assets and TTS audio are frozen in `manifest.json` / `assets/` by `sha256`. Subsequent runs strictly reuse verified assets (`spec + manifest -> identical sha256` on audio and pure-graphic shots; note that layers with Chromium-rendered text such as `text`, `captions`, `card`, or `hud` can show ±8/255 font anti-aliasing rounding jitter across runs).
-2. **Zero-Dependency Pixel Metrics**:
-   Bypasses unstable FFmpeg `geq` filter expressions. Uses `ffmpeg -f rawvideo -> Python stdlib` with bit-twiddling (`bytes.translate`, `int.from_bytes`, and `bit_count` popcounts) for lightning-fast and resolution-independent pixel analysis.
-3. **Fail-Fast Keying Purity**:
-   Outer 8px perimeter is measured before composition. Impure backgrounds are rejected at S2 before spending compute on composition.
+**Shared:** `z` (unique stacking), `anim` keyframes (`x/y/scale/opacity/rotate/
+flipX` + per-segment ease), `parent`/`pivot`/`joint`/`socket` (2D skeletal
+parenting), `spring` (`omega`/`zeta`/`coupling`/`channel`/`driverChannel`/`maxAccel` — **all required**), `clipRect`, `flipX`.
+
+**Freeze/black opt-outs:** a shot spec can declare `frame_freeze: true` to permit
+frozen frames; a timeline can declare `allow_black: true` to permit intentional
+black frames. Use them only when intent is real.
+
+**`spec.tracks`** is non-visual time data: `captions` (subtitle timings,
+rendered by project components), `events` (beats/contacts consumed by
+`verify-combat` and components), and arbitrary project-defined named timing
+tracks (same shape: ordered non-decreasing `frame` ints; `captions` strictly
+increasing). No track carries visual semantics.
+
+### Modality & Generation: The LLM Decides From Available Tools
+
+`core/generation/models.py` starts **empty** and ships no built-in models.
+**The authoring LLM inspects its current tools and makes the decision:**
+
+1. **Tool Inspection**: The LLM checks available agent/MCP tools in the session
+   or terminal CLIs (`which mcode-tools`).
+2. **Modality Choice**:
+   - If image/video tools exist: the LLM chooses models and parameters from what
+     the tools support.
+   - If no generation tools exist: the LLM creates procedural React `component`
+     layers (100% deterministic, zero cost) or reuses frozen assets.
+3. **Capabilities Configuration**:
+   Capabilities can be provided via project `models.json` (`POSTER_ROOT/models.json`
+   or `spec/models.json`) or environment variables:
+
+| Source | Carries |
+|---|---|
+| `models.json` or `POSTER_MODELS_JSON` | video models: `min_dur`/`max_dur`, `resolutions`, optional `durations`, `ratios`, `reference_types`, `audio`/`input_image`/`last_frame`/`reference_media` |
+| `models.json` or `POSTER_IMAGE_CAPABILITIES_JSON` | image models: `aspect_ratios`, `areas` |
+| `models.json` or `POSTER_VIDEO_MODEL` / `POSTER_IMAGE_MODEL` | default model (single candidate auto-defaults) |
+| `POSTER_IMAGE_AREA` | default image size tier |
+
+Resolution ladder: explicit layer parameter > project/env default > the
+model's single declared value > explicit error (before any paid call).
+The `mcode-tools` connector is a transport adapter. Shots that reuse frozen
+assets, or carry no generation at all, run with zero capabilities.
+
+### Audio
+
+**Default is silent.** No `audio` block means a compliant 44100 Hz silent
+track is produced (S4 exempts it by design). Add audio ONLY when deliberately
+desired: `audio.voiceover` (optional TTS; requires an explicit `voice` — no
+default narrator is provided), `audio.bgm`
+(**explicit file path only** — no presets, a missing file errors), or an
+unmuted clip track; mixing TTS/BGM and an unmuted clip in one shot is refused
+at validate/S3 ("audio conflict"). Never invent music with code just because
+it is possible. `sync-audio` warps
+`durationInFrames`, `tracks.captions` and every layer's keyframes to the
+TTS clause boundaries. At most one video layer may set `muted: false`.
 
 ---
 
 ## Quality Gates
 
-| Gate | Metric | Definition | Threshold |
-|---|---|---|---|
-| `motion` | `changed_pixel_ratio` | Median fraction of pixels with Luma $\Delta > 6$ | `[0.0005, 0.08]` |
-| `subject` | `subject_motion_ratio` | Median fraction of pixels with Luma $\Delta > 6$ excluding bar region | `[0.0005, 0.08]` |
-| `red` | `red_pixel_ratio` | Median fraction of red accent mask pixels | `[0.002, 0.02]` |
-| `accent` | `accent_color_ratio` | Median fraction of accent color mask pixels | `[0.002, 0.02]` |
-| `keyPurity` | `edge_key_purity` | Fraction of outer 8px border matching key color within tolerance | `≥ 0.98` |
-| `freeze` | `freezedetect` | Unintended frozen segments | `0` segments |
+Gates are declarative in the spec (`spec.gates`); S4 measures them on the
+ungraded frames.
+
+| Metric | Definition |
+|---|---|
+| `changed_pixel_ratio` | median fraction of pixels with Luma Δ > threshold |
+| `subject_motion_ratio` | same, excluding a declared region |
+| `accent_color_ratio` / `red_pixel_ratio` | mask fraction — the gate must declare its `color` explicitly |
+| `edge_key_purity` | outer 8px border matching the key color (≥ 0.98, S2 fail-fast) |
+| `freezedetect` | unintended frozen segments = 0 |
+
+Audio QC: silence floor > −45 dB, LUFS in [−19, −13] (BGM-only shots land
+at exactly −16.0; mixed voiceover+bgm in [−16, −15]; silent shots ~ −91 dB),
+AV sync ≤ 100 ms.
+
+`concat` adds whole-film gates the per-shot pass cannot see: timeline
+duration delta ≤ 250 ms, zero digital-black intervals, whole-track
+silence/loudness, AV alignment ≤ 250 ms, per-segment loudness jump ≤ 3 LU.
 
 ---
 
 ## Quick Start
 
-### 1. Prerequisites
-- `ffmpeg` (version >= 5.0 recommended, with `x264`, `freezedetect`)
-- `python3` (version >= 3.10 required — the engine uses `int.bit_count()`; standard library only). `make` auto-detects the newest usable interpreter (`python3.13` → `python3.12` → `python3.11` → `python3.10` → `python3`); if none is ≥ 3.10, the pipeline fails fast with a clear error. Pin explicitly with `make PY=python3.12 verify` if your install needs it.
-- `node` (version >= 18.0) and `npm` (run `npm install` for Remotion dependencies)
-- `mcode-tools` — the CLI the native generation backends are driven through
-  (image: `connector__matrix__generate_image`; video:
-  `connector__matrix__submit_video_generation`). Without it the pipeline can
-  still run end to end on assets you register yourself — see
-  [Native Generation Backends](#native-generation-backends).
+### Prerequisites
 
-### 2. Verify and Test
+- `ffmpeg` (≥ 5.0, with `x264`, `freezedetect`)
+- `python3` ≥ 3.10 (the engine uses `int.bit_count()`; `make` auto-detects
+  `python3.13→3.12→3.11→3.10`; pin with `make PY=python3.12 verify`)
+- `node` (≥ 18) + `npm install` for the Remotion engine
+- `mcode-tools` connector — **only** for shots that generate assets;
+  register your own assets (or reuse frozen ones) to run without it
+
+### Run
+
 ```bash
-make verify
-# or, with a >= 3.10 interpreter explicitly
-python3 pipeline.py test
-```
+make verify                       # regression suite (offline, no billed calls)
 
-### 3. Initialize a New Shot
-```bash
-python3 pipeline.py init-shot my-shot
-```
+# a zero-design skeleton — canvas/fps/frames are explicit, layers start empty
+python3 pipeline.py init-shot my-shot --canvas 1080 1920 --fps 30 --frames 450
 
-### 4. Run Pipeline
-```bash
-# Rehearse the whole pipeline for free first: --fixture writes deterministic
-# placeholder assets instead of calling a (billed) model. The placeholders
-# are registered in the ledger, so a later real run reuses them — pass
-# --force to S1 when you want the generated asset instead.
-python3 pipeline.py run --spec spec/my-shot.poster.json --fixture
-
-# Full execution (validate -> S1 -> S2 -> S3 -> S4 -> S5)
-make run
-# or
 python3 pipeline.py run --spec spec/my-shot.poster.json
-
-# Judge the contact sheet after review (closes the S5 loop)
 python3 pipeline.py judge --spec spec/my-shot.poster.json --verdict pass --notes "..."
-
-# Clean build artifacts
-make clean
+python3 pipeline.py run --timeline spec/timeline.json --output build/film.mp4
 ```
 
-#### Using a generated video clip
-
-A spec layer of `"type": "video"` pulls in a generated clip:
+#### A generated clip (when the environment declares video capability)
 
 ```json
-{
-  "id": "hero-clip",
-  "type": "video",
-  "asset": "h3-push-in",
-  "rect": [0, 0, 1080, 1920],
-  "z": 0,
-  "plate": false,
-  "model": "MiniMax-H3-Max",
-  "duration": 6,
-  "muted": true
-}
+{"id": "hero-clip", "type": "video", "asset": "push-in",
+ "rect": [0, 0, 1080, 1920], "z": 0,
+ "model": "<declared-model>", "duration": 6, "muted": true}
 ```
 
-```bash
-python3 pipeline.py run --spec spec/my-shot.poster.json
-```
+S1 submits (validated against declared capabilities *before* the paid
+call), polls, downloads, and freezes the clip by sha256. Later runs reuse
+the frozen clip — no regeneration unless `--force`. Discrete-acceptance
+backends are honored: `validate` rejects a duration the backend would
+refuse, and S1 rounds the shot length up to an accepted value.
 
-S1 submits the clip, polls until the model finishes, downloads it and freezes
-it by sha256 — this is the slow, billed step (`MiniMax-H3-Max` ~20s,
-`MiniMax-H3` 15–30 min). Later runs reuse the frozen clip. `model`,
-`duration`, `resolution` and `ratio` are validated before the call, so a typo
-is rejected by `validate` rather than by a paid request. `muted` decides who
-owns the audio: `true` (default) leaves the clip silent and the spec's
-`audio.voiceover` owns the soundtrack; `false` keeps the clip's native track
-and `audio.voiceover` must then be left empty for that shot. A timeline whose
-shots disagree on that is refused by `concat`, because the concat demuxer
-would silently drop every audio track.
-
-**Time window.** Without `trim`, the renderer takes the clip from its start: a
-clip longer than the shot is cut at the shot's length, a shorter one loops.
-`trim: [startSec, endSec]` selects a window instead; the seconds are read at
-the shot's frame rate, since S2 re-encodes every clip to that rate.
-
-#### Image-to-image
-
-An `ai` layer can derive from an already-frozen asset:
+#### A generated still
 
 ```json
-{
-  "id": "hero-plate",
-  "type": "ai",
-  "asset": "snowy-skyline",
-  "input_asset": "my-base-asset",
-  "prompt": "a snowy version of the same skyline, cold blue light",
-  "keyColor": "#ffffff",
-  "blend": "multiply",
-  "rect": [0, 0, 1080, 1920],
-  "z": 0
-}
+{"id": "hero-plate", "type": "ai", "asset": "skyline",
+ "prompt": "...", "keyColor": "#ffffff", "blend": "multiply",
+ "rect": [0, 0, 1080, 1920], "z": 0}
 ```
 
-`input_asset` names a manifest asset. S1 uploads it, passes the temporary URL
-to the backend and freezes the derived image like any other asset. A layer's
-`prompt` replaces the style's `subject`/`composition`; `background` and
-`exclude` still apply as global constraints.
-
-### 5. Concatenate Shots via Timeline
-```bash
-python3 pipeline.py concat --timeline spec/timeline.json --output build/my-film.mp4
-```
-Concat also runs **full-video gates** on the assembled output (duration vs timeline, blackdetect, whole-track silence/loudness, A/V alignment, per-shot loudness jump ≤3 LU), written per timeline to `build/gates_full_{timeline}.json`; exit 1 on any red. Per-shot gates cannot see cross-shot seams — this is the layer that does.
-
-### 6. Run the Whole Film in One Command
-```bash
-python3 pipeline.py run --timeline spec/timeline.json --output build/my-film.mp4
-```
-
-`run --timeline` renders every shot of a timeline **in order**, freezes the seams as it goes, then assembles and runs the full-video gates. The order matters: shot k+1's `first_frame` may name the asset shot k produces, so shot k has to be generated before shot k+1's S1 runs.
-
-A seam is a name, not a flag. If the next shot references an asset called `<something>-tail` (e.g. `"first_frame": "shot-01-tail"`) and nothing is frozen under that name yet, the current shot's rendered last frame is frozen under it — between shot k's render and shot k+1's S1, the only moment it can exist. `--fixture` rehearses the whole film for free; `--force` re-generates assets instead of reusing the frozen ones.
+`input_asset` / `reference_images` name frozen assets for image-to-image
+fusion. S1 normalizes every download to a true PNG before freezing.
 
 ---
 
 ## Repository Layout
 
-This repository is the **engine** (the skill). It contains no shot specs or
-generated assets — those live in a **project** directory (e.g. an examples
-repo) that the engine renders. Point the pipeline at a project with
-`POSTER_ROOT`:
+This repository is the **engine** (and its packaged skill). It contains no
+shot specs or generated assets — those live in a **project** directory
+pointed at with `POSTER_ROOT`:
 
 ```bash
-cd /path/to/my-project          # contains spec/, assets/, manifest.json
+cd /path/to/my-project        # contains spec/, assets/, manifest.json, remotion-custom.tsx
 POSTER_ROOT=$PWD python3 /path/to/wrap/pipeline.py run --spec spec/my-shot.poster.json
 ```
 
 ```
-pipeline.py            Unified CLI: validate / generate / prepare / compose / gate / inspect / judge / run / concat / extract-frame / test
-core/                  Shared runtime
-  runtime/             Engine/project roots and frozen-asset ledger
-  spec/                Contract vocabulary, channel/layer/shot/timeline validation, joint resolution, state handoff
-  generation/          S1 transport: connector calls, image/video submit & poll, uploads, fixtures
-  rendering/           S3 implementation: timeline parity, frame extraction, Remotion driver,
-                       Quartz fallback, mp4 encode
+pipeline.py            Unified CLI: validate / generate / prepare / compose / gate /
+                       inspect / judge / run / concat / extract-frame / init-shot /
+                       sync-audio / verify-* / detect-punches / test / clean
+core/
+  runtime/             Engine/project roots and the frozen-asset ledger (manifest.json)
+  spec/                Contract vocabulary + shot/layer/timeline validation, joint
+                       resolution, state handoff
+  generation/          S1 transport: connector calls, image/video submit & poll, uploads
+  rendering/           S3: Remotion driver (the only render engine), timeline parity,
+                       frame extraction, mp4 encode (BT.709, mastered audio)
   assembly/            Timeline assembly domain logic (no argparse / sys.exit)
-  media/               PNG IO, procedural drawing, fingerprints, canvas geometry
-  quality/             Pixel quality measurements
-  audio/               TTS, BGM, mastering, caption timing, shot mixing, sync, and audio metrics
-  rig/                 Sprite processing, kits, poses, kinematics, choreography, and verification
-
+  media/               PNG IO, fingerprints, canvas geometry
+  quality/             Zero-dependency pixel measurements
+  audio/               TTS, mastering, caption timing, shot mixing, sync, audio metrics
+  rig/                 Sprite processing, kits, poses, kinematics, geometric verification
 stages/                S1–S5 stage entry points
-renderers/quartz/      Native Swift fallback renderer
-remotion/              TypeScript renderer (React) — the S3 render engine
-tests/                 Regression suite (make verify), grouped by what it covers:
-                         contract/  spec contract vs renderer, both directions
-                         core/      the core/ runtime: runtime, spec, generation, media, audio, rig
-                         stages/    the S1-S5 stage scripts
-                         pipeline/  the whole pipeline end to end (run, concat, first run)
-                         renderer/  the native Quartz renderer (macOS)
-                       fixtures live in tests/fixtures/
-skills/                The packaged Agent Skill (skills/wrap/)
+remotion/              TypeScript render engine (React/Remotion): bare canvas + the
+                       three layer types + project-component registry (project-custom alias)
+tests/                 Regression suite (make verify), grouped by target:
+                       contract/ (spec contract vs renderer, both directions,
+                       migration rejections), core/, stages/, pipeline/, renderer/
+                       fixtures + helpers live in tests/ — never in the production path
+skills/wrap/           The packaged Agent Skill (symlinked into ~/.agents/skills/wrap)
 ```
 
-### Module locations
-
-The `core/` root contains only `__init__.py` and subpackages, with no
-implementation files or compatibility entry points. Import from these modules:
-
-| Responsibility | Module |
-|---|---|
-| Engine/project roots | `core.runtime.config` |
-| Frozen asset ledger | `core.runtime.manifest` |
-| Model capability catalog | `core.generation.models` |
-| Public spec API | `core.spec` |
-| Vocabulary (`DRAWS`) | `core.spec.constants` |
-| Shot / layer validation | `core.spec.shot` / `core.spec.layers` |
-| Timeline validation and beats | `core.spec.timeline` |
-| Spec loading / state inheritance | `core.spec.loader` / `core.spec.state` |
-| Naming / joint resolution | `core.spec.naming` / `core.spec.resolution` |
-| Drawing / PNG / pixel quality | `core.media.draw` / `core.media.png` / `core.quality.pixels` |
-| Rendering | `core.rendering` |
-
-Target the defining modules for assignments, mocks, and reloads. The public
-`core.audio` and `core.rig` package APIs remain available.
-
-A project directory holds `spec/` (shot specs, styles, timelines), `assets/`
-(frozen AI-generated images, sha256 in `manifest.json`), `build/` (outputs),
-and optionally `remotion-custom.tsx` (project-specific custom components,
-aliased in as the `project-custom` module — see `remotion.config.ts`).
+A project directory holds `spec/` (shot specs, timelines, checklists),
+`assets/` (frozen media, sha256 in `manifest.json`), `build/` (outputs), and
+`remotion-custom.tsx` — its own visual components, exported as
+`CUSTOM_COMPONENTS` and aliased in by `remotion.config.ts` as `project-custom`
+when `POSTER_ROOT` points at the project. **Author these components per
+video; the engine ships none.**
 
 Run a stage directly when debugging it:
+
 ```bash
 python3 stages/03_compose.py --spec spec/my-shot.poster.json
 ```
 
----
-
 ## Reusable Agent Skill
 
-This pipeline is packaged as a reusable Agent Skill located at:
-- Repository source: `skills/wrap/`
-- Installed agent skill: `/Users/kelen/.agents/skills/wrap/`
+Packaged at `skills/wrap/` (installed as a symlink at
+`~/.agents/skills/wrap`). It carries the operating manual: the zero-template
+contract, the layer/tracks protocol, the generation capability schema, audio
+rules, stage table, timelines, rigging, and the measured authoring
+pitfalls.
