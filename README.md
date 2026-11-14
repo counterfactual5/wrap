@@ -25,6 +25,22 @@ and normalizes the download to a true PNG before registering it.
 `task_id`, the task is polled until it succeeds, the clip is downloaded and
 frozen. A `type: "video"` layer in the spec consumes it.
 
+A video layer may also declare `first_frame` (aliases: `input_asset`,
+`input_image`), `last_frame`, `reference_type` and `reference_images`. The
+reference is resolved from any static source — a `code` layer (`grid`/`dots`),
+an `ai` layer asset, or a manually registered `manifest` asset — through one
+shared upload path, and the request switches to `ratio: "adaptive"` because
+keyframe mode does not take a concrete ratio. `reference_videos` /
+`reference_audios` are refused by `validate`: the backend accepts them, but
+S1 cannot resolve a video or audio source, so accepting them would silently
+drop the reference.
+
+Clip length is not a free number. Some backends accept a discrete set rather
+than a range — Hailuo-2.3 takes 6 or 10 seconds and nothing between, and
+1080P caps it at 6 — so `validate` rejects a duration the backend would
+refuse, and S1 rounds the shot length *up* to an accepted value (a 7-second
+shot asks for 10 and is trimmed back).
+
 | Model | Duration | Resolution | Native audio |
 |---|---|---|---|
 | `MiniMax-H3` | 4–15s | 768P, 2K | yes |
@@ -72,7 +88,7 @@ S5 splits evidence from verdict: the pipeline never claims a shot *looks* right 
 ## Core Invariants
 
 1. **Manifest Authority (Lockfile Pattern)**:
-   AI asset generation is non-reentrant (no seed parameter). Once generated, assets are recorded in `manifest.json` with their `sha256` checksum. Subsequent runs strictly reuse verified assets, ensuring bit-for-bit reproducibility of the final MP4 (`spec + manifest -> identical sha256`).
+   AI asset generation and TTS speech synthesis are non-reentrant (no seed parameter / network jitter). Once generated, assets and TTS audio are frozen in `manifest.json` / `assets/` by `sha256`. Subsequent runs strictly reuse verified assets (`spec + manifest -> identical sha256` on audio and pure-graphic shots; note that layers with Chromium-rendered text such as `text`, `captions`, `card`, or `hud` can show ±8/255 font anti-aliasing rounding jitter across runs).
 2. **Zero-Dependency Pixel Metrics**:
    Bypasses unstable FFmpeg `geq` filter expressions. Uses `ffmpeg -f rawvideo -> Python stdlib` with bit-twiddling (`bytes.translate`, `int.from_bytes`, and `bit_count` popcounts) for lightning-fast and resolution-independent pixel analysis.
 3. **Fail-Fast Keying Purity**:
@@ -97,7 +113,7 @@ S5 splits evidence from verdict: the pipeline never claims a shot *looks* right 
 
 ### 1. Prerequisites
 - `ffmpeg` (version >= 5.0 recommended, with `x264`, `freezedetect`)
-- `python3` (version >= 3.10, standard library only)
+- `python3` (version >= 3.10 required — the engine uses `int.bit_count()`; standard library only). `make` auto-detects the newest usable interpreter (`python3.13` → `python3.12` → `python3.11` → `python3.10` → `python3`); if none is ≥ 3.10, the pipeline fails fast with a clear error. Pin explicitly with `make PY=python3.12 verify` if your install needs it.
 - `node` (version >= 18.0) and `npm` (run `npm install` for Remotion dependencies)
 - `mcode-tools` — the CLI the native generation backends are driven through
   (image: `connector__matrix__generate_image`; video:
@@ -108,7 +124,7 @@ S5 splits evidence from verdict: the pipeline never claims a shot *looks* right 
 ### 2. Verify and Test
 ```bash
 make verify
-# or
+# or, with a >= 3.10 interpreter explicitly
 python3 pipeline.py test
 ```
 
@@ -204,6 +220,15 @@ python3 pipeline.py concat --timeline spec/timeline.json --output build/my-film.
 ```
 Concat also runs **full-video gates** on the assembled output (duration vs timeline, blackdetect, whole-track silence/loudness, A/V alignment, per-shot loudness jump ≤3 LU), written per timeline to `build/gates_full_{timeline}.json`; exit 1 on any red. Per-shot gates cannot see cross-shot seams — this is the layer that does.
 
+### 6. Run the Whole Film in One Command
+```bash
+python3 pipeline.py run --timeline spec/timeline.json --output build/my-film.mp4
+```
+
+`run --timeline` renders every shot of a timeline **in order**, freezes the seams as it goes, then assembles and runs the full-video gates. The order matters: shot k+1's `first_frame` may name the asset shot k produces, so shot k has to be generated before shot k+1's S1 runs.
+
+A seam is a name, not a flag. If the next shot references an asset called `<something>-tail` (e.g. `"first_frame": "shot-01-tail"`) and nothing is frozen under that name yet, the current shot's rendered last frame is frozen under it — between shot k's render and shot k+1's S1, the only moment it can exist. `--fixture` rehearses the whole film for free; `--force` re-generates assets instead of reusing the frozen ones.
+
 ---
 
 ## Repository Layout
@@ -219,15 +244,53 @@ POSTER_ROOT=$PWD python3 /path/to/wrap/pipeline.py run --spec spec/my-shot.poste
 ```
 
 ```
-pipeline.py            Unified CLI: validate / generate / prepare / compose / gate / inspect / judge / run / concat / test
-stages/                One script per stage: 01_generate … 05_inspect
-core/                  Shared runtime: schema (spec contract), manifest (frozen-file ledger),
-                       metrics (pixel QC), audio (TTS + mastering), render (frame & encoder fingerprints),
-                       draw / png (procedural layers), rig (sprite rigging & IK)
+pipeline.py            Unified CLI: validate / generate / prepare / compose / gate / inspect / judge / run / concat / extract-frame / test
+core/                  Shared runtime
+  runtime/             Engine/project roots and frozen-asset ledger
+  spec/                Contract vocabulary, channel/layer/shot/timeline validation, joint resolution, state handoff
+  generation/          S1 transport: connector calls, image/video submit & poll, uploads, fixtures
+  rendering/           S3 implementation: timeline parity, frame extraction, Remotion driver,
+                       Quartz fallback, mp4 encode
+  assembly/            Timeline assembly domain logic (no argparse / sys.exit)
+  media/               PNG IO, procedural drawing, fingerprints, canvas geometry
+  quality/             Pixel quality measurements
+  audio/               TTS, BGM, mastering, caption timing, shot mixing, sync, and audio metrics
+  rig/                 Sprite processing, kits, poses, kinematics, choreography, and verification
+
+stages/                S1–S5 stage entry points
+renderers/quartz/      Native Swift fallback renderer
 remotion/              TypeScript renderer (React) — the S3 render engine
-tests/                 Regression suite (make verify); fixtures live in tests/fixtures/
+tests/                 Regression suite (make verify), grouped by what it covers:
+                         contract/  spec contract vs renderer, both directions
+                         core/      the core/ runtime: runtime, spec, generation, media, audio, rig
+                         stages/    the S1-S5 stage scripts
+                         pipeline/  the whole pipeline end to end (run, concat, first run)
+                         renderer/  the native Quartz renderer (macOS)
+                       fixtures live in tests/fixtures/
 skills/                The packaged Agent Skill (skills/wrap/)
 ```
+
+### Module locations
+
+The `core/` root contains only `__init__.py` and subpackages, with no
+implementation files or compatibility entry points. Import from these modules:
+
+| Responsibility | Module |
+|---|---|
+| Engine/project roots | `core.runtime.config` |
+| Frozen asset ledger | `core.runtime.manifest` |
+| Model capability catalog | `core.generation.models` |
+| Public spec API | `core.spec` |
+| Vocabulary (`DRAWS`) | `core.spec.constants` |
+| Shot / layer validation | `core.spec.shot` / `core.spec.layers` |
+| Timeline validation and beats | `core.spec.timeline` |
+| Spec loading / state inheritance | `core.spec.loader` / `core.spec.state` |
+| Naming / joint resolution | `core.spec.naming` / `core.spec.resolution` |
+| Drawing / PNG / pixel quality | `core.media.draw` / `core.media.png` / `core.quality.pixels` |
+| Rendering | `core.rendering` |
+
+Target the defining modules for assignments, mocks, and reloads. The public
+`core.audio` and `core.rig` package APIs remain available.
 
 A project directory holds `spec/` (shot specs, styles, timelines), `assets/`
 (frozen AI-generated images, sha256 in `manifest.json`), `build/` (outputs),
