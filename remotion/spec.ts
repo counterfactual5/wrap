@@ -12,13 +12,38 @@ export type GeometricMotion = {
   pan?: [number, number];
 };
 
-export type Ease = 'linear' | 'in' | 'out' | 'inout';
+export type Ease = 'linear' | 'in' | 'out' | 'inout' | 'snap' | 'overshoot' | 'step';
 
 /** [frame, value] or [frame, value, ease]; ease applies to the segment ending at this keyframe. */
 export type Keyframe = [number, number] | [number, number, Ease];
 
 /** Generic choreography: expression lives in the spec, the renderer only interpolates. */
-export type Anim = Partial<Record<'x' | 'y' | 'scale' | 'opacity' | 'rotate', Keyframe[]>>;
+export type Anim = Partial<
+  Record<'x' | 'y' | 'scale' | 'opacity' | 'rotate' | 'depth' | 'flipX', Keyframe[]>
+>;
+
+export type PoseSpec = {
+  frame: number;
+  asset: string;
+};
+
+export type GaitSpec = {
+  mode: 'puppet' | 'walk' | 'float' | 'shudder';
+  freq?: number;
+  bob?: number;
+  sway?: number;
+  phase?: number;
+  range?: [number, number];
+};
+
+export type SpringSpec = {
+  omega?: number;
+  zeta?: number;
+  coupling?: number;
+  channel?: 'x' | 'y' | 'scale' | 'rotate';
+  driverChannel?: 'x' | 'y' | 'scale' | 'rotate';
+  maxAccel?: number;
+};
 
 /** Free parameter bag for primitive draws (field, path, captions, ...). */
 export type Params = Record<
@@ -49,6 +74,7 @@ export type CodeLayer = {
     | 'path'
     | 'captions';
   rect: Rect;
+  clipRect?: Rect;
   z: number;
   color?: string;
   motion?: GeometricMotion;
@@ -62,6 +88,27 @@ export type AiLayer = {
   keyColor: string;
   blend: 'multiply' | 'screen' | 'normal';
   rect: Rect;
+  clipRect?: Rect;
+  pivot?: [number, number];
+  joint?: [number, number];
+  socket?: [number, number];
+  parent?: string;
+  role?: 'humanoid' | 'quadruped' | 'mech' | 'prop' | 'backdrop';
+  cutout?: boolean;
+  cutoutSimilarity?: number;
+  cutoutBlend?: number;
+  translucent?: boolean;
+  depth?: number;
+  shadowColor?: string;
+  flipX?: boolean;
+  controlRod?: boolean;
+  rodAnchor?: [number, number];
+  rodAnchors?: Array<[number, number]>;
+  input_asset?: string;
+  reference_images?: string[];
+  poses?: PoseSpec[];
+  gait?: GaitSpec;
+  spring?: SpringSpec;
   z: number;
   motion?: GeometricMotion;
   fit?: 'cover' | 'contain';
@@ -75,6 +122,7 @@ export type VideoLayer = {
   /** Frozen clip asset (assets/<asset>.mp4) — an mp4, never a still. */
   asset: string;
   rect: Rect;
+  clipRect?: Rect;
   z: number;
   fit?: 'cover' | 'contain';
   /** [startSec, endSec] window into the source clip. */
@@ -84,6 +132,16 @@ export type VideoLayer = {
   loop?: boolean;
   /** true = the clip's own audio track is dropped (the TTS chain owns audio). */
   muted?: boolean;
+  /** Optional first-frame / keyframe reference (manifest asset, ai asset, or grid/dots code layer id). */
+  first_frame?: string;
+  input_asset?: string;
+  input_image?: string;
+  /** Optional last-frame reference (H3 / H3-Max only; requires first_frame). */
+  last_frame?: string;
+  last_frame_image?: string;
+  reference_type?: 'first_frame' | 'last_frame' | 'subject';
+  /** Optional multimodal reference images (MiniMax-H3 only, 1..9 assets). */
+  reference_images?: string[];
   motion?: GeometricMotion;
   /** false = full-bleed presentation, no card chrome. */
   plate?: boolean;
@@ -94,12 +152,16 @@ export type TextLayer = {
   type: 'text';
   text: string;
   rect: Rect;
+  clipRect?: Rect;
   z: number;
   fontSize?: number;
   fontWeight?: string | number;
   color?: string;
   subtext?: string;
   enter?: 'spring' | 'fade';
+  anim?: Anim;
+  pivot?: [number, number];
+  flipX?: boolean;
 };
 
 export type HudLayer = {
@@ -107,6 +169,7 @@ export type HudLayer = {
   type: 'hud';
   hudType: 'badge' | 'telemetry' | 'equalizer' | 'progress';
   rect: Rect;
+  clipRect?: Rect;
   z: number;
   text?: string;
   color?: string;
@@ -117,6 +180,7 @@ export type CardLayer = {
   type: 'card';
   cardType: 'formula' | 'quote' | 'capsule';
   rect: Rect;
+  clipRect?: Rect;
   z: number;
   title?: string;
   formula?: string;
@@ -126,15 +190,32 @@ export type CardLayer = {
   details?: Array<{label: string; desc: string; color?: string}>;
 };
 
+export type ComponentLayer = {
+  id: string;
+  type: 'component';
+  component: string;
+  rect: Rect;
+  clipRect?: Rect;
+  z: number;
+  props?: Record<string, unknown>;
+  color?: string;
+};
+
 export type AudioSpec = {
   voiceover?: string;
   voice?: string;
   bgm?: string;
 };
 
-export type Layer = (CodeLayer | AiLayer | VideoLayer | TextLayer | HudLayer | CardLayer) & {
+export type Layer = (CodeLayer | AiLayer | VideoLayer | TextLayer | HudLayer | CardLayer | ComponentLayer) & {
   /** Spec-driven keyframe channels applied by the renderer to ANY layer. */
   anim?: Anim;
+  parent?: string;
+  pivot?: [number, number];
+  clipRect?: Rect;
+  flipX?: boolean;
+  gait?: GaitSpec;
+  spring?: SpringSpec;
 };
 
 export type Gate = {
@@ -155,7 +236,7 @@ export type Gate = {
 
 export type ShotSpec = {
   id: string;
-  canvas: {w: number; h: number};
+  canvas: {w: number; h: number; bg?: string};
   fps: number;
   durationInFrames: number;
   style?: string;

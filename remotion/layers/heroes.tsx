@@ -1,422 +1,9 @@
+// Legacy hardcoded hero scenes — kept for reuse where the subject
+// matches. Never build new episodes around these fixed layouts;
+// prefer composing from primitives + anim for new content.
 import React from 'react';
 import {interpolate, spring, useCurrentFrame, useVideoConfig} from 'remotion';
-import type {CardLayer, CodeLayer, HudLayer, TextLayer} from './spec';
-
-export const Bar: React.FC<{color: string; width: number; height: number}> = ({
-  color,
-  width,
-  height,
-}) => (
-  <div
-    style={{
-      position: 'absolute',
-      width,
-      height,
-      backgroundColor: color,
-    }}
-  />
-);
-
-export const TextComp: React.FC<{layer: TextLayer}> = ({layer}) => {
-  const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
-  const {rect, text, subtext, fontSize = 54, fontWeight = 800, enter = 'spring'} = layer;
-
-  const spr = spring({
-    frame,
-    fps,
-    config: {damping: 14, mass: 0.8},
-  });
-
-  const translateY = enter === 'spring' ? (1 - spr) * 24 : 0;
-  const opacity = enter === 'spring' ? spr : 1;
-
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        left: rect[0],
-        top: rect[1],
-        width: rect[2],
-        height: rect[3],
-        transform: `translateY(${translateY}px)`,
-        opacity,
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-      }}
-    >
-      <div
-        style={
-          layer.color
-            ? {
-                fontSize,
-                fontWeight,
-                lineHeight: 1.25,
-                letterSpacing: '-0.02em',
-                color: layer.color,
-                textShadow: '0 2px 12px rgba(0, 0, 0, 0.75)',
-                whiteSpace: 'pre-line',
-              }
-            : {
-                fontSize,
-                fontWeight,
-                lineHeight: 1.25,
-                letterSpacing: '-0.02em',
-                background: 'linear-gradient(180deg, #FFFFFF 25%, #A5ECFF 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                // Dark scrim shadow first (legibility over any background), cyan glow second (style).
-                filter:
-                  'drop-shadow(0 2px 3px rgba(0, 0, 0, 0.9)) drop-shadow(0 2px 14px rgba(0, 240, 255, 0.35))',
-                whiteSpace: 'pre-line',
-              }
-        }
-      >
-        {text}
-      </div>
-      {subtext && (
-        <div
-          style={{
-            fontSize: Math.round(fontSize * 0.42),
-            color: '#8BA1C1',
-            fontFamily: 'monospace',
-            marginTop: 10,
-            letterSpacing: '0.06em',
-          }}
-        >
-          {subtext}
-        </div>
-      )}
-    </div>
-  );
-};
-
-export const HudComp: React.FC<{layer: HudLayer}> = ({layer}) => {
-  const frame = useCurrentFrame();
-  const {durationInFrames, fps} = useVideoConfig();
-  const {rect, hudType, text, color = '#00F0FF'} = layer;
-
-  if (hudType === 'badge') {
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 10,
-          backgroundColor: 'rgba(0, 240, 255, 0.1)',
-          border: `1px solid ${color}66`,
-          borderRadius: 8,
-          padding: '6px 16px',
-          fontSize: 15,
-          letterSpacing: '0.12em',
-          color,
-          fontFamily: 'monospace',
-          boxShadow: '0 0 20px rgba(0, 240, 255, 0.15)',
-        }}
-      >
-        <span
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            backgroundColor: color,
-            boxShadow: `0 0 10px ${color}`,
-          }}
-        />
-        {text}
-      </div>
-    );
-  }
-
-  if (hudType === 'telemetry') {
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          color: 'rgba(0, 240, 255, 0.55)',
-          fontSize: 13,
-          fontFamily: 'monospace',
-          letterSpacing: '0.06em',
-        }}
-      >
-        {text}
-      </div>
-    );
-  }
-
-  if (hudType === 'equalizer') {
-    const barsCount = 48;
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          width: rect[2],
-          display: 'flex',
-          alignItems: 'flex-end',
-          gap: 6,
-          height: rect[3],
-        }}
-      >
-        {Array.from({length: barsCount}).map((_, i) => {
-          const h = 8 + Math.abs(Math.sin((frame + i * 5) * 0.25)) * (rect[3] - 10);
-          return (
-            <div
-              key={i}
-              style={{
-                width: 8,
-                height: h,
-                backgroundColor: i % 2 === 0 ? color : '#FFB800',
-                borderRadius: 2,
-                boxShadow: `0 0 8px ${i % 2 === 0 ? color : '#FFB800'}66`,
-              }}
-            />
-          );
-        })}
-        <div style={{marginLeft: 'auto', color: '#00F0FF', fontSize: 13, fontFamily: 'monospace'}}>
-          FRAME {String(frame).padStart(3, '0')} / {durationInFrames} [{(frame / fps).toFixed(2)}s]
-        </div>
-      </div>
-    );
-  }
-
-  if (hudType === 'progress') {
-    const progress = (frame / (durationInFrames - 1)) * 100;
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          width: rect[2],
-          height: rect[3] || 6,
-          backgroundColor: 'rgba(255, 255, 255, 0.08)',
-          borderRadius: 3,
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: `${progress}%`,
-            height: '100%',
-            background: `linear-gradient(90deg, ${color}, #FFB800)`,
-            boxShadow: `0 0 12px ${color}`,
-          }}
-        />
-      </div>
-    );
-  }
-
-  return null;
-};
-
-export const CardComp: React.FC<{layer: CardLayer}> = ({layer}) => {
-  const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
-  const {rect, cardType, title, formula, quote, author, details} = layer;
-
-  const spr = spring({
-    frame: Math.max(0, frame - 8),
-    fps,
-    config: {damping: 14, mass: 0.8},
-  });
-
-  if (cardType === 'formula') {
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          width: rect[2],
-          backgroundColor: 'rgba(10, 16, 30, 0.92)',
-          border: '1px solid rgba(0, 240, 255, 0.32)',
-          borderRadius: 18,
-          padding: '24px 28px',
-          boxShadow: '0 20px 50px rgba(0,0,0,0.8), 0 0 30px rgba(0, 240, 255, 0.08)',
-          transform: `translateY(${(1 - spr) * 20}px)`,
-          opacity: spr,
-          boxSizing: 'border-box',
-        }}
-      >
-        {title && (
-          <div
-            style={{
-              fontSize: 14,
-              color: '#00F0FF',
-              fontFamily: 'monospace',
-              letterSpacing: '0.12em',
-              marginBottom: 14,
-            }}
-          >
-            ● {title}
-          </div>
-        )}
-        {formula && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 44,
-              fontWeight: 700,
-              fontFamily: 'Georgia, serif',
-              color: '#FFFFFF',
-              margin: '10px 0 20px 0',
-              textShadow: '0 0 25px rgba(0, 240, 255, 0.5)',
-            }}
-          >
-            {formula}
-          </div>
-        )}
-        {details && details.length > 0 && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `repeat(${details.length}, 1fr)`,
-              gap: 16,
-              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-              paddingTop: 16,
-            }}
-          >
-            {details.map((item, idx) => (
-              <div
-                key={idx}
-                style={{
-                  backgroundColor: 'rgba(0, 240, 255, 0.06)',
-                  border: '1px solid rgba(0, 240, 255, 0.15)',
-                  padding: '12px 16px',
-                  borderRadius: 10,
-                }}
-              >
-                <div style={{color: item.color || '#00F0FF', fontWeight: 600, fontSize: 16, marginBottom: 4}}>
-                  {item.label}
-                </div>
-                <div style={{color: '#8BA1C1', fontSize: 13, lineHeight: 1.4}}>{item.desc}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (cardType === 'quote') {
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          width: rect[2],
-          backgroundColor: 'rgba(12, 18, 34, 0.95)',
-          borderLeft: '4px solid #00F0FF',
-          borderRight: '1px solid rgba(0, 240, 255, 0.2)',
-          borderTop: '1px solid rgba(0, 240, 255, 0.2)',
-          borderBottom: '1px solid rgba(0, 240, 255, 0.2)',
-          borderRadius: '0 18px 18px 0',
-          padding: '24px 28px',
-          boxShadow: '0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 240, 255, 0.06)',
-          transform: `translateY(${(1 - spr) * 20}px)`,
-          opacity: spr,
-          boxSizing: 'border-box',
-        }}
-      >
-        <div
-          style={{
-            fontSize: 26,
-            fontWeight: 700,
-            lineHeight: 1.5,
-            color: '#FFFFFF',
-            marginBottom: 12,
-            textShadow: '0 2px 10px rgba(0,0,0,0.5)',
-          }}
-        >
-          “{quote}”
-        </div>
-        {author && (
-          <div style={{fontSize: 16, color: '#8BA1C1', fontStyle: 'italic', fontFamily: 'serif'}}>
-            — {author}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (cardType === 'capsule') {
-    return (
-      <div
-        style={{
-          position: 'absolute',
-          left: rect[0],
-          top: rect[1],
-          width: rect[2],
-          height: rect[3],
-          backgroundColor: 'rgba(10, 16, 32, 0.88)',
-          border: '1px solid rgba(0, 240, 255, 0.35)',
-          borderRadius: 24,
-          padding: '20px 30px 16px 30px',
-          boxShadow: '0 15px 45px rgba(0,0,0,0.75), 0 0 30px rgba(0, 240, 255, 0.12)',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'flex-start',
-          gap: 8,
-          boxSizing: 'border-box',
-          transform: `translateY(${(1 - spr) * 16}px)`,
-          opacity: spr,
-        }}
-      >
-        {title && (
-          <div
-            style={{
-              fontSize: 15,
-              fontFamily: 'monospace',
-              letterSpacing: '0.12em',
-              color: '#00F0FF',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              textTransform: 'uppercase',
-              flexShrink: 0,
-            }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                backgroundColor: '#00F0FF',
-                boxShadow: '0 0 10px #00F0FF',
-              }}
-            />
-            {title}
-          </div>
-        )}
-        <div
-          style={{
-            fontSize: 26,
-            fontWeight: 600,
-            lineHeight: 1.4,
-            color: '#FFFFFF',
-            letterSpacing: '0.02em',
-            textShadow: '0 2px 10px rgba(0,0,0,0.6)',
-          }}
-        >
-          {quote || layer.text || (details && details[0]?.desc)}
-        </div>
-      </div>
-    );
-  }
-
-  return null;
-};
+import type {CodeLayer} from '../spec';
 
 export const GeodesicComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
@@ -457,6 +44,7 @@ export const GeodesicComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
+
 export const RipplesComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const p1 = (frame * 2.5) % 100;
@@ -491,6 +79,7 @@ export const RipplesComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
     </div>
   );
 };
+
 
 export const TrampolineComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
@@ -733,6 +322,7 @@ export const TrampolineComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
+
 export const GravityWellComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {rect} = layer;
@@ -955,6 +545,7 @@ export const GravityWellComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
     </div>
   );
 };
+
 
 export const LightDeflectionComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
@@ -1221,6 +812,7 @@ export const LightDeflectionComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
+
 export const SpacetimeWavesComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {rect} = layer;
@@ -1424,6 +1016,7 @@ export const SpacetimeWavesComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
+
 export const BlackHoleHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {rect} = layer;
@@ -1548,6 +1141,7 @@ export const BlackHoleHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
     </div>
   );
 };
+
 
 export const TimeDilationHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
@@ -1685,6 +1279,7 @@ export const TimeDilationHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
+
 export const LightConeTiltHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {rect} = layer;
@@ -1788,6 +1383,7 @@ export const LightConeTiltHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => 
     </div>
   );
 };
+
 
 export const SpaghettificationHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
@@ -1899,6 +1495,7 @@ export const SpaghettificationHeroComp: React.FC<{layer: CodeLayer}> = ({layer})
     </div>
   );
 };
+
 
 export const TunnelHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
@@ -2058,6 +1655,7 @@ export const TunnelHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
+
 export const WavefunctionHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   const frame = useCurrentFrame();
   const {rect} = layer;
@@ -2205,199 +1803,3 @@ export const WavefunctionHeroComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
   );
 };
 
-// ---------------------------------------------------------------------------
-// Parameterized primitives: everything creative lives in layer.params; the
-// component is a dumb interpreter. No baked-in decorations, no fixed layout.
-// ---------------------------------------------------------------------------
-
-/** Deterministic PRNG (mulberry32) — renders must stay bit-exact. */
-const seededRandom = (seed: number) => () => {
-  seed |= 0;
-  seed = (seed + 0x6d2b79f5) | 0;
-  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-};
-
-const num = (v: unknown, dflt: number): number => (typeof v === 'number' && !Number.isNaN(v) ? v : dflt);
-const numList = (v: unknown, dflt: number[]): number[] =>
-  Array.isArray(v) && v.length >= 2 && v.every((x) => typeof x === 'number') ? (v as number[]) : dflt;
-const strList = (v: unknown, dflt: string[]): string[] =>
-  Array.isArray(v) && v.every((x) => typeof x === 'string') && v.length > 0 ? (v as string[]) : dflt;
-
-export const FieldComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
-  const frame = useCurrentFrame();
-  const {rect, color, params = {}} = layer;
-  const width = rect[2];
-  const height = rect[3];
-
-  const count = Math.round(num(params.count, 40));
-  const seed = Math.round(num(params.seed, 7));
-  const colors = strList(params.colors, color ? [color] : ['#00F0FF']);
-  const speed = numList(params.speed, [1, 3]); // px/frame
-  const size = numList(params.size, [2, 5]);
-  const dirDeg = num(params.dir, 0); // 0 = rightward, 90 = downward
-  const spreadDeg = num(params.spread, 12);
-  const glow = params.glow !== false;
-
-  const dirRad = (dirDeg * Math.PI) / 180;
-  const spreadRad = (spreadDeg * Math.PI) / 180;
-  const rnd = seededRandom(seed);
-  const particles = Array.from({length: count}).map((_, i) => {
-    const angle = dirRad + (rnd() - 0.5) * 2 * spreadRad;
-    const v = speed[0] + rnd() * (speed[1] - speed[0]);
-    const span = Math.max(width, height) * 1.6;
-    const travel = ((rnd() * span) + frame * v) % span;
-    const jitter = (rnd() - 0.5) * 2 * spreadRad * travel * 0.6;
-    const px = (Math.cos(angle + jitter) * travel + width) % width;
-    const py = (Math.sin(angle + jitter) * travel + height) % height;
-    return {
-      x: ((px % width) + width) % width,
-      y: ((py % height) + height) % height,
-      r: size[0] + rnd() * (size[1] - size[0]),
-      c: colors[i % colors.length],
-      o: 0.25 + rnd() * 0.6,
-    };
-  });
-
-  return (
-    <div style={{position: 'absolute', left: rect[0], top: rect[1], width, height, overflow: 'hidden', pointerEvents: 'none'}}>
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-        {particles.map((p, i) => (
-          <g key={i}>
-            {glow && <circle cx={p.x.toFixed(1)} cy={p.y.toFixed(1)} r={p.r * 2.4} fill={p.c} opacity={p.o * 0.25} />}
-            <circle cx={p.x.toFixed(1)} cy={p.y.toFixed(1)} r={p.r} fill={p.c} opacity={p.o} />
-          </g>
-        ))}
-      </svg>
-    </div>
-  );
-};
-
-export const PathComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
-  const frame = useCurrentFrame();
-  const {rect, color, params = {}} = layer;
-  const width = rect[2];
-  const height = rect[3];
-
-  const d = typeof params.d === 'string' ? params.d : '';
-  const stroke = typeof params.stroke === 'string' ? params.stroke : color || '#00F0FF';
-  const strokeWidth = num(params.width, 4);
-  const opacity = num(params.opacity, 1);
-  // reveal: [fromFrame, toFrame] — 1-unit pathLength dash reveal
-  const reveal = numList(params.reveal, [0, 60]);
-  const flow = params.flow === true; // animated dash drift instead of solid reveal
-  const flowDash = numList(params.flowDash, [10, 14]);
-
-  if (!d) return null;
-  const t = Math.min(1, Math.max(0, (frame - reveal[0]) / Math.max(1, reveal[1] - reveal[0])));
-  const eased = 1 - (1 - t) * (1 - t); // ease-out reveal
-
-  return (
-    <div style={{position: 'absolute', left: rect[0], top: rect[1], width, height, overflow: 'hidden', pointerEvents: 'none'}}>
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-        {flow ? (
-          <path
-            d={d}
-            fill="none"
-            stroke={stroke}
-            strokeWidth={strokeWidth}
-            strokeLinecap="round"
-            strokeDasharray={`${flowDash[0]} ${flowDash[1]}`}
-            strokeDashoffset={-frame * 1.5}
-            opacity={t > 0 ? opacity : 0}
-            filter="drop-shadow(0 0 6px currentColor)"
-          />
-        ) : (
-          <path
-            d={d}
-            fill="none"
-            stroke={stroke}
-            strokeWidth={strokeWidth}
-            strokeLinecap="round"
-            pathLength={1}
-            strokeDasharray={1}
-            strokeDashoffset={1 - eased}
-            opacity={opacity}
-            filter="drop-shadow(0 0 6px currentColor)"
-          />
-        )}
-      </svg>
-    </div>
-  );
-};
-
-export const CaptionsComp: React.FC<{layer: CodeLayer}> = ({layer}) => {
-  const frame = useCurrentFrame();
-  const {rect, params = {}} = layer;
-  const width = rect[2];
-
-  type Item = {frame: number; text: string; hl?: string; size?: number};
-  const items: Item[] = Array.isArray(params.items) ? (params.items as unknown as Item[]) : [];
-  const size = num(params.size, 92);
-  const hlColor = typeof params.hlColor === 'string' ? params.hlColor : '#FFB84D';
-
-  const current = [...items].reverse().find((it) => frame >= it.frame);
-  if (!current) return null;
-  const itemSize = typeof current.size === 'number' ? current.size : size;
-  const local = frame - current.frame;
-  const pop = Math.min(1, local / 7);
-  const scale = pop < 0.35 ? 0.85 + 0.38 * (pop / 0.35) : 1.23 - 0.23 * ((pop - 0.35) / 0.65);
-  const opacity = Math.min(1, local / 3);
-
-  const parts: Array<{t: string; hl: boolean}> = [];
-  if (current.hl && current.text.includes(current.hl)) {
-    const [a, ...rest] = current.text.split(current.hl);
-    if (a) parts.push({t: a, hl: false});
-    parts.push({t: current.hl, hl: true});
-    if (rest.length) parts.push({t: rest.join(current.hl), hl: false});
-  } else {
-    parts.push({t: current.text, hl: false});
-  }
-
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        left: rect[0],
-        top: rect[1],
-        width,
-        height: rect[3],
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        pointerEvents: 'none',
-      }}
-    >
-      <div
-        style={{
-          transform: `scale(${scale.toFixed(3)})`,
-          opacity,
-          backgroundColor: 'rgba(5, 5, 12, 0.55)',
-          padding: '16px 34px',
-          borderRadius: 20,
-          fontSize: itemSize,
-          fontWeight: 900,
-          lineHeight: 1.3,
-          textAlign: 'center',
-          color: '#FFFFFF',
-          WebkitTextStroke: '3px #05050C',
-          paintOrder: 'stroke fill',
-          textShadow: '0 4px 24px rgba(0,0,0,0.85)',
-          letterSpacing: '0.01em',
-          whiteSpace: 'pre-line',
-        }}
-      >
-        {parts.map((seg, i) =>
-          seg.hl ? (
-            <span key={i} style={{color: hlColor, textShadow: `0 0 26px ${hlColor}66, 0 4px 24px rgba(0,0,0,0.85)`}}>
-              {seg.t}
-            </span>
-          ) : (
-            <span key={i}>{seg.t}</span>
-          )
-        )}
-      </div>
-    </div>
-  );
-};

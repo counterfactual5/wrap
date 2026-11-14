@@ -12,10 +12,12 @@ export type ShotProps = {
   prepared: Record<string, string>;
   /** layer id -> absolute path of the S2-prepared mp4 (video layers). */
   preparedVideos?: Record<string, string>;
+  /** layer id -> pose asset name -> data: URL of the S2-prepared PNG. */
+  preparedPoses?: Record<string, Record<string, string>>;
 };
 
-export const RemotionVideo: React.FC<ShotProps> = ({spec, prepared, preparedVideos}) => {
-  return <Shot spec={spec} prepared={prepared} preparedVideos={preparedVideos} />;
+export const RemotionVideo: React.FC<ShotProps> = ({spec, prepared, preparedVideos, preparedPoses}) => {
+  return <Shot spec={spec} prepared={prepared} preparedVideos={preparedVideos} preparedPoses={preparedPoses} />;
 };
 
 export const Index: React.FC = () => {
