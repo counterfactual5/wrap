@@ -11,9 +11,10 @@ changed" rather than "the tests passed".
 suite reports on the code, not on the bookkeeping.
 """
 import contextlib
-import json
+
 import os
 import shutil
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 MANIFEST_PATH = os.path.join(ROOT, "manifest.json")
@@ -57,32 +58,44 @@ def _backup_path(name):
     return os.path.join(BACKUP_DIR, name)
 
 
-@contextlib.contextmanager
-def preserve_manifest():
-    """Restore manifest.json exactly as it was when the block ends.
+def active_manifest_path():
+    """Resolve the active ledger at call time, including temporary overrides."""
+    return os.path.abspath(os.environ.get("POSTER_MANIFEST") or MANIFEST_PATH)
 
-    The restore is an atomic replace: the file is never absent from the
-    working tree, so a tool that snapshots the tree mid-test cannot read the
-    snapshot window as "the tree changed"."""
-    backup = None
-    if os.path.exists(MANIFEST_PATH):
-        backup = _backup_path("manifest.json")
-        shutil.copyfile(MANIFEST_PATH, backup)
+
+@contextlib.contextmanager
+def preserve_manifest(path=None):
+    """Restore original bytes, defaulting to the active ledger.
+
+    An explicit path is used by the suite guard for legacy hardcoded writers.
+    Restoration errors propagate rather than silently losing user state.
+    """
+    path = os.path.abspath(path) if path is not None else active_manifest_path()
+    existed = os.path.exists(path)
+    if existed:
+        with open(path, "rb") as f:
+            original = f.read()
     try:
         yield
     finally:
-        if backup is not None:
-            try:
-                # os.replace is atomic within a filesystem: readers see
-                # either the old file or the restored one, never a gap.
-                shutil.copyfile(backup, MANIFEST_PATH)
-            except OSError:
-                pass
-            finally:
-                if os.path.exists(backup):
-                    os.remove(backup)
-        elif os.path.exists(MANIFEST_PATH):
-            os.remove(MANIFEST_PATH)
+        if existed:
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    unchanged = f.read() == original
+            else:
+                unchanged = False
+            if not unchanged:
+                directory = os.path.dirname(os.path.abspath(path))
+                fd, temporary = tempfile.mkstemp(prefix=".test-ledger-", dir=directory)
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(original)
+                    os.replace(temporary, path)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        elif os.path.exists(path):
+            os.remove(path)
 
 
 @contextlib.contextmanager
@@ -117,29 +130,9 @@ def preserve_assets(*asset_names):
 
 @contextlib.contextmanager
 def preserved_manifest_entry(asset_key, prepared_key=None):
-    """Like preserve_manifest, but also drops the named rows afterwards.
-
-    Some stages register rows for assets a test created; removing them keeps
-    the ledger free of entries for files that no longer exist.
-    """
+    """Restore the ledger without deleting pre-existing rows with these keys."""
     with preserve_manifest():
         yield
-        try:
-            with open(MANIFEST_PATH) as f:
-                m = json.load(f)
-        except Exception:
-            return
-        changed = False
-        for section, key in (("assets", asset_key),
-                             ("prepared", prepared_key or asset_key)):
-            rows = m.get(section, {})
-            if key in rows:
-                rows.pop(key)
-                changed = True
-        if changed:
-            with open(MANIFEST_PATH, "w") as f:
-                json.dump(m, f, indent=2, sort_keys=True)
-                f.write("\n")
 
 
 def ensure_rendered(shot_spec, shot_id, through_gate=False):
@@ -157,7 +150,7 @@ def ensure_rendered(shot_spec, shot_id, through_gate=False):
     through_gate=True also runs S4, which writes build/gates/{shot_id}.json —
     S5 reads that file, so a contact-sheet test needs it.
     """
-    from core import manifest
+    from core.runtime import manifest
     mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
     gates = os.path.join(ROOT, "build", "gates", f"{shot_id}.json")
     bound = manifest.verified("video", shot_id) is not None
@@ -169,10 +162,13 @@ def ensure_rendered(shot_spec, shot_id, through_gate=False):
     stages = ["01_generate.py", "02_prepare.py", "03_compose.py"]
     if through_gate:
         stages.append("04_gate.py")
+    env = dict(os.environ, POSTER_MANIFEST=active_manifest_path())
     for stage in stages:
+        command = [sys.executable, os.path.join(ROOT, "stages", stage), "--spec", shot_spec]
+        if stage == "01_generate.py":
+            command.append("--fixture")
         res = subprocess.run(
-            [sys.executable, os.path.join(ROOT, "stages", stage), "--spec", shot_spec],
-            cwd=ROOT, capture_output=True, text=True)
+            command, env=env, cwd=ROOT, capture_output=True, text=True)
         if res.returncode != 0:
             raise RuntimeError(
                 f"could not prepare {shot_id} ({stage} failed):\n"
