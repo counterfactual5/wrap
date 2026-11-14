@@ -7,8 +7,7 @@ import hashlib
 import json
 import os
 
-ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-ROOT = os.environ.get("POSTER_ROOT") or ENGINE_ROOT
+from core.runtime.config import ENGINE_ROOT, ROOT
 # POSTER_MANIFEST lets a caller point the ledger elsewhere. A test that runs
 # the real stages would otherwise write the project's frozen ledger while it
 # runs — and a working-tree snapshot taken during that window reads the write

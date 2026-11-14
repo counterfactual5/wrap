@@ -1,9 +1,14 @@
 """Code-drawn layers and the fake test fixture (stdlib only).
 Palette comes from tests/fixtures/style.json (S2 passes it in); the fallback defaults are
 the same values the style file ships, so colors have exactly one source."""
-from .png import write_png
+import json
+import os
+
+from core.runtime import manifest
+from core.media.png import write_png
 
 DEFAULT_PALETTE = {"paper": "#F4F4F4", "grid": "#D9D9D9", "accent": "#E03A3A", "ink": "#111111"}
+STATIC_CODE_DRAWS = ("grid", "dots")
 
 
 def _rgb(hexstr):
@@ -42,6 +47,30 @@ def dots(w, h, palette=None, step=40, radius=2):
                             idx = (y * w + x) * 3
                             px[idx:idx + 3] = bytes(dot)
     return bytes(px)
+
+
+def prepare_code_layer(spec, layer, palette=None, root=None):
+    """Deterministically render a static code layer (grid/dots) to build/prepared/{shot}/{id}.png
+    and register it in manifest.json so both S1 (as a video/image reference frame) and S2 can
+    consume the exact same artifact."""
+    from core.runtime.config import ROOT
+    base_root = root or ROOT
+    shot_id = spec.get("id", "shot-01")
+    w, h = spec["canvas"]["w"], spec["canvas"]["h"]
+    if palette is None:
+        style_path = os.path.join(base_root, spec.get("style", "tests/fixtures/style.json"))
+        palette = {}
+        if os.path.exists(style_path):
+            with open(style_path) as f:
+                palette = json.load(f).get("palette", {})
+    prep_dir = os.path.join(base_root, "build", "prepared", shot_id)
+    os.makedirs(prep_dir, exist_ok=True)
+    rel = f"build/prepared/{shot_id}/{layer['id']}.png"
+    out_path = os.path.join(base_root, rel)
+    img_data = grid(w, h, palette) if layer.get("draw") == "grid" else dots(w, h, palette)
+    write_png(out_path, w, h, img_data)
+    manifest.register("prepared", f"{shot_id}/{layer['id']}", rel, source="code")
+    return rel, out_path
 
 
 def fake_city(w, h, ink=(17, 17, 17), key=(255, 255, 255)):

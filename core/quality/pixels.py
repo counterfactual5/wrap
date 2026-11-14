@@ -26,12 +26,57 @@ def _frames(src, w, h, pix_fmt, bpp, extra_in=()):
         raise RuntimeError(f"ffmpeg failed on {src}")
 
 
-def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None):
+def dedup_cadence_ratios(ratios, dup_tol=5e-5, max_hold=6):
+    """Strip short cadence frame holds (e.g. playbackRate < 1 slow motion or
+    pulldown repeats) while preserving genuine freezes and static shots.
+
+    Why:
+    - When a video layer renders at `playbackRate: 0.5` (or 0.25), each source
+      frame is displayed for 2..4 consecutive output frames. Adjacent duplicate
+      frames yield `ratio <= 5e-5` (0.0 or 1-2 pixel dither), causing raw
+      `median(ratios)` to collapse to ~0.000016 and fail the motion gate even
+      though every stepped frame moves by ~0.065 and `freezedetect` (0.5s = 15f)
+      passes.
+    - A contiguous run of `1..max_hold` (`<= 6` frames = 0.2s at 30fps) near-zero
+      pairs bounded by active motion steps is a cadence hold and is stripped so
+      the gate measures the actual frame-step motion.
+    - A contiguous static run longer than `max_hold` frames (`> 6` frames), or a
+      shot where active steps make up `< 15%` of frame pairs, is a genuine static
+      or frozen clip — its zeros are kept in full so static footage still fails.
+    """
+    if not ratios:
+        return ratios
+    n = len(ratios)
+    active_count = sum(1 for r in ratios if r > dup_tol)
+    if active_count == 0 or active_count < max(1, int(n * 0.15)):
+        return ratios
+
+    filtered = []
+    i = 0
+    while i < n:
+        if ratios[i] <= dup_tol:
+            j = i
+            while j < n and ratios[j] <= dup_tol:
+                j += 1
+            run_len = j - i
+            # Strip short cadence holds (1..max_hold frames); keep long static runs
+            if run_len > max_hold:
+                filtered.extend(ratios[i:j])
+            i = j
+        else:
+            filtered.append(ratios[i])
+            i += 1
+    return filtered if filtered else ratios
+
+
+def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None, dedup_cadence=True):
     """Per adjacent-frame pair: share of pixels whose luma differs by > luma_delta.
     exclude_band=(y0, y1) drops those canvas rows from both the count and the
     denominator, so a foreground bar panning across the frame cannot mask a
     static subject. Identical rows are skipped with a C-level bytes compare
-    first, so static content is nearly free."""
+    first, so static content is nearly free. When dedup_cadence=True (default),
+    short cadence repeat holds (<= 6 frames, e.g. slow-motion playbackRate < 1)
+    are stripped before returning so the motion gate measures stepped frames."""
     out, prev = [], None
     y0, y1 = exclude_band if exclude_band else (h, h)  # empty range when unused
     denom = w * (h - (y1 - y0))
@@ -61,7 +106,7 @@ def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None
                         n += 1
             out.append(n / denom)
         prev = f
-    return out
+    return dedup_cadence_ratios(out) if dedup_cadence else out
 
 
 def _mask_tables(rgb_hex):

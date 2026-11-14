@@ -1,0 +1,262 @@
+"""The Remotion render driver: spec + prepared assets as inline props, then
+`npx remotion render`, with the native Quartz compositor as an explicitly
+requested or provably environmental fallback.
+
+A fallback is the last resort, not a default. A broken bundle, a missing
+prepared asset or a bad spec is a real error: rendering it natively would
+produce a different picture (the native compositor does not implement the
+renderer's font shaping) or fail later with a message that has nothing to do
+with the cause. Only the one failure the compositor exists for — headless
+Chromium cannot run in this environment — falls back, and only when the
+renderer's own output says so (see _BROWSER_ENVIRONMENT_MARKERS).
+
+Every failure path names what the renderer reported and how it was invoked, so
+a failed render is diagnosable from the log alone instead of from a bare exit
+code.
+"""
+import base64
+import json
+import os
+import shutil
+import subprocess
+
+from core.runtime import manifest
+from core.runtime.config import ENGINE_ROOT, ROOT
+from core.rendering.quartz import _render_quartz_fallback
+
+# Marks a render the Quartz compositor produced, on the same
+# `key=value` line S3 prints its summary on (stages/03_compose.py appends
+# frames=/sha256=/encoder= to whatever this driver prints). Without it a
+# native frame sequence is indistinguishable from a Chromium one in a log.
+RENDERER_REMOTION = "remotion"
+RENDERER_QUARTZ = "quartz"
+
+# Headless Chromium's launch/browser failures as the installed renderer
+# (@remotion/renderer) actually words them. Only these count as "the browser
+# could not run here": a crash inside a page is a render error, not an
+# environment error, and must not silently become a Quartz render.
+#
+# Every marker is a full phrase the renderer itself prints — never a bare errno
+# or a stack-frame token like `spawn `: a bundle error routinely carries a file
+# name that happens to contain `EACCES`-like text, and a false positive here
+# silently re-draws the shot with the native compositor.
+_BROWSER_ENVIRONMENT_MARKERS = (
+    # browser/BrowserRunner.js: waitForWSEndpoint() — the browser process never
+    # produced a DevTools endpoint (exec failed, crashed on launch, sandbox).
+    "Failed to launch the browser process",
+    # browser/BrowserRunner.js: the browser never connected within the timeout.
+    "while trying to connect to the browser",
+    # get-local-browser-executable.js: nothing installed to launch.
+    "No browser found for rendering frames",
+    # ensure-browser.js: an explicit browserExecutable path that does not exist.
+    "but the path doesn't exist",
+    # browser/BrowserPage.js: the renderer process died under the page.
+    "Page crashed!",
+    # ProtocolError — the target/session died underneath the renderer.
+    "Target closed",
+    "Session closed",
+    "browser has disconnected",
+)
+
+
+def build_props(spec):
+    """Spec + prepared assets as inline props. Every image rides in as a data: URL
+    (14 KB PNG -> ~19 KB base64) so the bundle's static-file server is never involved:
+    the manifest-verified bytes are the exact bytes the renderer sees, and re-renders
+    are reproducible offline. Prepared rows are looked up through the manifest
+    (namespaced per shot) so composing a shot whose S2 never ran fails fast
+    instead of picking up another shot's leftover assets.
+
+    Video layers cannot use a data: URL (an mp4 is orders of magnitude larger
+    than a PNG, and base64-inlining it would bloat every props file). They are
+    staged into public/prepared/{shot}/ and referenced through Remotion's
+    staticFile(), which resolves against the bundle's public folder."""
+    shot_id = spec.get("id", "shot-01")
+    props = {"spec": spec, "prepared": {}, "preparedVideos": {}, "preparedPoses": {}}
+    for L in spec["layers"]:
+        if L["type"] == "ai":
+            layer_scoped = f"{shot_id}/{L['id']}__layer"
+            key = layer_scoped if manifest.verified("prepared", layer_scoped) is not None else f"{shot_id}/{L['asset']}"
+        elif L["type"] == "video":
+            key = f"{shot_id}/{L['asset']}"
+        elif L["type"] == "code" and L["draw"] in ("grid", "dots"):
+            key = f"{shot_id}/{L['id']}"
+        else:
+            continue  # bar is a solid-color CSS div; no asset needed
+        row = manifest.verified("prepared", key)
+        if row is None:
+            raise RuntimeError(
+                f"prepared '{key}' not manifest-verified; run S2 (02_prepare.py) "
+                f"for this shot first")
+        if L["type"] == "video":
+            # Stage the clip where Remotion's staticFile() can find it.
+            public_rel = f"prepared/{shot_id}/{L['asset']}.mp4"
+            # public_rel is relative to public/ — the renderer reads
+            # staticFile("prepared/<shot>/<asset>.mp4").
+            public_root = os.path.abspath(os.path.join(ENGINE_ROOT, "public"))
+            public_path = os.path.join(public_root, public_rel)
+            # The staged path must stay inside public/prepared/ — that is the
+            # only part the renderer reads. A shot id or asset name with ../
+            # would otherwise write outside it.
+            prepared_root = os.path.abspath(os.path.join(public_root, "prepared"))
+            resolved = os.path.abspath(public_path)
+            if not (resolved == prepared_root
+                    or resolved.startswith(prepared_root + os.sep)):
+                raise RuntimeError(
+                    f"video layer {L['id']!r} would stage its clip outside "
+                    f"public/prepared/: {public_rel} -> {resolved}")
+            os.makedirs(os.path.dirname(public_path), exist_ok=True)
+            shutil.copyfile(os.path.join(ROOT, row["path"]), public_path)
+            props["preparedVideos"][L["id"]] = public_rel
+            continue
+        with open(os.path.join(ROOT, row["path"]), "rb") as f:
+            props["prepared"][L["id"]] = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        if L["type"] == "ai" and L.get("poses"):
+            pose_map = {}
+            for p in L["poses"]:
+                pa = p.get("asset")
+                if not pa or pa in pose_map:
+                    continue
+                pk = f"{shot_id}/{pa}"
+                prow = manifest.verified("prepared", pk)
+                if prow is None:
+                    raise RuntimeError(
+                        f"prepared '{pk}' not manifest-verified; run S2 (02_prepare.py) "
+                        f"for this shot first")
+                with open(os.path.join(ROOT, prow["path"]), "rb") as pf:
+                    pose_map[pa] = "data:image/png;base64," + base64.b64encode(pf.read()).decode()
+            props["preparedPoses"][L["id"]] = pose_map
+    return props
+
+
+def _tail(text, limit=6000):
+    """The end of the renderer's output — where the failure is."""
+    text = (text or "").strip()
+    return text[-limit:] if len(text) > limit else text
+
+
+def _error_context(cmd, proc):
+    """The renderer's failure as one readable block: its own output first (the
+    last lines carry the cause), then how it was invoked."""
+    stream = ((proc.stderr or "").strip() or (proc.stdout or "").strip())
+    where = f"cwd={ENGINE_ROOT}"
+    parts = []
+    if stream:
+        parts.append("the renderer reported:\n" + _tail(stream))
+    parts.append(f"invoked: {' '.join(cmd)}\n  ({where})")
+    return "\n".join(parts)
+
+
+def _looks_like_browser_environment_failure(stream):
+    """True only when the renderer's own output says the browser could not run
+    in this environment. Anything else — a bundle error, a missing module, a
+    bad composition — is ours to fix, not the environment's."""
+    text = stream or ""
+    return any(marker in text for marker in _BROWSER_ENVIRONMENT_MARKERS)
+
+
+def _raise_no_frames(ex, cmd, out_dir, shot_id):
+    """The renderer exited without leaving a usable frame sequence.
+
+    Renumbering is the only thing between `npx remotion render` and S4's
+    measurements, so a missing frame has to name the directory the renderer
+    actually wrote into — not just the errno of the rename."""
+    shutil.rmtree(os.path.join(out_dir, "rm"), ignore_errors=True)
+    listing = sorted(os.listdir(out_dir)) if os.path.isdir(out_dir) else []
+    # A bare errno says nothing about WHERE the frames should have been; name
+    # the directory the renderer was asked to fill.
+    raise RuntimeError(
+        f"the Remotion render produced no usable frames for shot "
+        f"{shot_id!r}: {ex}\n"
+        f"  {out_dir} holds: {listing or '(nothing)'}\n"
+        f"invoked: {' '.join(cmd)}\n  (cwd={ENGINE_ROOT})") from ex
+
+
+def render_remotion(spec, out_dir, shot_id):
+    if os.environ.get("POSTER_FORCE_QUARTZ") == "1":
+        print(f"renderer={RENDERER_QUARTZ} (POSTER_FORCE_QUARTZ=1)")
+        _render_quartz_fallback(spec, out_dir, shot_id)
+        return
+    props = build_props(spec)
+    # Props file is per shot too: two concurrent S3 runs share .tmp/.
+    props_file = os.path.join(ROOT, ".tmp", f"render-props-{shot_id}.json")
+    os.makedirs(os.path.dirname(props_file), exist_ok=True)
+    with open(props_file, "w") as f:
+        json.dump(props, f)
+
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir)
+    cmd = [
+        "npx", "remotion", "render", "remotion/index.tsx", "Shot",
+        os.path.join(out_dir, "rm"),  # Remotion writes 0-indexed [frame].png here
+        "--image-format=png", "--sequence", "--image-sequence-pattern=[frame].png",
+        f"--props={props_file}",
+    ]
+    print(" ".join(cmd))
+    env = dict(os.environ)
+    # Locate a Node.js runtime without hard-coding a device-specific path:
+    # honor NODE_BIN if the caller sets it, otherwise resolve `node` from PATH.
+    node_bin = os.environ.get("NODE_BIN")
+    if not node_bin:
+        node_found = shutil.which("node")
+        node_bin = os.path.dirname(node_found) if node_found else None
+    if node_bin:
+        env["PATH"] = f"{node_bin}{os.pathsep}{env.get('PATH', '')}"
+    # remotion.config.ts resolves the engine root from this (webpack rewrites
+    # __dirname while bundling the config, so it cannot locate the engine).
+    env["WRAP_ENGINE_ROOT"] = ENGINE_ROOT
+    try:
+        proc = subprocess.run(cmd, check=True, cwd=ENGINE_ROOT, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True)
+        if proc.stdout:
+            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+        if proc.stderr:
+            print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n")
+        # Renumber 0-indexed [frame] (padded to the frame-count width) -> 1-indexed %05d
+        pad = len(str(spec["durationInFrames"] - 1))
+        for i in range(spec["durationInFrames"]):
+            src = os.path.join(out_dir, "rm", f"{i:0{pad}d}.png")
+            dst = os.path.join(out_dir, f"{i + 1:05d}.png")
+            os.rename(src, dst)
+        shutil.rmtree(os.path.join(out_dir, "rm"))
+    # FileNotFoundError is an OSError, so this must precede the OSError handler
+    # below: a missing executable and a missing frame are different failures.
+    except FileNotFoundError as ex:
+        # The renderer wrote its frames but the renumbering cannot find one
+        # (the frame list moved under us): a render-output problem, not a
+        # missing tool.
+        if os.sep in str(getattr(ex, "filename", None) or ""):
+            _raise_no_frames(ex, cmd, out_dir, shot_id)
+        # Anything else is the launcher itself missing — npx, or the node it
+        # resolves. A missing tool is not a browser environment: the partial
+        # tree goes (the error names the directory it cleared) so a retry
+        # starts from a known state.
+        shutil.rmtree(os.path.join(out_dir, "rm"), ignore_errors=True)
+        raise RuntimeError(
+            f"the Remotion renderer could not be launched: {ex}\n"
+            f"  `npx` must be on PATH (Node.js), and `node` too unless "
+            f"NODE_BIN points at it.\n"
+            f"invoked: {' '.join(cmd)}\n  (cwd={ENGINE_ROOT})") from ex
+    except subprocess.CalledProcessError as ex:
+        stream = ((ex.stderr or "") + "\n" + (ex.stdout or "")).strip()
+        if not _looks_like_browser_environment_failure(stream):
+            raise RuntimeError(
+                f"the Remotion renderer failed for shot {shot_id!r} "
+                f"(exit {ex.returncode}); this is a render error, not a "
+                f"browser-environment failure — no native fallback was "
+                f"attempted.\n"
+                f"{_error_context(cmd, ex)}") from ex
+        # Drop the partial frame sequence only now: the retry re-creates the
+        # tree from scratch, and a leftover rm/ would be renumbered as output.
+        shutil.rmtree(os.path.join(out_dir, "rm"), ignore_errors=True)
+        print("  [S3] headless Chromium cannot start in this environment; "
+              "using the native Quartz compositor...")
+        print(f"renderer={RENDERER_QUARTZ} (browser unavailable: {ex.returncode})")
+        _render_quartz_fallback(spec, out_dir, shot_id)
+        return
+    except OSError as ex:
+        # Renumbering failed: the renderer exited 0 but wrote no usable frame
+        # sequence. Report the cause and what was actually on disk.
+        _raise_no_frames(ex, cmd, out_dir, shot_id)
+    print(f"renderer={RENDERER_REMOTION}")
