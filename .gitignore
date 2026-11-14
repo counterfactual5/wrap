@@ -1,4 +1,8 @@
 build/
+# Runtime output of the engine repo's own test runs (S1 writes assets/ here;
+# the tracked fixture images live in tests/fixtures/assets/). A PROJECT's
+# assets/ is real work product and is tracked in that project.
+assets/
 __pycache__/
 *.pyc
 .pytest_cache/

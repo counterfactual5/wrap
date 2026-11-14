@@ -10,5 +10,5 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["remotion"]
+  "include": ["remotion", "remotion.config.ts"]
 }
