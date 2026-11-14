@@ -9,17 +9,17 @@ import json
 import os
 import subprocess
 import sys
-import os
-import sys
 
 # stages/ lives one level below the repo root; put the root on sys.path so
 # `import core.*` works however this script was invoked (direct, -m, or
 # importlib).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from core import manifest, metrics
-from core.render import encoder_fingerprint, frames_fingerprint
-from core.schema import ROOT, load_spec
+from core.runtime import manifest
+from core.quality import pixels as metrics
+from core.media.fingerprints import encoder_fingerprint, frames_fingerprint
+from core.runtime.config import ROOT
+from core.spec.loader import load_spec
 
 
 def _verify_measured_object(shot_id):
@@ -72,17 +72,58 @@ def _video_layers(spec):
     return out
 
 
-def _video_hint(spec):
+def _crop_diagnosis(spec):
+    """What the visible window of each video layer actually shows.
+
+    fit:'cover' (the default) keeps the CENTRE of the clip and crops the
+    rest: a 9:16 clip in a 16:9 rect shows ~14% of its width and ~32% of its
+    height. Whatever moves outside that window never reaches the picture, so
+    a shot can PASS the motion gate (some pixels changed somewhere in the
+    shot) and still show a completely frozen frame for half a second. The
+    numbers here are what turn "the freeze gate fired" into "the freeze gate
+    fired because of THIS rectangle"."""
+    notes = []
+    for L in spec["layers"]:
+        if L.get("type") != "video" or L.get("fit", "cover") != "cover":
+            continue
+        row = manifest.verified("prepared", f"{spec.get('id', 'shot-01')}/{L['asset']}")
+        size = (row or {}).get("source_size")
+        if not size or len(size) != 2:
+            continue
+        sw, sh = size
+        rect = L.get("rect") or []
+        if len(rect) != 4:
+            continue
+        _, _, rw, rh = rect
+        if not sw or not sh or not rw or not rh:
+            continue
+        scale = max(rw / sw, rh / sh)
+        vis_w, vis_h = rw / scale, rh / scale
+        notes.append(
+            f"{L['asset']}: the clip is {sw}x{sh} but the rect is {rw}x{rh} "
+            f"(fit 'cover'), so the frame shows only the centre {vis_w:.0f}x{vis_h:.0f} "
+            f"of it — {(1 - vis_w / sw) * 100:.0f}% of the width and "
+            f"{(1 - vis_h / sh) * 100:.0f}% of the height are cropped away")
+    return notes
+
+
+def _video_hint(spec, reason="low_motion"):
     """A hint pointing at the video layer when motion/freeze fail.
 
     A shot whose video layer is a still clip fails both gates, and the raw
     metrics ("changed_pixel_ratio 0.000000", "1 frozen segment") do not say
-    where to look. Name the layer, and distinguish the two causes: footage
-    that is static, and footage that ran out before the shot ended."""
+    where to look. Name the layer, and distinguish the causes: footage that is
+    static, footage that ran out before the shot ended, motion exceeding hi,
+    and motion that happens OUTSIDE the visible crop (the last one passes the
+    motion gate while the picture stands still)."""
     vids = _video_layers(spec)
     if not vids:
         return ""
     names = ", ".join(f"{a}{d}" for a, _, d in vids)
+    if reason == "high_motion":
+        return (f"\n       -> the shot has a video layer ({names}) whose frame-to-frame "
+                f"change exceeds the gate's upper bound (hi); use calmer SOURCE footage, "
+                f"reduce playbackRate/zoom, or widen the gate's hi bound.")
     # Did the clip run out before the shot ended (and is it not looping)?
     ran_out = False
     for L in spec["layers"]:
@@ -96,9 +137,25 @@ def _video_hint(spec):
                 f"shorter than the shot and loop is off: the footage RAN OUT "
                 f"before the shot ended, so the tail is frozen. Shorten the "
                 f"shot, lengthen the clip, or set \"loop\": true.")
-    return (f"\n       -> the shot has a video layer ({names}); if the clip is "
-            f"static, the motion and freeze gates fail on the SOURCE footage, "
-            f"not on the composition.")
+    if reason == "frozen_window":
+        # The motion gate passed but the picture stood still: the change was
+        # real, it just never reached the screen.
+        crops = _crop_diagnosis(spec)
+        if crops:
+            return ("\n       -> the picture was IDENTICAL for >= 0.5s although the "
+                    "motion gate passed: the motion happened OUTSIDE the visible crop.\n"
+                    + "\n".join(f"          {c}" for c in crops)
+                    + "\n       -> match the clip's aspect to the rect, set "
+                    "\"fit\": \"contain\" to show the whole clip, or keep the motion "
+                    "inside the window that is actually on screen.")
+        return ("\n       -> the picture was IDENTICAL for >= 0.5s although the motion "
+                "gate passed: the source's motion stayed OUTSIDE the visible crop "
+                "(fit:'cover' keeps only the centre of the clip), or the per-frame "
+                "change was below what the freeze detector counts as motion (its "
+                "noise tolerance is 0.1% of the frame).")
+    return (f"\n       -> the shot has a video layer ({names}); if both the motion "
+            f"and freeze gates fail, the SOURCE footage itself is static (or needs "
+            f"motion.zoom / active keyframes), not the composition.")
 
 
 def _bar_band(spec):
@@ -142,7 +199,7 @@ def main():
             return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=exclude))
         if g["metric"] in ("red_pixel_ratio", "accent_color_ratio"):
             if g["metric"] == "accent_color_ratio":
-                from core.schema import hex_rgb
+                from core.spec.naming import hex_rgb
                 color = _accent_color(spec)
                 if color is None:
                     raise RuntimeError("accent_color_ratio: no bar layer color in spec")
@@ -156,17 +213,24 @@ def main():
             for L in spec["layers"]:
                 if L["type"] != "ai":
                     continue
-                ai_assets = [L["asset"]]
-                for p in L.get("poses") or []:
-                    pa = p.get("asset")
-                    if pa and pa not in ai_assets:
-                        ai_assets.append(pa)
-                for asset_name in ai_assets:
-                    row = manifest.verified("prepared", f"{shot_id}/{asset_name}")
+                layer_scoped = manifest.verified("prepared", f"{shot_id}/{L['id']}__layer")
+                if layer_scoped is not None:
+                    rows.append(layer_scoped.get("purity"))
+                else:
+                    row = manifest.verified("prepared", f"{shot_id}/{L['asset']}")
                     if row is None:
                         raise RuntimeError(
-                            f"prepared asset '{shot_id}/{asset_name}' not manifest-verified; run S2")
+                            f"prepared asset '{shot_id}/{L['asset']}' not manifest-verified; run S2")
                     rows.append(row.get("purity"))
+                for p in L.get("poses") or []:
+                    pa = p.get("asset")
+                    if not pa or pa == L["asset"]:
+                        continue
+                    prow = manifest.verified("prepared", f"{shot_id}/{pa}")
+                    if prow is None:
+                        raise RuntimeError(
+                            f"prepared asset '{shot_id}/{pa}' not manifest-verified; run S2")
+                    rows.append(prow.get("purity"))
             if not rows or any(r is None for r in rows):
                 raise RuntimeError("no purity recorded; run S2")
             return min(rows)
@@ -182,7 +246,8 @@ def main():
         })
         print(f"{'PASS' if ok else 'FAIL'}  {g['id']:<10} {g['metric']:<20} {v:.6f}  [{g.get('lo')}, {g.get('hi')}]")
         if not ok and g["metric"] in ("changed_pixel_ratio", "subject_motion_ratio"):
-            hint = _video_hint(spec)
+            reason = "high_motion" if (g.get("hi") is not None and v > g["hi"]) else "low_motion"
+            hint = _video_hint(spec, reason=reason)
             if hint:
                 print(hint)
 
@@ -193,9 +258,18 @@ def main():
     frozen = [l for l in fz.splitlines() if "freeze_start" in l]
     print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")
     if frozen:
-        hint = _video_hint(spec)
-        if hint:
-            print(hint)
+        # The motion gate's verdict picks the diagnosis. If the frame-to-frame
+        # change was too LOW, the footage is the problem; if the motion gate
+        # PASSED while the picture stood still, the change was real but never
+        # reached the screen (it stayed outside the visible crop).
+        motion_failed = any(r["metric"] in ("changed_pixel_ratio", "subject_motion_ratio")
+                            and not r["pass"] for r in results)
+        hint = _video_hint(spec, reason="low_motion" if motion_failed else "frozen_window")
+        if not hint:
+            hint = ("\n       -> the picture was IDENTICAL for >= 0.5s and the shot has "
+                    "no video layer: nothing moves unless a layer carries motion (a "
+                    "code layer without motion, or a camera move too slow to register).")
+        print(hint)
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
 
@@ -207,42 +281,66 @@ def main():
     from core import audio
     av_probe = audio.measure_av_durations(mp4)
     if av_probe.get("has_audio"):
-        # 1. Silence and content check
-        sil_res = audio.measure_audio_silence(mp4)
-        is_ambient = spec.get("ambient", False) or (isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("ambient", False))
-
-        sil_ok = not sil_res["is_silent"]
-        # A non-silent track must also carry real content (not just flat noise/drone),
-        # unless the shot is explicitly declared as an ambient soundbed.
-        if sil_ok and not is_ambient and not sil_res.get("has_content", True):
-            sil_ok = False
-            sp_m = sil_res.get("speech_max_volume", -99.0)
-            print(f"FAIL  silence    audio_content        no voice/foreground content (speech band max {sp_m:.1f} dB <= -25.0 dB). "
-                  f"Declare 'ambient': true in spec if this is an ambient shot.")
+        # The spec asks for no soundtrack at all. The mp4 carries a compliant
+        # silent track so concatenation never has to drop a stream, but
+        # measuring that track against the speech/loudness gates would report
+        # a failure for exactly the shot the author asked to be silent.
+        # Intent comes from the spec (core.audio.shot_is_intentionally_silent),
+        # never from the rendered file: a shot that declares voiceover/bgm and
+        # comes out silent is BROKEN and must still fail.
+        if audio.shot_is_intentionally_silent(spec):
+            print("PASS  silence    silent shot          spec declares no soundtrack (exempt)")
         else:
-            print(f"{'PASS' if sil_ok else 'FAIL'}  silence    audio_max_volume     {sil_res['max_volume']:.1f} dB  [>-45.0 dB]"
-                  f"{' (ambient)' if is_ambient else ''}")
+            # 1. Silence and content check
+            sil_res = audio.measure_audio_silence(mp4)
+            is_ambient = spec.get("ambient", False) or (isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("ambient", False))
 
-        red |= not sil_ok
-        results.append({
-            "id": "audio_silence", "metric": "audio_max_volume",
-            "value": sil_res["max_volume"], "lo": -45.0, "pass": sil_ok,
-            "has_content": sil_res.get("has_content", True),
-            "ambient": is_ambient
-        })
+            sil_ok = not sil_res["is_silent"]
 
-        # 2. Integrated loudness check: EBU R128 (-16 LUFS target, range [-19.0, -13.0])
-        lufs = audio.measure_audio_loudness(mp4)
-        if lufs is not None:
-            loud_ok = (-19.0 <= lufs <= -13.0)
-            red |= not loud_ok
-            print(f"{'PASS' if loud_ok else 'FAIL'}  loudness   integrated_loudness  {lufs:.1f} LUFS  [-19.0, -13.0]")
+            # Check whether this shot declared voiceover narration
+            has_voice = False
+            voice_meta_path = os.path.join(ROOT, ".tmp", f"{shot_id}_audio.aac.meta.json")
+            if os.path.exists(voice_meta_path):
+                try:
+                    with open(voice_meta_path) as mf:
+                        has_voice = json.load(mf).get("has_voice", False)
+                except Exception:
+                    has_voice = False
+            elif isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("voiceover"):
+                has_voice = True
+
+            # When a shot has voiceover narration, verify speech band content unless marked ambient.
+            # When a shot has no voiceover (pure BGM / music-only shot / Douyin track), speech-band
+            # check is automatically exempt — pure music only needs to be non-silent (> -45 dB) and in LUFS range.
+            if sil_ok and has_voice and not is_ambient and not sil_res.get("has_content", True):
+                sil_ok = False
+                sp_m = sil_res.get("speech_max_volume", -99.0)
+                print(f"FAIL  silence    audio_content        no voice/foreground content (speech band max {sp_m:.1f} dB <= -25.0 dB). "
+                      f"Declare 'ambient': true in spec if this is an ambient shot.")
+            else:
+                tag = " (ambient)" if is_ambient else (" (music-only)" if not has_voice else "")
+                print(f"{'PASS' if sil_ok else 'FAIL'}  silence    audio_max_volume     {sil_res['max_volume']:.1f} dB  [>-45.0 dB]{tag}")
+
+            red |= not sil_ok
             results.append({
-                "id": "audio_loudness", "metric": "integrated_loudness",
-                "value": lufs, "lo": -19.0, "hi": -13.0, "pass": loud_ok
+                "id": "audio_silence", "metric": "audio_max_volume",
+                "value": sil_res["max_volume"], "lo": -45.0, "pass": sil_ok,
+                "has_content": sil_res.get("has_content", True),
+                "ambient": is_ambient
             })
-        else:
-            print("WARN  loudness   integrated_loudness  could not measure")
+
+            # 2. Integrated loudness check: EBU R128 (-16 LUFS target, range [-19.0, -13.0])
+            lufs = audio.measure_audio_loudness(mp4)
+            if lufs is not None:
+                loud_ok = (-19.0 <= lufs <= -13.0)
+                red |= not loud_ok
+                print(f"{'PASS' if loud_ok else 'FAIL'}  loudness   integrated_loudness  {lufs:.1f} LUFS  [-19.0, -13.0]")
+                results.append({
+                    "id": "audio_loudness", "metric": "integrated_loudness",
+                    "value": lufs, "lo": -19.0, "hi": -13.0, "pass": loud_ok
+                })
+            else:
+                print("WARN  loudness   integrated_loudness  could not measure")
 
         # 3. AV Duration sync check (diff <= 100ms)
         delta = av_probe["delta"]

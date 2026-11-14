@@ -21,6 +21,17 @@ import shutil
 import subprocess
 import sys
 
+# The engine relies on int.bit_count() (Python >= 3.10). Fail fast with an
+# actionable message instead of dying deep inside a stage with an
+# AttributeError.
+_MIN = (3, 10)
+if sys.version_info < _MIN:
+    sys.exit(
+        f"wrap requires Python >= {_MIN[0]}.{_MIN[1]} (int.bit_count). "
+        f"Found {sys.version.split()[0]}. Install a newer interpreter, then run "
+        f"`python3.x pipeline.py ...` or `make PY=python3.x verify`."
+    )
+
 ENGINE_ROOT = os.path.dirname(os.path.realpath(__file__))
 # Project root: where spec/, assets/, build/ and manifest.json live. Defaults to
 # the engine itself (development/tests); POSTER_ROOT points the pipeline at an
@@ -28,6 +39,21 @@ ENGINE_ROOT = os.path.dirname(os.path.realpath(__file__))
 ROOT = os.environ.get("POSTER_ROOT") or ENGINE_ROOT
 CORE = os.path.join(ENGINE_ROOT, "core")
 STAGES = os.path.join(ENGINE_ROOT, "stages")
+
+# The assembly domain logic lives in core/assembly/timeline.py; the CLI
+# (argparse, the stage subprocesses, the exit codes) stays here. The
+# re-export keeps `from pipeline import missing_assets` — and its
+# siblings — working.
+from core.assembly.timeline import (  # noqa: F401  (re-exported for callers and tests)
+    AssemblyError,
+    concat_stream_problem,
+    extract_frame_asset,
+    gate_full_video,
+    missing_assets,
+    referenced_assets,
+    spec_references_asset,
+)
+from core.assembly.timeline import load_timeline as _load_timeline
 
 
 def run_stage(cmd_args, desc):
@@ -38,131 +64,270 @@ def run_stage(cmd_args, desc):
         sys.exit(res.returncode)
 
 
-def missing_assets(spec):
-    """The assets a spec needs that are not frozen in the manifest yet.
+def load_timeline(rel_path, create_default=False):
+    """CLI adapter over `core.assembly.timeline.load_timeline`.
 
-    A shot's ai / video layers name their assets; the manifest records the
-    frozen ones. Anything missing would have to be GENERATED — which costs a
-    model call — so the caller must know before it happens, not after."""
-    from core import manifest
-    missing = []
-    for layer in spec.get("layers", []):
-        if layer.get("type") not in ("ai", "video"):
-            continue
-        assets = [layer.get("asset")]
-        if layer.get("type") == "ai":
-            for p in layer.get("poses") or []:
-                pa = p.get("asset")
-                if pa and pa not in assets:
-                    assets.append(pa)
-        for asset in assets:
-            if not asset:
-                continue
-            if manifest.verified("assets", asset) is None and asset not in missing:
-                missing.append(asset)
-    return missing
+    The domain loader raises `AssemblyError`; the CLI turns that into the exit
+    the pipeline has always produced for a timeline it cannot use.
+    """
+    try:
+        return _load_timeline(rel_path, create_default=create_default)
+    except AssemblyError as ex:
+        sys.exit(str(ex))
 
 
-def concat_stream_problem(clips):
-    """Describe why these clips cannot be concatenated, or None if they can.
+def run_timeline(args):
+    """Render every shot of a timeline IN ORDER, seam them, assemble, gate.
 
-    The concat demuxer with `-c copy` is sensitive to the inputs' stream
-    configuration: mixing a shot with an audio track and one without makes
-    it drop the audio of every shot that had one — with a zero exit code
-    and no warning. The native video models (H3 / H3-Max) render their own
-    audio track while the TTS chain produces a different one, so a timeline
-    that mixes them is a normal thing for an author to write.
+    The order is the whole point: shot k+1's first_frame may name the asset
+    that shot k produces (the "<shot-id>-tail" seam), so shot k has to be
+    GENERATED before shot k+1's S1 runs. Carrying that ordering in your head
+    is the fragile part; here the timeline is the only thing you have to get
+    right.
+    """
+    tl = load_timeline(args.timeline)
+    shots = tl.get("shots", [])
+    print(f"\n=== Timeline Run: {tl.get('id', 'sequence')} — {len(shots)} shots, in order ===")
 
-    Returns a readable message naming the shots involved, or None when the
-    clips agree."""
-    import json as _json
-    import subprocess as _subprocess
+    specs = []
+    for shot in shots:
+        rel = shot["spec"] if isinstance(shot, dict) else shot
+        path = os.path.join(ROOT, rel if rel.endswith(".json") else f"spec/{rel}.poster.json")
+        if not os.path.exists(path):
+            sys.exit(f"Error: shot spec not found: {path}")
+        with open(path) as sf:
+            specs.append((path, json.load(sf)))
 
-    if len(clips) < 2:
-        return None
-    with_audio, without_audio = [], []
-    for shot_id, path in clips:
-        res = _subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
-             "-of", "json", path], capture_output=True, text=True)
-        try:
-            streams = _json.loads(res.stdout).get("streams", [])
-        except Exception:
-            streams = []
-        has_audio = any(s.get("codec_type") == "audio" for s in streams)
-        (with_audio if has_audio else without_audio).append(shot_id)
-    if with_audio and without_audio:
-        return (f"the shots disagree on audio: {', '.join(with_audio)} carry an "
-                f"audio track, {', '.join(without_audio)} do not. Concatenating "
-                f"them would silently drop every audio track. Give each shot the "
-                f"same audio source — a video layer with \"muted\": false and "
-                f"audio.voiceover (or vice versa) — before assembling.")
-    return None
+    for idx, (path, s_data) in enumerate(specs):
+        sid = s_data["id"]
+        print(f"\n{'=' * 60}\n[{idx + 1}/{len(specs)}] {sid}\n{'=' * 60}")
+        run_stage(["-m", "core.spec", path], f"Spec Validation ({sid})")
+        gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", path]
+        if args.force:
+            gen_args.append("--force")
+        if args.fixture:
+            gen_args.append("--fixture")
+        run_stage(gen_args, f"S1: Asset Generation ({sid})")
+        run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", path], f"S2: Prepare ({sid})")
+        run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", path], f"S3: Compose ({sid})")
+        run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", path], f"S4: Quality Gates ({sid})")
+        run_stage([os.path.join(STAGES, "05_inspect.py"), "--spec", path], f"S5: Inspect ({sid})")
+
+        # SEAM: the next shot may want THIS shot's tail. Freeze it NOW —
+        # before the next shot's S1 goes looking for it. The name is the
+        # "<shot-id>-tail" convention; any unfrozen "<something>-tail" the
+        # next shot references is taken as a seam from this shot.
+        if idx + 1 < len(specs):
+            from core.runtime import manifest
+            nxt = specs[idx + 1][1]
+            wanted = [n for n in referenced_assets(nxt)
+                      if n.endswith("-tail") and manifest.verified("assets", n) is None]
+            mp4 = os.path.join(ROOT, "build", f"{sid}.mp4")
+            for name in wanted:
+                if os.path.exists(mp4):
+                    print(f"  seam: freezing {name} from {os.path.basename(mp4)}")
+                    extract_frame_asset(mp4, name, at="last")
+                else:
+                    print(f"  seam: {os.path.basename(mp4)} is missing — {name} cannot be frozen")
+
+    out_path, code = assemble_timeline(tl, args.output)
+    print(f"\nTimeline run complete: {len(specs)} shots rendered in order, seams frozen, "
+          f"film assembled -> {os.path.relpath(out_path, ROOT)}")
+    print("Visual inspection is PENDING judge — review each contact sheet, then run:")
+    for path, s_data in specs:
+        print(f"  python3 pipeline.py judge --spec {os.path.relpath(path, ROOT)} "
+              f"--verdict pass|fail --notes \"...\"")
+    return code
 
 
-def gate_full_video(out_path, timeline_id, segments):
-    """Post-assembly QC on the concatenated full video.
+def assemble_timeline(tl, out_rel=None):
+    """Assemble a timeline into one mp4 and run the full-video gates.
 
-    Per-shot gates (S4) already ran before stitching; this catches what only
-    exists after shots are joined: total duration vs the timeline, black
-    frames, whole-track silence/loudness, A/V alignment, and loudness jumps
-    across cut boundaries (each shot is loudnorm'd independently — two in-band
-    shots can still pop at the seam). Writes build/gates_full_{timeline}.json
-    (namespaced per timeline, unlike the shared per-shot gates.json)."""
-    from core import audio
+    Shared by `concat` (assemble what already exists) and `run --timeline`
+    (render every shot first, then assemble). A shot whose mp4 is missing is
+    built from the top — but a missing ASSET would cost a model call, so it is
+    never generated here: the author is told exactly which command to run.
 
-    results, red = [], False
+    Returns (out_path, exit_code).
+    """
+    shots = tl.get("shots", [])
+    print(f"\n=== Timeline Assembly: {tl.get('id', 'sequence')} ({len(shots)} clips) ===")
 
-    def add(gid, metric, value, ok, bound):
-        nonlocal red
-        red |= not ok
-        results.append({"id": gid, "metric": metric, "value": value, "bound": bound, "pass": ok})
-        print(f"{'PASS' if ok else 'FAIL'}  {gid:<14} {metric:<22} {value}  [{bound}]")
+    rendered_mp4s = []
+    segments = []  # (shot_id, start_sec, dur_sec) — the full-gate's measurement windows
+    cursor = 0.0
+    for idx, shot in enumerate(shots):
+        if isinstance(shot, dict):
+            shot_spec_rel = shot["spec"]
+            beat = shot.get("beat", "scene")
+            reason = shot.get("reason", "")
+        else:
+            shot_spec_rel = shot
+            beat = "scene"
+            reason = ""
 
-    # 1. Total duration matches the timeline's declared shot durations.
-    expected = sum(d for _, _, d in segments)
-    av = audio.measure_av_durations(out_path)
-    delta = abs(av["video_duration"] - expected)
-    add("duration", "timeline_duration_delta", round(delta, 3), delta <= 0.25, "<= 0.250 s")
+        shot_file = os.path.join(ROOT, shot_spec_rel if shot_spec_rel.endswith(".json") else f"spec/{shot_spec_rel}.poster.json")
+        if not os.path.exists(shot_file):
+            sys.exit(f"Error: shot spec not found: {shot_file}")
+        with open(shot_file) as sf:
+            s_data = json.load(sf)
+        sid = s_data["id"]
 
-    # 2. True digital-black frames (concat fill around missing frames). The dark
-    #    space canvas (#06080F, luma ~8) stays above pixel_black_th=0.02 (~5).
-    bd = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", out_path,
-         "-vf", "blackdetect=d=0.2:picture_black_ratio_th=0.98:pixel_black_th=0.02",
-         "-f", "null", "-"],
-        capture_output=True, text=True).stderr
-    n_black = bd.count("black_start")
-    add("black", "blackdetect", n_black, n_black == 0, "0 intervals")
+        print(f"  [{idx+1}/{len(shots)}] [{beat.upper():<11}] {sid:<24} | {reason if reason else 'No reason specified'}")
 
-    if av.get("has_audio"):
-        sil = audio.measure_audio_silence(out_path)
-        add("audio_silence", "audio_max_volume", round(sil["max_volume"], 1),
-            not sil["is_silent"], "> -45.0 dB")
+        mp4_path = os.path.join(ROOT, "build", f"{sid}.mp4")
+        # Contract: only verified rendered files are assembled. When one is
+        # missing, build it from the top: S1 (reuse the frozen assets),
+        # S2 (prepare them — S3 refuses to render without the prepared
+        # rows), S3 (render), S4 (gate). Running only S3+S4 left a fresh
+        # clone dead on "prepared '<shot>/<layer>' not manifest-verified".
+        if not os.path.exists(mp4_path):
+            # S1 can also GENERATE, which costs money. "Assemble what I
+            # have" must not silently become "generate what is missing":
+            # the assets have to be frozen already, or the author is told
+            # exactly which command to run.
+            missing = missing_assets(s_data)
+            if missing:
+                rel_spec = os.path.relpath(shot_file, ROOT)
+                sys.exit(
+                    f"Timeline {tl.get('id', 'sequence')}: the shot {sid} needs "
+                    f"asset(s) that are not frozen yet: {', '.join(missing)}.\n"
+                    f"  Generating them costs a model call — run it yourself:\n"
+                    f"    python3 pipeline.py generate --spec {rel_spec}\n"
+                    f"  then re-run this concat.")
+            print(f"      [Build Contract] MP4 missing for {sid}. Building and gating now...")
+            run_stage([os.path.join(STAGES, "01_generate.py"), "--spec", shot_file], f"Assets {sid}")
+            run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", shot_file], f"Prepare {sid}")
+            run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", shot_file], f"Render {sid}")
+            run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", shot_file], f"Gate {sid}")
+        rendered_mp4s.append(mp4_path)
+        dur = s_data["durationInFrames"] / s_data["fps"]
+        segments.append((sid, cursor, dur))
+        cursor += dur
 
-        lufs = audio.measure_audio_loudness(out_path)
-        if lufs is not None:
-            add("audio_loudness", "integrated_loudness", round(lufs, 1),
-                -19.0 <= lufs <= -13.0, "-19.0 .. -13.0 LUFS")
+    # The concat demuxer drops the audio track of every shot that has one
+    # when the inputs disagree on whether they carry audio — silently, with
+    # a zero exit code. Refuse before assembling rather than shipping a
+    # film that lost its soundtrack.
+    problem = concat_stream_problem(list(zip(
+        [s for s, _, _ in segments], rendered_mp4s)))
+    if problem:
+        sys.exit(f"Timeline {tl.get('id', 'sequence')}: {problem}")
 
-        add("av_sync", "duration_delta", round(av["delta"], 3), av["delta"] <= 0.25, "<= 0.250 s")
+    tl_id = tl.get("id", "sequence")
+    default_out_rel = f"build/{tl_id}.mp4" if tl_id and tl_id != "sequence" else "build/full.mp4"
+    explicit_out = out_rel is not None
+    out_rel = out_rel or default_out_rel
+    out_path = os.path.join(ROOT, out_rel)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    # Per-timeline list, not a shared slot: two concat runs for different
+    # timelines must not clobber each other's input file.
+    concat_dir = os.path.join(ROOT, "build", "concat")
+    os.makedirs(concat_dir, exist_ok=True)
+    concat_txt = os.path.join(concat_dir, f"{tl_id}.txt")
+    with open(concat_txt, "w") as f:
+        for p in rendered_mp4s:
+            f.write(f"file '{os.path.abspath(p)}'\n")
 
-        # 3. Per-shot loudness at each timeline segment: max pairwise delta.
-        seg_lufs = [
-            audio.measure_audio_loudness(out_path, start=start, duration=dur)
-            for _, start, dur in segments
-        ]
-        if len(seg_lufs) >= 2 and all(v is not None for v in seg_lufs):
-            jump = max(seg_lufs) - min(seg_lufs)
-            add("loudness_jump", "max_pairwise_delta", round(jump, 1), jump <= 3.0, "<= 3.0 LU")
+    print(f"\nConcatenating {len(rendered_mp4s)} shots -> {out_path} ...")
+    # The concat DEMUXER copies both streams byte-for-byte and places each
+    # file's audio by its own track duration. AAC frames are 1024 samples,
+    # so a shot's audio track is a few ms shorter than its video, and
+    # those ms accumulate shot after shot: the tail of one shot's audio
+    # lands at the head of the next. A shot declared SILENT then starts
+    # with a burst of the previous shot's sound — audible at the cut, and
+    # fatal for the full-video loudness_jump gate.
+    #
+    # Split the two jobs: the demuxer aligns the VIDEO correctly and
+    # keeps the frames bit-exact (copy, no re-encode), while the concat
+    # FILTER rebuilds the AUDIO, re-interleaving by presentation
+    # timestamp so each track lands exactly where its video does. Then mux
+    # the two back together.
+    v_out = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_video.mp4")
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
+        "-i", concat_txt, "-an", "-c:v", "copy", v_out,
+    ], check=True)
+
+    a_out = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_audio.m4a")
+    raw_a_out = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_raw_audio.m4a")
+    audio_inputs = []
+    for p in rendered_mp4s:
+        audio_inputs += ["-i", p]
+    chains = "".join(f"[{i}:a]" for i in range(len(rendered_mp4s)))
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y"] + audio_inputs
+        + ["-filter_complex", f"{chains}concat=n={len(rendered_mp4s)}:v=0:a=1[aout]",
+           "-map", "[aout]", "-c:a", "aac", "-b:a", "192k",
+           "-ar", "44100", "-ac", "2", raw_a_out],
+        check=True)
+
+    tl_bgm = (tl.get("bgm") or "").strip() if isinstance(tl.get("bgm"), str) else ""
+    if tl_bgm and tl_bgm.lower() != "none":
+        from core import audio as _audio
+        tl_bgm_wav = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_bgm.wav")
+        total_dur = max(0.5, cursor)
+        if tl_bgm in ("opera", "shadow_puppet", "percussion"):
+            _audio.generate_opera_bgm(total_dur, out_path=tl_bgm_wav)
+        elif tl_bgm == "ambient":
+            _audio.generate_ambient_bgm(total_dur, out_path=tl_bgm_wav)
+        else:
+            candidates = [tl_bgm, os.path.join(ROOT, tl_bgm), os.path.join(ROOT, "assets", tl_bgm)]
+            found_bgm = next((p for p in candidates if os.path.exists(p)), None)
+            if found_bgm:
+                fade_dur = min(0.05, total_dur * 0.1)
+                fade_f = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, total_dur - fade_dur):.3f}:d={fade_dur:.3f}"
+                subprocess.run([
+                    "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1",
+                    "-i", found_bgm, "-t", str(total_dur),
+                    "-af", fade_f, "-ar", "44100", "-ac", "2", tl_bgm_wav
+                ], check=True)
+            else:
+                _audio.generate_ambient_bgm(total_dur, out_path=tl_bgm_wav)
+
+        raw_sil = _audio.measure_audio_silence(raw_a_out)
+        if raw_sil.get("is_silent"):
+            # Shots carry no own audio: master the timeline BGM across the entire film at -16 LUFS
+            _audio.run_two_pass_loudnorm(["-i", tl_bgm_wav], "-af", "", total_dur, a_out)
+            print(f"  timeline bgm: overlaid {tl_bgm} across full film ({total_dur:.2f}s, mastered to -16 LUFS)")
+        else:
+            # Mix shot audio with ducked timeline BGM bed and normalize
+            mix_fc = (
+                f"[0:a]volume=1.0[v];"
+                f"[1:a]volume=0.24[b];"
+                f"[v][b]amix=inputs=2:duration=first:dropout_transition=0:normalize=0"
+            )
+            _audio.run_two_pass_loudnorm(
+                ["-i", raw_a_out, "-i", tl_bgm_wav],
+                "-filter_complex",
+                mix_fc,
+                total_dur,
+                a_out,
+            )
+            print(f"  timeline bgm: mixed {tl_bgm} under shot audio ({total_dur:.2f}s, mastered to -16 LUFS)")
     else:
-        print("SKIP  audio gates (assembled video has no audio track)")
+        shutil.copyfile(raw_a_out, a_out)
 
-    gates_out = os.path.join(ROOT, "build", f"gates_full_{timeline_id}.json")
-    with open(gates_out, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"full-video gates -> {gates_out}")
-    return 1 if red else 0
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-i", v_out, "-i", a_out,
+        "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart", out_path,
+    ], check=True)
+    print(f"Successfully generated: {out_path} (size: {os.path.getsize(out_path)} bytes)")
+
+    # Keep both build/<timeline_id>.mp4 and build/full.mp4 synchronized when
+    # outputting to a canonical path, so opening either filename reflects the
+    # latest assembly. build/full.mp4 is an ALIAS of the latest assembly, not
+    # a per-timeline output — two timelines cannot both own it.
+    canonical_rels = {f"build/{tl_id}.mp4", "build/full.mp4"}
+    if not explicit_out or out_rel in canonical_rels:
+        for mirror_rel in canonical_rels:
+            mirror_path = os.path.join(ROOT, mirror_rel)
+            if os.path.abspath(mirror_path) != os.path.abspath(out_path):
+                shutil.copy2(out_path, mirror_path)
+                print(f"Synchronized alias: {mirror_path}")
+
+    print(f"\n=== [Stage] Full-Video Gates ({tl_id}) ===")
+    return out_path, gate_full_video(out_path, tl_id, segments)
 
 
 PIPELINE_LOCK = os.path.join(ROOT, "build", ".pipeline.lock")
@@ -239,6 +404,11 @@ def main():
     # run (S1..S5)
     p_run = subparsers.add_parser("run", help="Run full pipeline: validate -> S1 -> S2 -> S3 -> S4 -> S5")
     p_run.add_argument("--spec", default="tests/fixtures/shot-01.poster.json")
+    p_run.add_argument("--timeline", default=None,
+                       help="Render every shot of a timeline IN ORDER (seaming them as it goes), "
+                            "then assemble and gate the film. Mutually exclusive with --spec.")
+    p_run.add_argument("--output", default=None,
+                       help="Output mp4 for --timeline (default build/<timeline-id>.mp4)")
     p_run.add_argument("--force", action="store_true", help="Force re-generation of assets")
     p_run.add_argument("--fixture", action="store_true", help="Use deterministic fixture")
 
@@ -306,7 +476,7 @@ def main():
     # concat
     p_cat = subparsers.add_parser("concat", help="Concatenate multiple rendered shots via timeline")
     p_cat.add_argument("--timeline", default="spec/timeline.json", help="Path to timeline.json")
-    p_cat.add_argument("--output", default="build/full.mp4", help="Path to output mp4")
+    p_cat.add_argument("--output", default=None, help="Path to output mp4 (defaults to build/<timeline_id>.mp4 and build/full.mp4)")
 
     # verify-rig
     p_rig = subparsers.add_parser("verify-rig", help="Verify skeletal puppet joint alignment, socket calibration & render diagnostic overlay")
@@ -326,6 +496,11 @@ def main():
     p_block.add_argument("--spec", required=True, help="Path to poster spec JSON")
     p_block.add_argument("--max-overlap", type=float, default=12.0, help="Maximum allowed torso overlap in canvas px (default: 12.0)")
 
+    # verify-continuity
+    p_cont = subparsers.add_parser("verify-continuity", help="Verify multi-scene scrolling transitions ('推拉换景'), cross-shot backdrop handoffs, and narrative props ('砌末')")
+    p_cont.add_argument("--timeline", default=None, help="Path to timeline.json for cross-shot continuity verification")
+    p_cont.add_argument("--spec", default=None, help="Path to a single poster spec JSON for stagecraft & prop verification")
+
     # detect-punches
     p_dp = subparsers.add_parser("detect-punches", help="Auto-detect audio transient peaks (percussion/plosives/sub-bass) for spec.punches")
     p_dp.add_argument("--spec", default="tests/fixtures/shot-01.poster.json", help="Path to spec file")
@@ -336,6 +511,15 @@ def main():
     p_dp.add_argument("--highpass", type=float, default=180.0, help="Highpass filter cutoff in Hz (default 180 for percussion/speech; set 0 or 40 for EDM/sub-bass)")
     p_dp.add_argument("--apply", action="store_true", help="Write detected punches directly into the spec JSON")
 
+    # extract-frame
+    p_xf = subparsers.add_parser(
+        "extract-frame",
+        help="Extract a frame from a rendered clip and freeze it as a manifest asset "
+             "(cross-shot handoff: shot k+1's first_frame)")
+    p_xf.add_argument("--video", required=True, help="Rendered clip to read (e.g. build/shot-01.mp4)")
+    p_xf.add_argument("--name", required=True, help="Asset name to register (e.g. shot-01-tail)")
+    p_xf.add_argument("--at", default="last", help="Which frame: 'last', 'first', or a timestamp in seconds")
+
     # test
     subparsers.add_parser("test", help="Run full regression test suite")
 
@@ -345,7 +529,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "validate":
-        run_stage([os.path.join(CORE, "schema.py"), args.spec], "Spec Validation")
+        run_stage(["-m", "core.spec", args.spec], "Spec Validation")
 
     elif args.command == "generate":
         gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", args.spec]
@@ -377,8 +561,16 @@ def main():
             run_stage([os.path.join(STAGES, "05_inspect.py"), "--spec", args.spec], "S5: Visual Self-Audit Inspection (evidence + instructions)")
 
     elif args.command == "run":
+        if args.timeline:
+            # A timeline run is a WHOLE EPISODE, and its shots have to be
+            # rendered in order: shot k+1 may reference the tail that shot k
+            # produces, so shot k has to exist before shot k+1's S1 looks for
+            # it. The timeline is the only thing the author has to get right.
+            with pipeline_lock():
+                code = run_timeline(args)
+            sys.exit(code)
         with pipeline_lock():
-            run_stage([os.path.join(CORE, "schema.py"), args.spec], "Spec Validation")
+            run_stage(["-m", "core.spec", args.spec], "Spec Validation")
             gen_args = [os.path.join(STAGES, "01_generate.py"), "--spec", args.spec]
             if args.force:
                 gen_args.append("--force")
@@ -399,7 +591,7 @@ def main():
         shot_id = args.shot_id.strip()
         # The shot id becomes the spec file name and every build/ path for
         # that shot — it must not be able to walk out of spec/.
-        from core.schema import valid_name
+        from core.spec.naming import valid_name
         if not valid_name(shot_id):
             sys.exit(
                 f"shot id must be a letters/digits/._- string (got {shot_id!r}); "
@@ -410,10 +602,14 @@ def main():
             print(f"Spec already exists: {target}")
             return
         if args.from_shot:
-            from core.schema import carry_state_from, load_spec
-            prev_path = args.from_shot
-            if not prev_path.endswith(".json"):
-                prev_path = f"spec/{prev_path}.poster.json"
+            from core.spec.state import carry_state_from
+            from core.spec.loader import load_spec
+            prev_arg = args.from_shot
+            if not prev_arg.endswith(".json"):
+                prev_arg = f"spec/{prev_arg}.poster.json"
+            prev_path = prev_arg if os.path.isabs(prev_arg) else os.path.join(ROOT, prev_arg)
+            if not os.path.exists(prev_path) and os.path.exists(prev_arg):
+                prev_path = prev_arg
             prev_spec = load_spec(prev_path)
             template = carry_state_from(prev_spec, shot_id)
             with open(target, "w") as f:
@@ -426,10 +622,10 @@ def main():
         template = {
             "_design_hints": [
                 "Pipeline is fixed; this skeleton has no layout by design.",
-                "Environment-Adaptive Routing & Division-of-Labor (probe runtime tools FIRST):",
-                "  Path 1 (Image Gen + Video Gen): generate keyframe plate -> feed I2V -> use type:'video' layer.",
-                "  Path 2 (Image Gen only, NO Video Gen): NEVER hand-code organic/cultural characters with geometric SVG! Generate flat orthographic backdrop + AI character/prop sprite(s) on solid keyColor, set cutout:true & clipRect:[x,y,w,h], detach weapons/limbs with split-sprite (parent + pivot), add gait:{mode:'puppet'|'walk'|'shudder'} + snap/overshoot eases for staccato operatic rhythm, and run sync-audio so captions and durationInFrames match audio.voiceover.",
-                "  Path 3 (Code-first / Pure Procedural): use type:'code' (field/path/captions) or type:'component' for mathematical/geometric diagrams.",
+                "Environment-Adaptive Discovery & Free Modality Composition (LLM decides how to combine):",
+                "  - Probe available image/video models and tools in the runtime environment (never hardcode model IDs).",
+                "  - Freely combine `code` (grid/dots/bar/field/path/captions), `ai` (still plates, cutout sprites, articulated skeletal rigs), and `video` (generative clips) within the same shot or across shots so each modality plays to its strength.",
+                "  - Any static `code` plate (grid/dots), `ai` asset, or `manifest` asset can feed a `video` layer via `first_frame` / `last_frame` / `reference_images` or an `ai` layer via `input_asset`.",
                 "Design composition from the shot's narrative role FIRST:",
                 "  hook -> full-bleed poster (ai plate:false + big title via anim + field/path accents)",
                 "  development -> pure diagram (no ai layer; formula card timed to narration)",
@@ -438,13 +634,13 @@ def main():
                 "  anim (x/y/scale/opacity/rotate keyframes, ease in/out/inout/snap/overshoot/step),",
                 "  gait (mode: puppet|walk|float|shudder, freq, bob, sway, range),",
                 "  field particles, path reveal/flow lines, vibe:false, plate:false.",
-                "Choosing the subject layer — ai or video, pick ONE per shot:",
-                "  ai layer  = a still plate from the image model (no motion of its own).",
-                "  video layer = a generated CLIP (moving footage, the native video",
-                "    models). Pick video when the shot needs motion in the subject.",
-                "  video layer keys: \"model\" (MiniMax-H3 / H3-Max / Hailuo-2.3),",
-                "    \"duration\" (seconds; the model's allowed range), \"muted\"",
-                "    (false = the clip's own audio track is the soundtrack).",
+                "Choosing the subject layer — ai or video, pick ONE primary backdrop per shot (or layer cutouts over it):",
+                "  ai layer  = a still plate or cutout rig from the image model.",
+                "  video layer = a generated CLIP (moving footage from the environment's video",
+                "    models). Pick video when the shot needs continuous motion in the plate.",
+                "  video layer keys: \"model\" (resolved from environment/core/generation/models.py),",
+                "    \"duration\" (seconds; within the model's supported range), \"muted\"",
+                "    (false = the clip's own audio track is the soundtrack), \"first_frame\".",
                 "  SKILL.md 'Using a generated video clip' has the full spec snippet.",
                 "Before designing: ROLL THE DICE (SKILL.md 'Creative dice') — sample",
                 "  composition x palette x entrance x camera x HUD-density, commit the",
@@ -513,8 +709,8 @@ def main():
             sys.exit("derive-poses requires either --sheet <asset> or --from-asset <asset>")
 
     elif args.command == "snap-joint":
-        from core import manifest
-        from core.png import read_size
+        from core.runtime import manifest
+        from core.media.png import read_size
         from core.rig import snap_socket_joint
         p_row = manifest.verified("assets", args.parent_asset)
         c_row = manifest.verified("assets", args.child_asset)
@@ -595,7 +791,7 @@ def main():
             tolerance=args.tolerance,
         )
         print(f"\n=== Combat Contact Verification: {spec_data.get('id', 'puppet')} ===")
-        for d in res["details"]:
+        for d in (res.get("details") or []):
             print(f"  Frame {d['frame']:3d}: [{d['status']}] weapon_tip={d['weapon_tip']} target_hitbox={d['target_hitbox']} gap={d['gap_px']}px")
         if not res["passed"]:
             print(f"\nCombat Contact FAILED (Whiffing detected):\n  " + "\n  ".join(res["errors"]))
@@ -617,6 +813,38 @@ def main():
             print(f"\nStage Blocking FAILED (Co-planar character overlap detected):\n  " + "\n  ".join(res["errors"]))
             sys.exit(1)
         print("\nStage Blocking PASSED (Zero co-planar torso overlap across all frames).")
+
+    elif args.command == "verify-continuity":
+        from core.rig import verify_shot_stagecraft, verify_timeline_continuity
+        if args.timeline:
+            tl_path = os.path.join(ROOT, args.timeline)
+            if not os.path.exists(tl_path):
+                sys.exit(f"Timeline not found: {tl_path}")
+            with open(tl_path) as f:
+                tl_data = json.load(f)
+            res = verify_timeline_continuity(tl_data, root_dir=ROOT)
+            print(f"\n=== Multi-Scene Timeline Continuity Verification: {tl_data.get('id', 'timeline')} ===")
+            for s in res["shots"]:
+                scroll_tag = "SCROLL_TRANSITION" if s["has_in_shot_scroll"] else "STATIC_STAGE"
+                print(f"  [SHOT] {s['shot_id']:<22} ({s['duration_sec']:>5.1f}s) | {scroll_tag:<17} | bg: {s['start_backdrop']} -> {s['end_backdrop']} | props={len(s['narrative_props'])}")
+            for h in res["handoffs"]:
+                print(f"  [{h['status']}] {h['from_shot']} -> {h['to_shot']} | handoff: {h['end_backdrop']} == {h['next_start_backdrop']}")
+            if not res["passed"]:
+                print(f"\nTimeline Continuity FAILED:\n  " + "\n  ".join(res["errors"]))
+                sys.exit(1)
+            print("\nTimeline Continuity PASSED (All scene transitions, backdrop handoffs & narrative props verified).")
+        elif args.spec:
+            spec_path = os.path.join(ROOT, args.spec)
+            if not os.path.exists(spec_path):
+                sys.exit(f"Spec not found: {spec_path}")
+            with open(spec_path) as f:
+                spec_data = json.load(f)
+            res = verify_shot_stagecraft(spec_data)
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            if not res["passed"]:
+                sys.exit(1)
+        else:
+            sys.exit("verify-continuity requires either --timeline <timeline.json> or --spec <spec.json>")
 
     elif args.command == "detect-punches":
         from core.audio import detect_audio_punches
@@ -646,109 +874,38 @@ def main():
         print(json.dumps(res, indent=2, ensure_ascii=False))
 
     elif args.command == "concat":
-        timeline_path = os.path.join(ROOT, args.timeline)
-        if not os.path.exists(timeline_path):
-            os.makedirs(os.path.dirname(timeline_path), exist_ok=True)
-            with open(timeline_path, "w") as f:
-                json.dump({"id": "full-sequence", "shots": ["tests/fixtures/shot-01.poster.json"]}, f, indent=2)
-            print(f"Created default timeline at: {timeline_path}")
+        tl = load_timeline(args.timeline, create_default=True)
+        out_path, code = assemble_timeline(tl, args.output)
+        sys.exit(code)
 
-        with open(timeline_path) as f:
-            tl = json.load(f)
-
-        from core.schema import validate_timeline
-        tl_errs = validate_timeline(tl)
-        if tl_errs:
-            sys.exit(f"Timeline validation failed:\n  " + "\n  ".join(tl_errs))
-
-        shots = tl.get("shots", [])
-        print(f"\n=== Timeline Assembly: {tl.get('id', 'sequence')} ({len(shots)} clips) ===")
-
-        rendered_mp4s = []
-        segments = []  # (shot_id, start_sec, dur_sec) — the full-gate's measurement windows
-        cursor = 0.0
-        for idx, shot in enumerate(shots):
-            if isinstance(shot, dict):
-                shot_spec_rel = shot["spec"]
-                beat = shot.get("beat", "scene")
-                reason = shot.get("reason", "")
-            else:
-                shot_spec_rel = shot
-                beat = "scene"
-                reason = ""
-
-            shot_file = os.path.join(ROOT, shot_spec_rel if shot_spec_rel.endswith(".json") else f"spec/{shot_spec_rel}.poster.json")
-            if not os.path.exists(shot_file):
-                sys.exit(f"Error: shot spec not found: {shot_file}")
-            with open(shot_file) as sf:
-                s_data = json.load(sf)
-            sid = s_data["id"]
-
-            print(f"  [{idx+1}/{len(shots)}] [{beat.upper():<11}] {sid:<24} | {reason if reason else 'No reason specified'}")
-
-            mp4_path = os.path.join(ROOT, "build", f"{sid}.mp4")
-            # Contract: only verified rendered files are assembled. When one is
-            # missing, build it from the top: S1 (reuse the frozen assets),
-            # S2 (prepare them — S3 refuses to render without the prepared
-            # rows), S3 (render), S4 (gate). Running only S3+S4 left a fresh
-            # clone dead on "prepared '<shot>/<layer>' not manifest-verified".
-            if not os.path.exists(mp4_path):
-                # S1 can also GENERATE, which costs money. "Assemble what I
-                # have" must not silently become "generate what is missing":
-                # the assets have to be frozen already, or the author is told
-                # exactly which command to run.
-                missing = missing_assets(s_data)
-                if missing:
-                    rel_spec = os.path.relpath(shot_file, ROOT)
-                    sys.exit(
-                        f"Timeline {tl.get('id', 'sequence')}: the shot {sid} needs "
-                        f"asset(s) that are not frozen yet: {', '.join(missing)}.\n"
-                        f"  Generating them costs a model call — run it yourself:\n"
-                        f"    python3 pipeline.py generate --spec {rel_spec}\n"
-                        f"  then re-run this concat.")
-                print(f"      [Build Contract] MP4 missing for {sid}. Building and gating now...")
-                run_stage([os.path.join(STAGES, "01_generate.py"), "--spec", shot_file], f"Assets {sid}")
-                run_stage([os.path.join(STAGES, "02_prepare.py"), "--spec", shot_file], f"Prepare {sid}")
-                run_stage([os.path.join(STAGES, "03_compose.py"), "--spec", shot_file], f"Render {sid}")
-                run_stage([os.path.join(STAGES, "04_gate.py"), "--spec", shot_file], f"Gate {sid}")
-            rendered_mp4s.append(mp4_path)
-            dur = s_data["durationInFrames"] / s_data["fps"]
-            segments.append((sid, cursor, dur))
-            cursor += dur
-
-        # The concat demuxer drops the audio track of every shot that has one
-        # when the inputs disagree on whether they carry audio — silently, with
-        # a zero exit code. Refuse before assembling rather than shipping a
-        # film that lost its soundtrack.
-        problem = concat_stream_problem(list(zip(
-            [s for s, _, _ in segments], rendered_mp4s)))
-        if problem:
-            sys.exit(f"Timeline {tl.get('id', 'sequence')}: {problem}")
-
-        out_path = os.path.join(ROOT, args.output)
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        # Per-timeline list, not a shared slot: two concat runs for different
-        # timelines must not clobber each other's input file.
-        concat_dir = os.path.join(ROOT, "build", "concat")
-        os.makedirs(concat_dir, exist_ok=True)
-        concat_txt = os.path.join(concat_dir, f"{tl.get('id', 'sequence')}.txt")
-        with open(concat_txt, "w") as f:
-            for p in rendered_mp4s:
-                f.write(f"file '{os.path.abspath(p)}'\n")
-
-        print(f"\nConcatenating {len(rendered_mp4s)} shots -> {out_path} ...")
-        cmd = [
-            "ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
-            "-i", concat_txt, "-c", "copy", "-movflags", "+faststart", out_path
-        ]
-        subprocess.run(cmd, check=True)
-        print(f"Successfully generated: {out_path} (size: {os.path.getsize(out_path)} bytes)")
-
-        print(f"\n=== [Stage] Full-Video Gates ({tl.get('id', 'sequence')}) ===")
-        sys.exit(gate_full_video(out_path, tl.get("id", "sequence"), segments))
+    elif args.command == "extract-frame":
+        # A cross-shot handoff needs the tail of one clip to BE the head of
+        # the next. The video model can be told to end on a given image
+        # (last_frame), but that only approximates the endpoint; extracting
+        # the rendered frame makes the join exact. The result is frozen in
+        # the manifest like any other asset, so the next shot can name it as
+        # its first_frame with no special path through S1.
+        src = args.video if os.path.isabs(args.video) else os.path.join(ROOT, args.video)
+        if not os.path.exists(src):
+            sys.exit(f"Video not found: {src}\n"
+                     f"  render it first:  python3 pipeline.py run --spec <spec>")
+        at = str(args.at).strip().lower()
+        try:
+            row = extract_frame_asset(src, args.name, at)
+        except (RuntimeError, ValueError) as ex:
+            sys.exit(str(ex))
+        print(f"Extracted the {at} frame from {os.path.relpath(src, ROOT)}")
+        print(f"Registered assets/{args.name}.png sha256={row['sha256'][:12]}")
+        print(f"  next shot: \"type\": \"video\", \"first_frame\": \"{args.name}\"")
 
     elif args.command == "test":
-        run_stage(["-m", "unittest", "discover", "tests"], "Regression Test Suite")
+        # -t . keeps the repo root as the top-level dir, so the test
+        # sub-packages are imported as tests.<pkg>.<module>. Without it,
+        # discovery treats `tests/` as the top level and imports the
+        # sub-packages as `core`, `stages`, `pipeline` — which shadow the
+        # engine's own core/ and stages/ packages.
+        run_stage(["-m", "unittest", "discover", "-s", "tests", "-t", "."],
+                  "Regression Test Suite")
 
     elif args.command == "clean":
         b_dir = os.path.join(ROOT, "build")

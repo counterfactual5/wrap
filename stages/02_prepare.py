@@ -13,11 +13,14 @@ import sys
 # importlib).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from core import manifest
-from core.draw import dots, grid
-from core.metrics import edge_key_purity, read_rgb
-from core.png import read_size, write_png
-from core.schema import ROOT, gate_of, hex_rgb, load_spec
+from core.runtime import manifest
+from core.media.draw import dots, grid
+from core.quality.pixels import edge_key_purity, read_rgb
+from core.media.png import read_size, write_png
+from core.runtime.config import ROOT
+from core.spec.shot import gate_of
+from core.spec.naming import hex_rgb
+from core.spec.loader import load_spec
 
 
 # Upscale factor above which a video layer's softness is worth flagging.
@@ -104,13 +107,12 @@ def main():
     prep_dir = os.path.join(ROOT, "build", "prepared", shot_id)
     os.makedirs(prep_dir, exist_ok=True)
     blocked = False
+    prepared_asset_configs = {}
 
     for L in spec["layers"]:
         if L["type"] == "code" and L["draw"] in ("grid", "dots"):
-            rel = f"build/prepared/{shot_id}/{L['id']}.png"
-            img_data = grid(W, H, palette) if L["draw"] == "grid" else dots(W, H, palette)
-            write_png(os.path.join(ROOT, rel), W, H, img_data)
-            manifest.register("prepared", f"{shot_id}/{L['id']}", rel, source="code")
+            from core.media.draw import prepare_code_layer
+            rel, _ = prepare_code_layer(spec, L, palette=palette, root=ROOT)
             print(f"drew {rel} ({L['draw']})")
 
         if L["type"] not in ("ai", "video"):
@@ -274,14 +276,30 @@ def main():
                 if g is not None and is_opaque_backdrop:
                     print(f"{asset_name}: full-bleed opaque backdrop (plate:false, blend:normal) — edge_key_purity exempt")
 
-            rel = f"build/prepared/{shot_id}/{asset_name}.png"
-            subprocess.run(
-                ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
-                 os.path.join(ROOT, rel)],
-                check=True
-            )
-            manifest.register("prepared", f"{shot_id}/{asset_name}", rel, source="scaled", purity=purity, size=[pw, ph])
-            print(f"prepared {rel} {pw}x{ph}")
+            cfg_sig = (pw, ph, cutout, vf)
+            prev_sig = prepared_asset_configs.get(asset_name)
+            if prev_sig is None or prev_sig == cfg_sig:
+                prepared_asset_configs[asset_name] = cfg_sig
+                rel = f"build/prepared/{shot_id}/{asset_name}.png"
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
+                     os.path.join(ROOT, rel)],
+                    check=True
+                )
+                manifest.register("prepared", f"{shot_id}/{asset_name}", rel, source="scaled", purity=purity, size=[pw, ph])
+                print(f"prepared {rel} {pw}x{ph}")
+            if prev_sig is not None and prev_sig != cfg_sig and asset_name == L["asset"]:
+                # Secondary layer sharing the same asset with a different rect/cutout config:
+                # write a layer-scoped prepared image so the primary asset's prepared file is not clobbered.
+                layer_key = f"{L['id']}__layer"
+                rel_layer = f"build/prepared/{shot_id}/{layer_key}.png"
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
+                     os.path.join(ROOT, rel_layer)],
+                    check=True
+                )
+                manifest.register("prepared", f"{shot_id}/{layer_key}", rel_layer, source="scaled", purity=purity, size=[pw, ph])
+                print(f"prepared {rel_layer} {pw}x{ph} (layer-scoped for {L['id']})")
 
     return 1 if blocked else 0
 

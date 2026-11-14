@@ -32,8 +32,9 @@ import sys
 # importlib).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from core import manifest
-from core.schema import ROOT, load_spec
+from core.runtime import manifest
+from core.runtime.config import ROOT
+from core.spec.loader import load_spec
 
 
 def extract_checklist(spec):
