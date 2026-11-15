@@ -30,11 +30,32 @@ for (const ext of ['.ts', '.tsx']) require.extensions[ext] = (mod, filename) => 
     compilerOptions: {jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, esModuleInterop: true},
   }).outputText, filename);
 };
+// Compile a type-level contract: transpileModule alone does not check types.
+const path = require('node:path');
+const typeFile = path.resolve(__dirname, 'tracks-contract.ts');
+const source = `import type {Tracks} from '../../remotion/spec';
+const tracks: Tracks = {captions: [{frame: 0, text: 'hi'}], events: [{frame: 1, kind: 'cut'}], beats: [{frame: 2, strength: 1}]};
+tracks.captions?.[0].text.toUpperCase();
+tracks.events?.[0].frame.toFixed();
+// @ts-expect-error captions require text
+const badCaption: Tracks = {captions: [{frame: 0}]};
+// @ts-expect-error arbitrary tracks require frame
+const badTrack: Tracks = {beats: [{strength: 1}]};
+// @ts-expect-error caption text retains its string type
+tracks.captions?.[0].text.toFixed();`;
+const options = {strict: true, noEmit: true, skipLibCheck: true, target: ts.ScriptTarget.ES2020, moduleResolution: ts.ModuleResolutionKind.NodeJs};
+const host = ts.createCompilerHost(options);
+const readFile = host.readFile.bind(host);
+const fileExists = host.fileExists.bind(host);
+host.readFile = name => name === typeFile ? source : readFile(name);
+host.fileExists = name => name === typeFile || fileExists(name);
+const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram([typeFile], options, host));
+assert.equal(ts.formatDiagnosticsWithColorAndContext(diagnostics, {getCurrentDirectory: () => process.cwd(), getCanonicalFileName: x => x, getNewLine: () => '\n'}), '');
 const {Shot} = require('../../remotion/Shot.tsx');
 const {channelValue, evalLayerTransform} = require('../../remotion/kinematics.ts');
 const layer = {id: 'scene', type: 'component', component: 'Scene', rect: [12, 15, 30, 40], z: 0};
 const spec = {id: 'test', canvas: {w: 100, h: 100}, fps: 30, durationInFrames: 11, layers: [layer],
-  tracks: {captions: [{frame: 0, end_frame: 8, text: 'hello'}], events: [{frame: 5, value: 42}]}};
+  tracks: {captions: [{frame: 0, end_frame: 8, text: 'hello'}], events: [{frame: 5, value: 42}], beats: [{frame: 3, strength: 1}]}};
 const prepared = {image: 'data:image/png;base64,AA=='};
 const preparedVideos = {clip: 'prepared/test/clip.mp4'};
 const render = (extra = {}) => renderToStaticMarkup(React.createElement(Shot, {spec, prepared, preparedVideos, ...extra}));

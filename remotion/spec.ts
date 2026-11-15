@@ -68,6 +68,7 @@ export type ComponentLayer = LayerGeometry & {
 };
 export type Layer = AiLayer | VideoLayer | ComponentLayer;
 export type Tracks = {
+  [name: string]: Array<{frame: number; [key: string]: unknown}> | undefined;
   captions?: Array<{frame: number; end_frame?: number; text: string}>;
   events?: Array<{frame: number; [key: string]: unknown}>;
 };

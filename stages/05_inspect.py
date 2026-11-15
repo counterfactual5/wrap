@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -82,27 +83,57 @@ def contact_sheet_cell(vw, vh, long_side=640):
     if not vw or not vh:
         return (long_side, long_side)
     if vh >= vw:
-        return round(long_side * vw / vh), long_side
-    return long_side, round(long_side * vh / vw)
+        return max(1, round(long_side * vw / vh)), long_side
+    return long_side, max(1, round(long_side * vh / vw))
+
+
+def contact_sample_indices(duration_frames, grid):
+    """Evenly cover both endpoints; repeat frames for short videos.
+
+    A single cell shows the first frame. duration_frames must match the video;
+    otherwise generating the sheet fails rather than silently leaving cells blank.
+    """
+    if not isinstance(grid, str) or not re.fullmatch(r"[1-9][0-9]*x[1-9][0-9]*", grid):
+        raise ValueError("grid must have positive integer dimensions, e.g. 3x3")
+    if isinstance(duration_frames, bool) or not isinstance(duration_frames, int) or duration_frames < 1:
+        raise ValueError("duration_frames must be a positive integer")
+    cols, rows = map(int, grid.split("x"))
+    count = cols * rows
+    if count == 1:
+        return [0]
+    return [(i * (duration_frames - 1) * 2 + count - 1) // (2 * (count - 1))
+            for i in range(count)]
 
 
 def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"):
-    cols, rows = map(int, grid.split("x"))
-    total_samples = cols * rows
-    # Sample exactly total_samples frames, evenly spread across the shot; short
-    # shots use every frame.
-    step = max(1, (duration_frames + total_samples - 1) // total_samples)
-
+    indices = contact_sample_indices(duration_frames, grid)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", mp4_path],
+        capture_output=True, text=True, check=True)
+    try:
+        actual_frames = int(probe.stdout.strip())
+    except ValueError as exc:
+        raise ValueError("cannot determine video frame count") from exc
+    if actual_frames != duration_frames:
+        raise ValueError(f"video has {actual_frames} frames, expected {duration_frames}")
     vw, vh = probe_video_dims(mp4_path)
     cw, ch = contact_sheet_cell(vw, vh)
 
-    os.makedirs(os.path.dirname(out_sheet_path), exist_ok=True)
-    vf = f"select='not(mod(n\\,{step}))',scale={cw}:{ch},tile={grid}"
+    os.makedirs(os.path.dirname(out_sheet_path) or ".", exist_ok=True)
+    # Each branch selects one frame, so repeated indices fill short-shot grids.
+    # Concatenation followed by tile also avoids FFmpeg's partial-sheet padding.
+    branches = ''.join(f'[s{i}]' for i in range(len(indices)))
+    filters = [f'[0:v]split={len(indices)}{branches}']
+    for i, index in enumerate(indices):
+        filters.append(f'[s{i}]select=eq(n\\,{index}),setpts=PTS-STARTPTS[f{i}]')
+    inputs = ''.join(f'[f{i}]' for i in range(len(indices)))
+    filters.append(f'{inputs}concat=n={len(indices)}:v=1:a=0,scale={cw}:{ch},tile={grid}[sheet]')
 
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-i", mp4_path,
-        "-vf", vf,
+        "-filter_complex", ';'.join(filters), "-map", "[sheet]",
         "-frames:v", "1",
         out_sheet_path
     ]
