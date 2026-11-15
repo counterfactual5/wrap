@@ -79,6 +79,40 @@ def load_timeline(rel_path, create_default=False):
         sys.exit(str(ex))
 
 
+def _timeline_shot_specs(tl):
+    specs = []
+    for shot in tl.get("shots", []):
+        rel = shot["spec"] if isinstance(shot, dict) else shot
+        path = os.path.join(ROOT, rel if rel.endswith(".json") else f"spec/{rel}.poster.json")
+        if not os.path.exists(path):
+            sys.exit(f"Error: shot spec not found: {path}")
+        with open(path) as sf:
+            specs.append((path, json.load(sf)))
+    return specs
+
+
+def _check_timeline_bgm_intent(tl, specs):
+    from core.audio.shot import shot_is_intentionally_silent
+
+    if "allow_bgm_override_silent" in tl and not isinstance(tl["allow_bgm_override_silent"], bool):
+        sys.exit("timeline 'allow_bgm_override_silent' must be a boolean")
+    bgm = (tl.get("bgm") or "").strip() if isinstance(tl.get("bgm"), str) else ""
+    if not bgm or bgm.lower() == "none":
+        return
+    candidates = [bgm, os.path.join(ROOT, bgm), os.path.join(ROOT, "assets", bgm)]
+    found_bgm = next((p for p in candidates if os.path.exists(p)), None)
+    if not found_bgm:
+        raise FileNotFoundError(f"Timeline BGM file not found: {bgm}; built-in music presets were removed")
+    silent = [spec["id"] for _, spec in specs if shot_is_intentionally_silent(spec)]
+    if silent and tl.get("allow_bgm_override_silent") is not True:
+        sys.exit(
+            f"Timeline {tl.get('id', 'sequence')}: timeline.bgm would override "
+            f"intentionally silent shot(s): {', '.join(silent)}. "
+            "Set allow_bgm_override_silent:true explicitly to allow this.")
+    from core.audio.integrity import verify_audio
+    verify_audio(found_bgm)
+
+
 def run_timeline(args):
     """Render every shot of a timeline IN ORDER, seam them, assemble, gate.
 
@@ -92,14 +126,8 @@ def run_timeline(args):
     shots = tl.get("shots", [])
     print(f"\n=== Timeline Run: {tl.get('id', 'sequence')} — {len(shots)} shots, in order ===")
 
-    specs = []
-    for shot in shots:
-        rel = shot["spec"] if isinstance(shot, dict) else shot
-        path = os.path.join(ROOT, rel if rel.endswith(".json") else f"spec/{rel}.poster.json")
-        if not os.path.exists(path):
-            sys.exit(f"Error: shot spec not found: {path}")
-        with open(path) as sf:
-            specs.append((path, json.load(sf)))
+    specs = _timeline_shot_specs(tl)
+    _check_timeline_bgm_intent(tl, specs)
 
     for idx, (path, s_data) in enumerate(specs):
         sid = s_data["id"]
@@ -154,24 +182,20 @@ def assemble_timeline(tl, out_rel=None):
     shots = tl.get("shots", [])
     print(f"\n=== Timeline Assembly: {tl.get('id', 'sequence')} ({len(shots)} clips) ===")
 
+    specs = _timeline_shot_specs(tl)
+    _check_timeline_bgm_intent(tl, specs)
     rendered_mp4s = []
     segments = []  # (shot_id, start_sec, dur_sec) — the full-gate's measurement windows
     cursor = 0.0
     for idx, shot in enumerate(shots):
         if isinstance(shot, dict):
-            shot_spec_rel = shot["spec"]
             beat = shot.get("beat", "scene")
             reason = shot.get("reason", "")
         else:
-            shot_spec_rel = shot
             beat = "scene"
             reason = ""
 
-        shot_file = os.path.join(ROOT, shot_spec_rel if shot_spec_rel.endswith(".json") else f"spec/{shot_spec_rel}.poster.json")
-        if not os.path.exists(shot_file):
-            sys.exit(f"Error: shot spec not found: {shot_file}")
-        with open(shot_file) as sf:
-            s_data = json.load(sf)
+        shot_file, s_data = specs[idx]
         sid = s_data["id"]
 
         print(f"  [{idx+1}/{len(shots)}] [{beat.upper():<11}] {sid:<24} | {reason if reason else 'No reason specified'}")
@@ -271,6 +295,8 @@ def assemble_timeline(tl, out_rel=None):
         candidates = [tl_bgm, os.path.join(ROOT, tl_bgm), os.path.join(ROOT, "assets", tl_bgm)]
         found_bgm = next((p for p in candidates if os.path.exists(p)), None)
         if found_bgm:
+            from core.audio.integrity import verify_audio
+            found_bgm = verify_audio(found_bgm)
             fade_dur = min(0.05, total_dur * 0.1)
             fade_f = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, total_dur - fade_dur):.3f}:d={fade_dur:.3f}"
             subprocess.run([

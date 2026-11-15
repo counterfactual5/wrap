@@ -3,7 +3,9 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 sys.path.insert(0, ROOT)
@@ -19,10 +21,27 @@ def _local_bgm(tmpdir, seconds=10):
     sp.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
             "-i", f"sine=frequency=220:duration={seconds}",
             "-ar", "44100", "-ac", "2", bgm], check=True)
+    from core.audio.integrity import register_audio
+    register_audio(bgm)
     return bgm
 
 
-class TestConcat(unittest.TestCase):
+class IsolatedConcatTest(unittest.TestCase):
+    def setUp(self):
+        os.makedirs(os.path.join(ROOT, ".tmp"), exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(dir=os.path.join(ROOT, ".tmp"))
+        self.addCleanup(temporary.cleanup)
+        env = patch.dict(os.environ, POSTER_MANIFEST=os.path.join(temporary.name, "manifest.json"))
+        env.start()
+        self.addCleanup(env.stop)
+        # Register a local plate in this ledger without touching project assets.
+        from tests.helpers import write_fixture, register_test_asset
+        plate = os.path.join(temporary.name, "city.png")
+        write_fixture(plate, w=1920, h=1080)
+        register_test_asset("city-silhouette", plate)
+
+
+class TestConcat(IsolatedConcatTest):
     def test_00_concat_builds_a_missing_shot_end_to_end(self):
         """A shot with no rendered mp4 must be built by the concat command
         itself — assets, preparation, render, gate — not just rendered.
@@ -129,6 +148,7 @@ class TestConcat(unittest.TestCase):
         with open(tl_path, "w") as f:
             json.dump({
                 "id": "tl-bgm-seq",
+                "allow_bgm_override_silent": True,
                 "bgm": _local_bgm(os.path.join(ROOT, ".tmp")),
                 "shots": ["tests/fixtures/shot-01.poster.json"]
             }, f, indent=2)
@@ -153,7 +173,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestConcatAudioAlignment(unittest.TestCase):
+class TestConcatAudioAlignment(IsolatedConcatTest):
     """Concat must not leave one shot's audio at the head of the next.
 
     The concat demuxer copies both streams byte-for-byte and places each
@@ -231,7 +251,7 @@ class TestConcatAudioAlignment(unittest.TestCase):
                         os.remove(p)
 
 
-class TestRunTimeline(unittest.TestCase):
+class TestRunTimeline(IsolatedConcatTest):
     """`run --timeline` renders the shots IN ORDER and seams them as it goes.
 
     The order is the whole point: shot k+1's first_frame may name the asset

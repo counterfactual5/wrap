@@ -18,6 +18,8 @@ def validate_timeline(timeline):
         e("timeline 'bgm' must be a string (audio file path)")
     if "allow_black" in timeline and not isinstance(timeline["allow_black"], bool):
         e("timeline 'allow_black' must be a boolean")
+    if "allow_bgm_override_silent" in timeline and not isinstance(timeline["allow_bgm_override_silent"], bool):
+        e("timeline 'allow_bgm_override_silent' must be a boolean")
     shots = timeline.get("shots")
     if not isinstance(shots, list) or len(shots) == 0:
         e("timeline 'shots' must be a non-empty list")
