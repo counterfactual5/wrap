@@ -11,6 +11,7 @@ from core.runtime.config import ROOT
 from core.audio.captions import clauses_from_boundaries
 from core.audio.mastering import run_two_pass_loudnorm
 from core.audio.tts import get_audio_duration, synthesize_voiceover_with_timings
+from core.audio.integrity import verify_audio
 
 def shot_is_intentionally_silent(spec):
     """True when the spec asks for NO soundtrack at all.
@@ -53,8 +54,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
     bgm_type = audio_spec.get("bgm") if isinstance(audio_spec, dict) else None
     bgm_offset = float(audio_spec.get("bgmOffset", 0.0)) if isinstance(audio_spec, dict) and audio_spec.get("bgmOffset") is not None else 0.0
     rate = (audio_spec.get("rate") or "+0%") if isinstance(audio_spec, dict) else "+0%"
-    if voiceover_text and not voice:
-        raise ValueError("audio.voiceover requires an explicit audio.voice; the engine ships no default narrator")
+
 
     # Unique per-shot prefix so concurrent S3 runs never share scratch files.
     tmp_voice = out_path + ".voice.wav"
@@ -64,13 +64,18 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
     raw_voice_dur = 0.0
     boundaries = []
     if voiceover_text:
-        if os.path.exists(voiceover_text):
+        voice_path = next((p for p in (voiceover_text, os.path.join(ROOT, voiceover_text),
+                                        os.path.join(ROOT, "assets", voiceover_text))
+                           if os.path.isfile(p)), None)
+        if voice_path:
             import shutil
-            shutil.copyfile(voiceover_text, tmp_voice)
+            shutil.copyfile(verify_audio(voice_path), tmp_voice)
             raw_voice_dur = get_audio_duration(tmp_voice)
         else:
             if voiceover_text.lower().endswith((".wav", ".mp3", ".aac", ".m4a", ".ogg", ".flac")):
                 raise FileNotFoundError(f"Voiceover file not found: {voiceover_text}")
+            if not voice:
+                raise ValueError("text audio.voiceover requires an explicit audio.voice; the engine ships no default narrator")
             _, raw_voice_dur, boundaries = synthesize_voiceover_with_timings(
                 voiceover_text, voice=voice, out_path=tmp_voice, rate=rate
             )
@@ -79,7 +84,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
     # Record speech timing & truncation metadata per shot so S4 can gate against cut-off narration
     clauses = (
         clauses_from_boundaries(voiceover_text, boundaries, raw_voice_dur, fps=fps)
-        if has_voice and not os.path.exists(voiceover_text)
+        if has_voice and not voice_path
         else []
     )
     meta = {
@@ -110,6 +115,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
         ]
         found_bgm = next((p for p in candidates if os.path.exists(p)), None)
         if found_bgm:
+            found_bgm = verify_audio(found_bgm)
             fade_dur = min(0.04, target_duration * 0.1)
             fade_filter = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, target_duration - fade_dur):.3f}:d={fade_dur:.3f}"
             seek_args = ["-ss", f"{bgm_offset:.3f}"] if bgm_offset > 0 else []

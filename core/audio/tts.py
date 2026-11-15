@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 
 from core.runtime.config import ROOT
+from core.runtime import manifest
+from core.audio.integrity import _identity, register_audio, verify_audio
 
 def get_audio_duration(file_path):
     cmd = [
@@ -102,17 +104,18 @@ def _synthesize_voiceover_with_timings(text, voice, out_path, rate, temp_dir):
     cached_wav = os.path.join(assets_dir, f"tts_{tts_key}.wav")
     cached_meta = os.path.join(assets_dir, f"tts_{tts_key}.meta.json")
 
-    # If already synthesized and frozen, reuse immediately (0ms latency, bit-exact)
-    if os.path.exists(cached_wav) and os.path.getsize(cached_wav) > 1000 and os.path.exists(cached_meta):
-        try:
-            with open(cached_meta, "r", encoding="utf-8") as f:
-                cm = json.load(f)
-            dur = float(cm.get("duration", get_audio_duration(cached_wav)))
-            boundaries = cm.get("boundaries", [])
-            shutil.copyfile(cached_wav, out_path)
-            return out_path, dur, boundaries
-        except Exception:
-            pass
+    # Existing cache bytes or ledger entries must be checked before regeneration.
+    entries = manifest.load()["assets"]
+    if (os.path.exists(cached_wav) or os.path.exists(cached_meta)
+            or _identity(cached_wav)[2] in entries or _identity(cached_meta)[2] in entries):
+        verify_audio(cached_wav)
+        verify_audio(cached_meta)
+        with open(cached_meta, "r", encoding="utf-8") as f:
+            cm = json.load(f)
+        dur = float(cm["duration"])
+        boundaries = cm["boundaries"]
+        shutil.copyfile(cached_wav, out_path)
+        return out_path, dur, boundaries
 
     raw_audio = os.path.join(temp_dir, "raw_voice.mp3")
     tts_success = False
@@ -175,19 +178,18 @@ def _synthesize_voiceover_with_timings(text, voice, out_path, rate, temp_dir):
     dur = get_audio_duration(out_path)
 
     # Freeze synthesized output to assets/ directory for reproducible runs
-    try:
-        os.makedirs(assets_dir, exist_ok=True)
-        shutil.copyfile(out_path, cached_wav)
-        with open(cached_meta, "w", encoding="utf-8") as f:
-            json.dump({
-                "duration": round(dur, 3),
-                "boundaries": boundaries,
-                "text": text,
-                "voice": voice,
-                "rate": rate,
-            }, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    os.makedirs(assets_dir, exist_ok=True)
+    shutil.copyfile(out_path, cached_wav)
+    with open(cached_meta, "w", encoding="utf-8") as f:
+        json.dump({
+            "duration": round(dur, 3),
+            "boundaries": boundaries,
+            "text": text,
+            "voice": voice,
+            "rate": rate,
+        }, f, ensure_ascii=False, indent=2)
+    register_audio(cached_wav)
+    register_audio(cached_meta)
 
     return out_path, dur, boundaries
 

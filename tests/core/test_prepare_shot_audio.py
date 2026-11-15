@@ -27,6 +27,7 @@ class TestPrepareShotAudioScratchFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("core.audio.shot.synthesize_voiceover_with_timings", side_effect=fake_synth), \
                 patch("core.audio.shot.run_two_pass_loudnorm", side_effect=fake_loudnorm), \
+                patch("core.audio.shot.verify_audio", side_effect=lambda p: p), \
                 patch("core.audio.shot.subprocess.run"):
             bgm = os.path.join(tmp, "music.wav")
             fake_ambient(1, bgm)

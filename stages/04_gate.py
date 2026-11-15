@@ -275,7 +275,14 @@ def main():
         # never from the rendered file: a shot that declares voiceover/bgm and
         # comes out silent is BROKEN and must still fail.
         if audio.shot_is_intentionally_silent(spec):
-            print("PASS  silence    silent shot          spec declares no soundtrack (exempt)")
+            sil_res = audio.measure_audio_silence(mp4)
+            peak = sil_res["max_volume"]
+            silent_ok = sil_res.get("measurement_ok", True) and peak < -45.0
+            red |= not silent_ok
+            print(f"{'PASS' if silent_ok else 'FAIL'}  silence    silent shot peak     {peak:.1f} dB  [< -45.0 dB]")
+            results.append({"id": "audio_silence", "metric": "audio_max_volume",
+                            "value": peak, "hi": -45.0, "pass": silent_ok,
+                            "measurement_ok": sil_res.get("measurement_ok", True)})
         else:
             # 1. Silence and content check
             sil_res = audio.measure_audio_silence(mp4)
@@ -363,6 +370,12 @@ def main():
                     "hi": round(tgt_d + 0.25, 3),
                     "pass": trunc_ok,
                 })
+
+    elif audio.shot_is_intentionally_silent(spec):
+        red = True
+        print("FAIL  silence    silent shot          audio stream missing or could not be probed")
+        results.append({"id": "audio_silence", "metric": "audio_max_volume",
+                        "value": None, "pass": False, "measurement_ok": False})
 
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.

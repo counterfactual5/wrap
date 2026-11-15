@@ -109,6 +109,8 @@ class TestGateMetrics(unittest.TestCase):
                  "alimiter=limit=0.3"),
                 "-y", "-ar", "44100", "-ac", "1", fixture
             ], check=True)
+            from core.audio.integrity import register_audio
+            register_audio(fixture)
             audio_spec = {
                 "voiceover": fixture,  # a path to a source file (prepare_shot_audio treats it as the voice)
                 "voice": "TestVoice",
@@ -131,27 +133,33 @@ class TestGateMetrics(unittest.TestCase):
 
         test_text = "冻结确定性配音测试。"
         h = hashlib.sha256(f"TestVoice_+18%_{test_text}".encode("utf-8")).hexdigest()[:16]
-        frozen_wav = os.path.join(ROOT, "assets", f"tts_{h}.wav")
-        frozen_meta = os.path.join(ROOT, "assets", f"tts_{h}.meta.json")
+        from unittest.mock import patch
+        from core.runtime import manifest
 
-        with tempfile.TemporaryDirectory() as tmp:
+        def fake_download(text, voice, rate, out_mp3):
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                            "sine=frequency=440:duration=1", out_mp3], check=True)
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"POSTER_MANIFEST": os.path.join(tmp, "manifest.json")}), \
+                patch("core.audio.tts.ROOT", tmp), patch("core.audio.integrity.ROOT", tmp), \
+                patch.object(manifest, "ROOT", tmp), \
+                patch.object(manifest, "LOCK_PATH", os.path.join(tmp, "lock")), \
+                patch("core.audio.tts._download_edge_tts", side_effect=fake_download) as download:
+            frozen_wav = os.path.join(tmp, "assets", f"tts_{h}.wav")
+            frozen_meta = os.path.join(tmp, "assets", f"tts_{h}.meta.json")
             out1 = os.path.join(tmp, "v1.wav")
             out2 = os.path.join(tmp, "v2.wav")
-            try:
-                p1, dur1, b1 = synthesize_voiceover_with_timings(test_text, voice="TestVoice", rate="+18%", out_path=out1)
-                self.assertTrue(os.path.exists(frozen_wav), "TTS should freeze generated audio to assets/")
-                self.assertTrue(os.path.exists(frozen_meta), "TTS should freeze sentence metadata to assets/")
-
-                p2, dur2, b2 = synthesize_voiceover_with_timings(test_text, voice="TestVoice", rate="+18%", out_path=out2)
-                with open(out1, "rb") as f1, open(out2, "rb") as f2:
-                    self.assertEqual(f1.read(), f2.read(), "Reused TTS must be 100% bit-exact")
-                self.assertAlmostEqual(dur1, dur2, places=3)
-                self.assertEqual(b1, b2)
-            finally:
-                if os.path.exists(frozen_wav):
-                    os.remove(frozen_wav)
-                if os.path.exists(frozen_meta):
-                    os.remove(frozen_meta)
+            p1, dur1, b1 = synthesize_voiceover_with_timings(test_text, voice="TestVoice", rate="+18%", out_path=out1)
+            self.assertTrue(os.path.exists(frozen_wav))
+            self.assertTrue(os.path.exists(frozen_meta))
+            p2, dur2, b2 = synthesize_voiceover_with_timings(test_text, voice="TestVoice", rate="+18%", out_path=out2)
+            with open(out1, "rb") as f1, open(out2, "rb") as f2:
+                self.assertEqual(f1.read(), f2.read())
+            self.assertAlmostEqual(dur1, dur2, places=3)
+            self.assertEqual(b1, b2)
+            self.assertEqual(download.call_count, 1)
 
     def test_08_pure_bgm_optional_voiceover_and_gate_pass(self):
         """TTS is optional: shots with pure BGM (Douyin track/ambient) master to -16 LUFS and pass without speech-band requirement."""
@@ -166,6 +174,8 @@ class TestGateMetrics(unittest.TestCase):
                 "-i", "sine=frequency=220:duration=6.0",
                 "-ar", "44100", "-ac", "2", bgm
             ], check=True)
+            from core.audio.integrity import register_audio
+            register_audio(bgm)
             audio_spec = {"bgm": bgm}
             out_m4a = os.path.join(tmp, "bgm_only.m4a")
             wav_path = prepare_shot_audio(audio_spec, duration_in_frames=90, fps=30, out_path=out_m4a)
@@ -198,6 +208,8 @@ class TestGateMetrics(unittest.TestCase):
                 "-ar", "44100", "-ac", "2", track_src
             ], check=True)
 
+            from core.audio.integrity import register_audio
+            register_audio(track_src)
             out_m4a = os.path.join(tmp, "cut.m4a")
             audio_spec = {
                 "bgm": track_src,

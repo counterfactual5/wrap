@@ -44,6 +44,7 @@ def measure_audio_silence(file_path, start=None, duration=None):
     has_content = (sp_max >= -25.0 and sp_mean >= -45.0)
 
     return {
+        "measurement_ok": res.returncode == 0 and m_max is not None,
         "max_volume": max_v,
         "mean_volume": mean_v,
         "speech_max_volume": sp_max,
