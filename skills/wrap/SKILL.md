@@ -173,11 +173,9 @@ export const CUSTOM_COMPONENTS: CustomComponentRegistry = {
   fails the render with the layer named — the engine never substitutes a
   stand-in.
 
-**Media + composition recipe.** A typical shot: `z: 0` a generated `video`
-or `ai` plate (atmosphere, camera parallax) → `z: 1..n` articulated `ai`
-cutouts (characters, `parent`/`joint`/`socket` rig) → `z: n+1..` one or more
-`component` layers carrying the story's own diagrams, typography and
-instruments, driven by `props` + `tracks`.
+Compose media and project components only as the story requires; there is no
+prescribed layering recipe. The `props` and `tracks` passed to components carry
+project-authored data, not a built-in design.
 
 ## Modality & Generation: The LLM Decides From Available Tools
 
@@ -224,7 +222,8 @@ whole pipeline with zero generation capabilities.
 would be nice", nor synthesize code-generated beeps on your own. An absent
 `audio` block means the **shot itself** is **silent** — a compliant 44100 Hz silent
 track is produced, and S4 exempts it by design. A timeline may still supply a
-shared `timeline.bgm` after assembly, but that is a different, explicit choice.
+shared `timeline.bgm` after assembly, but overriding an intentionally silent
+shot also requires `allow_bgm_override_silent: true` in the timeline.
 Add any audio ONLY when it serves the film: (a) the user asked for a narrator /
 music / SFX, (b) the shot is music-first by design choice documented in SCRIPT,
 or (c) silence would hurt the beat (e.g. a video layer owns its native audio).
@@ -259,6 +258,24 @@ Never invent BGM to fill the gap; silence is a valid, first-class choice.
 frozen frames (S4 skips freezedetect); a timeline can declare `allow_black: true`
 to permit intentional black frames (full-video gate skips blackdetect). Use
 them only when the still/black is the intended design, not to dodge a failure.
+
+### Audio asset integrity
+
+Before using an existing BGM or voiceover file, independently verify its source
+and content, then register its current bytes in the project manifest:
+
+```bash
+POSTER_ROOT=/path/to/project python3 -m core.audio.integrity register /path/to/audio.wav
+```
+
+Run this from the engine root, or make the engine importable via `PYTHONPATH`.
+Unregistered or changed audio fails verification rather than being silently
+trusted again. This is a migration requirement for existing projects. Generated
+TTS cache audio and its timing metadata are also registered and verified; old
+unregistered cache files must be reviewed and registered separately or removed
+with their ledger entries before regeneration. External absolute paths remain
+bound to their location. These checks detect changed bytes, not licensing or
+content quality.
 
 ## The 5 stages + judge loop
 

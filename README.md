@@ -127,6 +127,17 @@ at validate/S3 ("audio conflict"). Never invent music with code just because
 it is possible. `sync-audio` warps
 `durationInFrames`, `tracks.captions` and every layer's keyframes to the
 TTS clause boundaries. At most one video layer may set `muted: false`.
+S4 measures the output to check that an intentionally silent shot is actually
+silent. A timeline BGM may cover silent shots only with explicit
+`allow_bgm_override_silent: true`.
+
+Before using a trusted existing BGM or voiceover file, register it from the
+engine root: `POSTER_ROOT=/path/to/project python3 -m core.audio.integrity register /path/to/audio.wav`.
+The manifest checks its SHA-256 before use, including timeline BGM. Existing
+projects must register their audio files; changed or unregistered bytes fail
+rather than being silently trusted. TTS cache audio and timing metadata are
+also verified; legacy cache files require explicit registration or removal
+along with their ledger entries before regeneration.
 
 ---
 
