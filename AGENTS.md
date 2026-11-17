@@ -7,7 +7,8 @@
 （`<project>/remotion-custom.tsx` 的组件与生成素材）。
 旧词汇（code/text/hud/card 图层、palette、vibe/plate/punches、gait/depth、
 BGM 预设、`--fixture`、内置模型目录、Quartz 设计后端）校验时报
-`migration required`，绝不明式渲染。详见 `skills/wrap/SKILL.md` 与 `README.md`。
+`migration required`，绝不明式渲染。详见 `skills/wrap/SKILL.md`（及其
+`references/`：orchestration / pitfalls / example / design-craft）与 `README.md`。
 
 ## Full Verify
 

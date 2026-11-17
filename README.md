@@ -52,7 +52,7 @@ spec/*.json ───► [ S1: Generate ] ───► assets/*.png | *.mp4 ─�
 | Stage | Script | Contract | Exit |
 |---|---|---|---|
 | **S1** | `stages/01_generate.py` | Fetch/generate assets into `assets/`, freeze sha256; generation parameters validated against declared capabilities *before* the call | `0` / `1` |
-| **S2** | `stages/02_prepare.py` | Key purity ≥ 0.98, aspect-true scaling, clip re-encode to shot fps → `build/prepared/{shot}/` | `0` / `1` |
+| **S2** | `stages/02_prepare.py` | Key purity ≥ 0.98, aspect-true scaling, clip re-encode to shot fps → `build/prepared/{shot}/` (`2` = hard error: unverified asset / still-as-clip) | `0` / `1` / `2` |
 | **S3** | `stages/03_compose.py` | Remotion render → frames + mp4 (BT.709, mastered audio); renderer failures are hard errors with the renderer's own output | `0` / `1` |
 | **S4** | `stages/04_gate.py` | Motion/accent/purity/freeze + audio QC (LUFS in [−19, −13], AV sync ≤ 100 ms); color gates must declare their `color` explicitly | `0` / `1` |
 | **S5** | `stages/05_inspect.py` | Contact sheet + project-declared checklist; verdict `pending_judge` | `0` |
@@ -174,6 +174,10 @@ silence/loudness, AV alignment ≤ 250 ms, per-segment loudness jump ≤ 3 LU.
 - `node` (≥ 18) + `npm install` for the Remotion engine
 - `mcode-tools` connector — **only** for shots that generate assets;
   register your own assets (or reuse frozen ones) to run without it
+- A **dot-free** project path (`POSTER_ROOT`) — Remotion's image-sequence CLI
+  rejects any dot anywhere in the output path ("output directory … cannot have
+  an extension"); the engine now preflights this and fails before rendering
+  with an actionable message. Use `my-project`, not `my.project`.
 
 ### Run
 
@@ -249,7 +253,8 @@ tests/                 Regression suite (make verify), grouped by target:
                        contract/ (spec contract vs renderer, both directions,
                        migration rejections), core/, stages/, pipeline/, renderer/
                        fixtures + helpers live in tests/ — never in the production path
-skills/wrap/           The packaged Agent Skill (symlinked into ~/.agents/skills/wrap)
+skills/wrap/           The packaged Agent Skill: SKILL.md (contract + map) and
+                       references/ (orchestration, pitfalls, example, design-craft)
 ```
 
 A project directory holds `spec/` (shot specs, timelines, checklists),
