@@ -30,10 +30,16 @@
    moves** — declare `POSTER_MODELS_JSON`/`POSTER_IMAGE_CAPABILITIES_JSON`
    for the environment; reuse frozen assets to work around a missing
    backend, never placeholders.
-11. **Freeze detection is not an exact duplicate-frame test.** It uses a
-   frame-wide difference threshold, so sparse low-contrast motion may be flagged.
-   Inspect actual frames and the intended motion before changing anything.
-   Do not prescribe particle counts or motion amplitudes for all projects.
+11. **Freeze detection is not an exact duplicate-frame test.** ffmpeg's
+    `freezedetect` compares the whole frame against a reference and counts it
+    as unchanged when the mean absolute difference is below 0.1% of full scale
+    (`n=0.001`). So sparse, periodic, or low-contrast motion may be flagged
+    even while the shot visibly moves, and a slow but nonzero drift may read
+    unchanged if too few pixels move far enough. For slow/varied compositions
+    prefer a single wide/full-field drift (or declare `frame_freeze` with
+    documented intent) rather than many micro-movements on near-nothing.
+    Inspect actual frames before changing anything; do not prescribe particle
+    counts or motion amplitudes for all projects.
 12. **A color ratio is a whole-shot statistic, not proof of a narrative error.**
    A zero median may simply mean a color appears in fewer than half the frames.
    Check per-beat renders and color matching before changing art or thresholds.

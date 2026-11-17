@@ -167,7 +167,12 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
         run_two_pass_loudnorm(
             ["-i", tmp_voice],
             "-af",
-            "",
+            # Pad the voice track out to the full shot with silence — same
+            # contract as the voice+BGM branch. Without this, the mastered
+            # voice is only as long as the spoken line, `-shortest` in the
+            # compose stage then cuts the video to speech length, and S5's
+            # frame-count check fails against durationInFrames (546 != 564).
+            f"apad=whole_dur={target_duration}",
             target_duration,
             out_path,
         )

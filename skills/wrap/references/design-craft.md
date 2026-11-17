@@ -146,5 +146,21 @@ to all of this is always the audience and the subject: this film's value might
 be precision, craft, motion or stillness — let that name the checklist, not
 vice versa.
 
-Part of the wrap skill — see `skills/wrap/SKILL.md`; pitfalls referenced live
+## Flat / sparse compositions (few or low-contrast moving elements)
+
+- **A near-static flat shot can fail the freeze gate even though it visibly
+  jitters.** ffmpeg `freezedetect` counts the frame as frozen when the whole
+  picture's mean absolute difference is below 0.1% of full scale. A hairline
+  grid, a single red dot, or a 2-frame-a-time counter all change fewer pixels
+  than that floor.
+- **Give the gate something to measure**: one wide, low-contrast full-frame
+  element that is always moving (a scanline sweep, a large background fade, a
+  slow radial drift) — a *single wide gesture*, not many particles.
+- **If a still is the honest frame**, declare `frame_freeze: true` in the spec
+  with the documented intent and note it in SCRIPT; do not ship a freeze that
+  was faked by adding pointless motion.
+- **Verify against actual frames**, not the gate line alone: pitfall §11.
+
+Part of the wrap skill — see skills/wrap/SKILL.md; pitfalls referenced live
 in `pitfalls.md`.
+

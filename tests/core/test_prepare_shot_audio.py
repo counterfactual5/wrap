@@ -53,6 +53,46 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestVoiceOnlyApadPadding(unittest.TestCase):
+    """Voice-only shots pad the voice track to full shot duration with silence,
+    so -shortest in the compose stage never cuts the video short of
+    durationInFrames (S5 frame-count check)."""
+
+    def test_voice_only_loudnorm_includes_apad(self):
+        from core import audio
+
+        def fake_synth(text, voice, out_path, rate="+0%"):
+            with open(out_path, "w") as f:
+                f.write("voice")
+            return out_path, 1.0, []
+
+        def fake_loudnorm(inputs, opt, value, target_dur, out_path):
+            loudnorm_calls.append((list(inputs), opt, value, target_dur))
+            with open(out_path, "w") as f:
+                f.write("audio")
+
+        loudnorm_calls = []
+        import tempfile, os
+        from core.audio import shot as audio_shot
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(audio_shot, "synthesize_voiceover_with_timings", side_effect=fake_synth), \
+                patch.object(audio_shot, "run_two_pass_loudnorm", side_effect=fake_loudnorm), \
+                patch.object(audio_shot, "verify_audio", side_effect=lambda p: p):
+            # 90 frames @ 30fps = 3.0 s shot
+            audio_shot.prepare_shot_audio(
+                {"voiceover": "你好世界", "voice": "TestVoice"}, 90, 30, os.path.join(tmp, "out.aac"))
+
+        self.assertEqual(len(loudnorm_calls), 1, loudnorm_calls)
+        inputs, opt, value, target_dur = loudnorm_calls[0]
+        # The voice-only branch must pad the track to the full shot duration,
+        # exactly like the voice+BGM branch does — otherwise -shortest cuts the
+        # video to speech length and S5's frame check fails.
+        self.assertEqual(opt, "-af")
+        self.assertEqual(value, "apad=whole_dur=3.0")
+        self.assertEqual(target_dur, 3.0)
+        self.assertTrue(inputs[0] == "-i" and inputs[1].endswith(".wav"), inputs)
+
+
 class TestBgmUnderVoiceIsDeclared(unittest.TestCase):
     """Voice+BGM mixes must declare the duck ratio; the engine ships none."""
 

@@ -142,13 +142,13 @@ def _video_hint(spec, reason="low_motion"):
         # real, it just never reached the screen.
         crops = _crop_diagnosis(spec)
         if crops:
-            return ("\n       -> the picture was IDENTICAL for >= 0.5s although the "
+            return ("\n       -> the picture registered as FROZEN for >= 0.5s although the "
                     "motion gate passed: the motion happened OUTSIDE the visible crop.\n"
                     + "\n".join(f"          {c}" for c in crops)
                     + "\n       -> match the clip's aspect to the rect, set "
                     "\"fit\": \"contain\" to show the whole clip, or keep the motion "
                     "inside the window that is actually on screen.")
-        return ("\n       -> the picture was IDENTICAL for >= 0.5s although the motion "
+        return ("\n       -> the picture registered as FROZEN for >= 0.5s although the motion "
                 "gate passed: the source's motion stayed OUTSIDE the visible crop "
                 "(fit:'cover' keeps only the centre of the clip), or the per-frame "
                 "change was below what the freeze detector counts as motion (its "
@@ -156,6 +156,25 @@ def _video_hint(spec, reason="low_motion"):
     return (f"\n       -> the shot has a video layer ({names}); if both the motion "
             f"and freeze gates fail, the SOURCE footage itself is static (or needs "
             f"motion.zoom / active keyframes), not the composition.")
+
+
+def _component_freeze_hint():
+    """The freeze hint for a shot with no video layer.
+
+    The old wording ("the picture was IDENTICAL for >= 0.5s ... give a
+    component a camera move / anim") was wrong twice over for a sparse or
+    slow composition: ffmpeg's freezedetect counts a frame as unchanged when
+    the WHOLE frame's mean absolute difference is below 0.1% of full scale,
+    which a visibly moving hairline-thin composition can still trip; and
+    "add a camera move" is neither the only nor always-correct remedy.
+    """
+    return ("\n       -> the picture registered as FROZEN to ffmpeg's freezedetect for >= 0.5s. "
+            "It does not mean every pixel was unchanged: sparse/periodic/low-contrast "
+            "motion can dip below its 0.1%-of-frame noise floor.\n"
+            "       -> inspect actual frames first (pitfall 11); if the hold is intentional, "
+            "declare frame_freeze: true in the spec with a documented reason.\n"
+            "       -> if it is not intentional, widen a moving element (full-frame drift or "
+            "camera push), or rework the motion approach rather than scaling a small transform harder.")
 
 
 def main():
@@ -252,9 +271,7 @@ def main():
                             and not r["pass"] for r in results)
         hint = _video_hint(spec, reason="low_motion" if motion_failed else "frozen_window")
         if not hint:
-            hint = ("\n       -> the picture was IDENTICAL for >= 0.5s and the shot has "
-                    "no moving media: give a component a camera move / anim / anim-on-"
-                    "pose, or allow frozen frames with \"frame_freeze\": true in the spec.")
+            hint = _component_freeze_hint()
         print(hint)
     red |= bool(frozen)
     results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})

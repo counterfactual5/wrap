@@ -120,6 +120,45 @@ class TestFrozenWindowHint(unittest.TestCase):
         self.assertIn("OUTSIDE the visible crop", hint)
 
 
+class TestComponentFreezeHint(unittest.TestCase):
+    """A shot with no video layer gets its own freeze hint.
+
+    The old wording ("the picture was IDENTICAL for >= 0.5s ... give a component
+    a camera move") is wrong twice over for a sparse or slow composition:
+    freezedetect counts a frame as unchanged when the WHOLE frame's mean
+    absolute difference falls below 0.1% of full scale, which a visibly moving
+    hairline-thin composition can trip; and "add a camera move" is not the only
+    or always-correct remedy.
+    """
+
+    def _component_spec(self):
+        return _spec([{"id": "card", "type": "component", "component": "Card",
+                       "rect": [0, 0, 1080, 1920], "z": 0}])
+
+    def test_00_a_component_only_shot_gets_no_VIDEO_hint(self):
+        self.assertEqual(s4._video_hint(self._component_spec()), "",
+                         "a component-only shot must not get a video-layer hint")
+
+    def test_01_the_hint_does_not_claim_the_frames_were_identical(self):
+        """The hint must not assert something the metric cannot know."""
+        hint = s4._component_freeze_hint()
+        self.assertNotIn("IDENTICAL", hint)
+        self.assertIn("registered as FROZEN", hint)
+
+    def test_02_the_hint_explains_the_noise_floor(self):
+        hint = s4._component_freeze_hint()
+        self.assertIn("0.1%", hint)
+        self.assertIn("freezedetect", hint)
+
+    def test_03_the_hint_offers_both_real_remedies(self):
+        """Intentional holds and unintended freezes need different answers."""
+        hint = s4._component_freeze_hint()
+        self.assertIn("frame_freeze", hint,
+                      "an intentional hold must be nameable, not faked")
+        self.assertIn("pitfall 11", hint,
+                      "the author must be told to look at real frames")
+
+
 class TestSourceFpsRejected(unittest.TestCase):
     def test_00_source_fps_is_rejected(self):
         spec = _spec([{"id": "clip", "type": "video", "asset": "a",
