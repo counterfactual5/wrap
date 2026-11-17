@@ -517,9 +517,15 @@ def main():
     p_block.add_argument("--max-overlap", type=float, default=12.0, help="Maximum allowed torso overlap in canvas px (default: 12.0)")
 
     # verify-continuity
-    p_cont = subparsers.add_parser("verify-continuity", help="Verify multi-scene scrolling transitions ('推拉换景'), cross-shot backdrop handoffs, and narrative props ('砌末')")
+    p_cont = subparsers.add_parser("verify-continuity", help="Verify cross-shot continuity: backdrop handoff match and character position/visibility seams between consecutive shots")
     p_cont.add_argument("--timeline", default=None, help="Path to timeline.json for cross-shot continuity verification")
     p_cont.add_argument("--spec", default=None, help="Path to a single poster spec JSON for stagecraft & prop verification")
+    p_cont.add_argument("--max-jump", type=float, default=None,
+                        help="Max character jump across a cut, in canvas px (default: timeline.continuity.max_char_jump_px or 18.0)")
+    p_cont.add_argument("--allow-non-seamless", action="store_true",
+                        help="Downgrade a backdrop mismatch to BACKDROP_WARN instead of a hard failure (default: require match)")
+    p_cont.add_argument("--min-visible-opacity", type=float, default=None,
+                        help="Opacity at/above which a character counts as visible in a cut (default: timeline.continuity.min_visible_opacity or 0.20)")
 
     # detect-punches
     p_dp = subparsers.add_parser("detect-punches", help="Auto-detect audio transient peaks (percussion/plosives/sub-bass) as tracks.events kind=audio_transient")
@@ -801,14 +807,38 @@ def main():
                 sys.exit(f"Timeline not found: {tl_path}")
             with open(tl_path) as f:
                 tl_data = json.load(f)
-            res = verify_timeline_continuity(tl_data, root_dir=ROOT)
+            from core.spec import validate_timeline
+            tl_errs = validate_timeline(tl_data)
+            if tl_errs:
+                sys.exit("Timeline validation failed:\n  " + "\n  ".join(tl_errs))
+            # Knob resolution: CLI flag > timeline.continuity > function default
+            cont = tl_data.get("continuity") or {}
+            max_jump = args.max_jump if args.max_jump is not None else cont.get("max_char_jump_px", 18.0)
+            min_op = args.min_visible_opacity if args.min_visible_opacity is not None else cont.get("min_visible_opacity", 0.20)
+            if args.allow_non_seamless:
+                require_seamless = False
+            else:
+                require_seamless = cont.get("require_seamless_handoff", True)
+            print(f"continuity knobs: max_char_jump_px={max_jump} min_visible_opacity={min_op} require_seamless_handoff={require_seamless}")
+            res = verify_timeline_continuity(
+                tl_data, root_dir=ROOT,
+                require_seamless_handoff=require_seamless,
+                max_char_jump_px=max_jump,
+                min_visible_opacity=min_op,
+            )
             print(f"\n=== Multi-Scene Timeline Continuity Verification: {tl_data.get('id', 'timeline')} ===")
             for h in res["handoffs"]:
                 print(f"  [{h['status']}] {h['from_shot']} -> {h['to_shot']} | handoff: {h['end_backdrop']} == {h['next_start_backdrop']}")
             if not res["passed"]:
                 print(f"\nTimeline Continuity FAILED:\n  " + "\n  ".join(res["errors"]))
                 sys.exit(1)
-            print("\nTimeline Continuity PASSED (All scene transitions, backdrop handoffs & narrative props verified).")
+            warns = [h for h in res["handoffs"] if h["status"] == "BACKDROP_WARN"]
+            if warns:
+                print(f"\nTimeline Continuity PASSED with {len(warns)} backdrop warning(s) (non-seamless cuts allowed by config):")
+                for h in warns:
+                    print(f"  [BACKDROP_WARN] {h['from_shot']} ends on {h['end_backdrop']!r}, {h['to_shot']} starts on {h['next_start_backdrop']!r}")
+            else:
+                print("\nTimeline Continuity PASSED (backdrop handoffs & character seams verified).")
         elif args.spec:
             spec_path = os.path.join(ROOT, args.spec)
             if not os.path.exists(spec_path):

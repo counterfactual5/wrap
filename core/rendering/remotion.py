@@ -117,10 +117,30 @@ def _raise_no_frames(ex, cmd, out_dir, shot_id):
         f"invoked: {' '.join(cmd)}\n  (cwd={ENGINE_ROOT})") from ex
 
 
+def _dotted_path_segments(path):
+    """Path segments that look like a file extension.
+
+    Remotion's image-sequence CLI (`getExtensionOfFilename`) splits the whole
+    output path on '.' and rejects any dot anywhere as "the output directory
+    of the image sequence cannot have an extension" — a `my.project/` root or
+    any dotted parent (`~/Work/foo.bar/`, `.tmp`) fails the render with a
+    message that points at the caller's path, not at the rule."""
+    return [seg for seg in os.path.normpath(path).split(os.sep) if '.' in seg]
+
+
 def render_remotion(spec, out_dir, shot_id):
     if os.environ.get("POSTER_FORCE_QUARTZ") == "1":
         _render_quartz_fallback(spec, out_dir, shot_id)
         return
+    dotted = _dotted_path_segments(os.path.join(out_dir, "rm"))
+    if dotted:
+        offender = next(iter(dotted))
+        raise RuntimeError(
+            f"Remotion's image-sequence CLI rejects an output path containing a dot "
+            f"anywhere in it (segment {offender!r} found in {os.path.join(out_dir, 'rm')!r}) — "
+            f"its extension check applies to the whole path, not the final directory. "
+            f"Use a dot-free POSTER_ROOT / project path (e.g. my-project, not my.project). "
+            f"No frames were rendered.")
     props = build_props(spec)
     # Props file is per shot too: two concurrent S3 runs share .tmp/.
     props_file = os.path.join(ROOT, ".tmp", f"render-props-{shot_id}.json")

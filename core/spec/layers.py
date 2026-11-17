@@ -329,7 +329,7 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
     if L.get("type") == "component":
         comp_name = L.get("component")
         if not comp_name:
-            e(f"{lid}: component layer needs 'component' (registered in remotion/registry/index.ts)")
+            e(f"{lid}: component layer needs 'component' (registered in the project's remotion-custom.tsx CUSTOM_COMPONENTS, aliased as 'project-custom')")
         elif not valid_name(comp_name):
             e(f"{lid}: component must be a valid identifier string (got {comp_name!r})")
         if "props" in L and not isinstance(L["props"], dict):

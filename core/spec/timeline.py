@@ -20,6 +20,24 @@ def validate_timeline(timeline):
         e("timeline 'allow_black' must be a boolean")
     if "allow_bgm_override_silent" in timeline and not isinstance(timeline["allow_bgm_override_silent"], bool):
         e("timeline 'allow_bgm_override_silent' must be a boolean")
+    continuity = timeline.get("continuity")
+    if continuity is not None:
+        if not isinstance(continuity, dict):
+            e("timeline 'continuity' must be an object")
+        else:
+            for key in sorted(set(continuity) - {"max_char_jump_px", "require_seamless_handoff", "min_visible_opacity"}):
+                e(f"timeline continuity: unknown key {key!r}")
+            jump = continuity.get("max_char_jump_px")
+            if jump is not None:
+                if isinstance(jump, bool) or not isinstance(jump, (int, float)) or jump < 0:
+                    e("timeline continuity 'max_char_jump_px' must be a non-negative number")
+            req = continuity.get("require_seamless_handoff")
+            if req is not None and not isinstance(req, bool):
+                e("timeline continuity 'require_seamless_handoff' must be a boolean")
+            op = continuity.get("min_visible_opacity")
+            if op is not None:
+                if isinstance(op, bool) or not isinstance(op, (int, float)) or not (0.0 <= op < 1.0):
+                    e("timeline continuity 'min_visible_opacity' must be a number in [0, 1)")
     shots = timeline.get("shots")
     if not isinstance(shots, list) or len(shots) == 0:
         e("timeline 'shots' must be a non-empty list")

@@ -317,3 +317,26 @@ class TestPreparedProps(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDottedPathPreflight(_DriverCase):
+    """Remotion's image-sequence CLI considers ANY dot in the output path as
+    'the output directory of the image sequence cannot have an extension' —
+    a project under `my.project/` fails deep inside npm with a misleading
+    message. The driver preflights the dot and fails before npm runs."""
+
+    def test_13_a_dotted_output_path_never_reaches_the_renderer(self):
+        dotted = os.path.join(self._tmp.name, "my.project", "frames")
+        popen_mock = mock.Mock(side_effect=_FakeProcess(exit_code=0))
+        with redirect_stdout(io.StringIO()):
+            try:
+                with mock.patch.object(remotion.subprocess, "Popen", popen_mock):
+                    remotion.render_remotion(_spec(), dotted, "render-driver-test")
+                result = None
+            except BaseException as ex:  # noqa: BLE001 - the test inspects it
+                result = ex
+
+        self.assertIsInstance(result, RuntimeError, result)
+        self.assertIn("dot", str(result))
+        self.assertIn("my.project", str(result))
+        popen_mock.assert_not_called()

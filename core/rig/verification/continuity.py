@@ -7,24 +7,27 @@ from core.runtime.config import ROOT
 from .stagecraft import verify_shot_stagecraft
 
 
-def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_handoff=True, max_char_jump_px=18.0):
-    """Verify multi-scene narrative continuity across an entire timeline of shots.
+def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_handoff=True,
+                               max_char_jump_px=18.0, min_visible_opacity=0.20):
+    """Verify cross-shot continuity across an entire timeline of shots.
 
-    Enforces traditional shadow-puppetry / 2D scrolling stagecraft invariants:
-    1. Zero Frozen Characters: Every character on stage in every shot has articulated motion.
-    2. Zero Wireframe Path Overlays on Shadow-Puppet Stages: Magical circles, halos, and
-       binding rings must be carved translucent oxhide cutout props (`role: 'prop'`), never
-       crude geometric `code: path` lines.
-    3. Push-Pull Scrolling Transitions ('推拉换景') & Cross-Shot Backdrop Handoff ('跨幕同景交接'):
-       When Shot k scrolls to `end_backdrop` at its tail, Shot k+1 must open on that exact
-       `start_backdrop == end_backdrop` so concatenating Shot k -> Shot k+1 produces zero
-       background jump at the cut boundary.
-    4. Cross-Shot Character State Continuity ('跨幕角色坐标与显隐无缝咬合'):
-       - Any character visible at the end of Shot k and at frame 0 of Shot k+1 must preserve
-         their canvas position (`hypot(dx, dy) <= max_char_jump_px`) with zero teleport jump.
-       - Any newly entering character in Shot k+1 (not visible at the end of Shot k) must start
-         off-stage (`|x| >= 340` or `|y| >= 220`) or faded out (`opacity <= 0.15`) at frame 0,
-         never popping into the middle of the screen at the cut boundary.
+    For every adjacent shot pair (k, k+1) in the timeline:
+    1. Backdrop handoff: shot k's tail backdrop must equal shot k+1's
+       opening backdrop. With require_seamless_handoff=False a mismatch is
+       reported as status 'BACKDROP_WARN' instead of a hard failure.
+    2. Character state continuity: a character at least min_visible_opacity
+       visible at the end of shot k and at frame 0 of shot k+1 must not
+       jump more than max_char_jump_px.
+
+    Every shot also runs verify_shot_stagecraft (spec validation and a
+    backdrop/character-state report).
+
+    Knobs (all three are parameters; the CLI exposes them, and the timeline
+    may carry a 'continuity' block):
+      require_seamless_handoff (default True)
+      max_char_jump_px         (default 18.0 canvas px)
+      min_visible_opacity      (default 0.20, the opacity at/above which a
+                                character counts as visible in a cut)
     """
     import json as _json
     base_dir = root_dir or ROOT
@@ -50,20 +53,16 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
         next_rep = shot_reports[i + 1]
         end_bg = curr_rep["end_backdrop"]
         next_start_bg = next_rep["start_backdrop"]
-        seamless_bg = (end_bg == next_start_bg)
-        exact_bg = (end_bg == next_start_bg)
-        bg_ok = exact_bg if require_seamless_handoff else seamless_bg
+        bg_equal = (end_bg == next_start_bg)
 
-        # Check cross-shot character coordinate & entrance continuity
+        # Character discontinuity across the cut (only characters visible in both shots)
         char_jumps = []
         end_st = curr_rep.get("end_states", {})
         start_st = next_rep.get("start_states", {})
-        is_continuous_stage = bool(end_st) or (end_bg is not None and end_bg == next_start_bg)
         for cid, st1 in start_st.items():
-            op1 = st1["opacity"]
-            if op1 < 0.20:
+            if st1["opacity"] < min_visible_opacity:
                 continue
-            if cid in end_st and end_st[cid]["opacity"] >= 0.20:
+            if cid in end_st and end_st[cid]["opacity"] >= min_visible_opacity:
                 st0 = end_st[cid]
                 jump = math.hypot(st1["x"] - st0["x"], st1["y"] - st0["y"])
                 if jump > max_char_jump_px:
@@ -72,7 +71,20 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
                         f"{next_rep['shot_id']} start=({st1['x']}, {st1['y']}))"
                     )
 
-        status = "PASS" if (bg_ok and not char_jumps) else ("CHAR_JUMP" if char_jumps else "HARD_CUT_JUMP")
+        if bg_equal:
+            bg_status = None
+        elif require_seamless_handoff:
+            bg_status = "HARD_CUT_JUMP"
+        else:
+            bg_status = "BACKDROP_WARN"
+
+        if char_jumps:
+            status = "CHAR_JUMP"
+        elif bg_status is not None:
+            status = bg_status
+        else:
+            status = "PASS"
+
         handoffs.append({
             "from_shot": curr_rep["shot_id"],
             "to_shot": next_rep["shot_id"],
@@ -80,8 +92,10 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
             "next_start_backdrop": next_start_bg,
             "char_jumps": char_jumps,
             "status": status,
+            "backdrop_equal": bg_equal,
+            "require_seamless_handoff": require_seamless_handoff,
         })
-        if not bg_ok:
+        if bg_status == "HARD_CUT_JUMP":
             errors.append(
                 f"Hard-cut backdrop jump between '{curr_rep['shot_id']}' (ends on {end_bg!r}) "
                 f"and '{next_rep['shot_id']}' (starts on {next_start_bg!r})."
