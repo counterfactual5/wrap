@@ -4,11 +4,11 @@ import os
 
 from core.runtime.config import ROOT
 
-from .stagecraft import verify_shot_stagecraft
+from .stagecraft import DEFAULT_MIN_VISIBLE_OPACITY, verify_shot_stagecraft
 
 
 def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_handoff=True,
-                               max_char_jump_px=18.0, min_visible_opacity=0.20):
+                               max_char_jump_px=18.0, min_visible_opacity=DEFAULT_MIN_VISIBLE_OPACITY):
     """Verify cross-shot continuity across an entire timeline of shots.
 
     For every adjacent shot pair (k, k+1) in the timeline:
@@ -43,17 +43,22 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
             continue
         with open(spec_path) as f:
             s_data = _json.load(f)
-        rep = verify_shot_stagecraft(s_data)
+        rep = verify_shot_stagecraft(s_data, min_visible_opacity=min_visible_opacity)
         shot_reports.append(rep)
         errors.extend(rep["errors"])
 
     handoffs = []
+    unverified = []
     for i in range(len(shot_reports) - 1):
         curr_rep = shot_reports[i]
         next_rep = shot_reports[i + 1]
         end_bg = curr_rep["end_backdrop"]
         next_start_bg = next_rep["start_backdrop"]
         bg_equal = (end_bg == next_start_bg)
+        # A shot that declares no backdrop identity cannot be compared. That is
+        # NOT the same as "the backdrop matched" — reporting it as PASS would
+        # make an unchecked cut look verified.
+        bg_comparable = (end_bg is not None and next_start_bg is not None)
 
         # Character discontinuity across the cut (only characters visible in both shots)
         char_jumps = []
@@ -71,7 +76,9 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
                         f"{next_rep['shot_id']} start=({st1['x']}, {st1['y']}))"
                     )
 
-        if bg_equal:
+        if not bg_comparable:
+            bg_status = "NO_BACKDROP_DECLARED"
+        elif bg_equal:
             bg_status = None
         elif require_seamless_handoff:
             bg_status = "HARD_CUT_JUMP"
@@ -93,6 +100,7 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
             "char_jumps": char_jumps,
             "status": status,
             "backdrop_equal": bg_equal,
+            "backdrop_comparable": bg_comparable,
             "require_seamless_handoff": require_seamless_handoff,
         })
         if bg_status == "HARD_CUT_JUMP":
@@ -100,12 +108,20 @@ def verify_timeline_continuity(timeline_data, root_dir=None, require_seamless_ha
                 f"Hard-cut backdrop jump between '{curr_rep['shot_id']}' (ends on {end_bg!r}) "
                 f"and '{next_rep['shot_id']}' (starts on {next_start_bg!r})."
             )
+        elif bg_status == "NO_BACKDROP_DECLARED":
+            # Not a failure — an honest "not checked": the cut's backdrop
+            # continuity was NOT verified because no identity was declared.
+            unverified.append(
+                f"{curr_rep['shot_id']} -> {next_rep['shot_id']}: no backdrop identity "
+                f"declared (layer field 'backdrop'), so the cut's backdrop continuity "
+                f"was NOT verified")
         for cj in char_jumps:
             errors.append(f"Cross-shot character discontinuity ({curr_rep['shot_id']} -> {next_rep['shot_id']}): {cj}")
 
     return {
         "passed": len(errors) == 0,
         "errors": errors,
+        "unverified": unverified,
         "shots": shot_reports,
         "handoffs": handoffs,
     }

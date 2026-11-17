@@ -27,7 +27,12 @@ def clean_perimeter(buf, w, h, key_rgb=(255, 255, 255), ring=10, near_tol=22):
 
 
 def sprite_bbox(buf, w, h, key_rgb=(255, 255, 255), tol=20):
-    """Bounding box [xmin, ymin, xmax, ymax] of non-key pixels."""
+    """Bounding box [xmin, ymin, xmax, ymax] of non-key pixels.
+
+    `tol` is the per-channel distance from the key color within which a pixel
+    still counts as background; it is a documented measurement choice, not a
+    guessed default (raise it for near-white keys, lower it for chroma keys).
+    """
     kr, kg, kb = key_rgb
     xmin, ymin, xmax, ymax = w, h, 0, 0
     found = False
@@ -172,6 +177,8 @@ def split_sprite(src_asset, body_asset, part_asset, box, joint, joint_radius=22,
 
     r_sq = joint_radius * joint_radius
     overlap_sq = max(4, int(joint_radius * 0.75)) ** 2
+    # The 0.75 factor is the documented seam-coverage rule: the part's clean
+    # margin must extend 0.75*radius past the socket so the seam never shows.
 
     body_buf = bytearray(src_buf)
     part_buf = bytearray(key_bytes * (w * h))

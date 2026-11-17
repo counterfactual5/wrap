@@ -188,6 +188,7 @@ class TestPrepareAssetFit(unittest.TestCase):
             self._run_prepare([
                 {"id": "fg", "type": "ai", "asset": "fit-src-d",
                  "keyColor": "#ffffff", "blend": "normal", "cutout": True,
+                 "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
                  "rect": [0, 0, 300, 200], "z": 0},
             ])
         _, w, h, rgba = self._prepared("fit-src-d")

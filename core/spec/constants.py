@@ -11,6 +11,40 @@ BLENDS = {"multiply", "screen", "normal"}
 LAYER_TYPES = {"ai", "video", "component"}
 # Aspect ratios the video backend accepts.
 VIDEO_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+
+SPRING_OMEGA_MIN = 1.0
+SPRING_OMEGA_MAX = 120.0
+SPRING_ZETA_MIN = 0.01
+SPRING_ZETA_MAX = 2.0
+SPRING_COUPLING_MIN = -5.0
+SPRING_COUPLING_MAX = 5.0
+SPRING_ACCEL_MIN = 1.0
+SPRING_ACCEL_MAX = 100000.0
+
+# Edge-key purity measurement defaults.
+EDGE_KEY_RING = 8
+EDGE_KEY_TOL = 12
+
+# Motion gate measurement defaults.
+DEFAULT_LUMA_DELTA = 6
+STATIC_ACTIVE_FRACTION = 0.15
+
+# Caption fallback timing layout.
+CAPTION_FALLBACK_LEAD_SEC = 0.05
+CAPTION_FALLBACK_TAIL_SEC = 0.15
+CAPTION_MIN_DURATION_SEC = 0.2
+CAPTION_VOICEOVER_OVERLAP_MIN = 0.60
+CAPTION_SHORT_FRAGMENT = 6
+CAPTION_MERGE_HEADROOM = 6
+
+# Audio shot timing defaults.
+VOICEOVER_TAIL_TOLERANCE = 0.25
+BG_FADE_MAX_SEC = 0.04
+BG_FADE_FRAC_OF_DURATION = 0.1
+
+# Rig verification defaults.
+DEFAULT_MIN_VISIBLE_OPACITY = 0.20
+
 # The procedural draw vocabulary is REMOVED (zero-template migration). The set
 # is kept, empty and loud, as the migration boundary: nothing may be added back
 # without a renderer branch and a contract test. A spec that names a draw is

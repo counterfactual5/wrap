@@ -196,7 +196,7 @@ def generate(args):
     if not os.path.exists(mp4_path):
         raise RuntimeError(f"Cannot run S5: Video not found at {mp4_path}. Run S3 first.")
 
-    duration_frames = spec.get("durationInFrames", 150)
+    duration_frames = spec["durationInFrames"]  # required by the schema
     sheet_rel = f"build/contact_sheet_{shot_id}.png"
     sheet_path = os.path.join(ROOT, sheet_rel)
 

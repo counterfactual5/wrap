@@ -313,10 +313,17 @@ def assemble_timeline(tl, out_rel=None):
             _audio.run_two_pass_loudnorm(["-i", tl_bgm_wav], "-af", "", total_dur, a_out)
             print(f"  timeline bgm: overlaid {tl_bgm} across full film ({total_dur:.2f}s, mastered to -16 LUFS)")
         else:
-            # Mix shot audio with ducked timeline BGM bed and normalize
+            # Mix shot audio with the timeline BGM bed under it and normalize.
+            # The bed's level under the shots is declared (timeline.bgmUnderVoice);
+            # the engine ships no default duck ratio.
+            bed_level = tl.get("bgmUnderVoice")
+            if bed_level is None:
+                raise ValueError(
+                    "timeline 'bgm' mixed under audible shot audio: the engine ships no default "
+                    "duck ratio — declare timeline 'bgmUnderVoice' (0..1, e.g. 0.24)")
             mix_fc = (
                 f"[0:a]volume=1.0[v];"
-                f"[1:a]volume=0.24[b];"
+                f"[1:a]volume={float(bed_level):.4f}[b];"
                 f"[v][b]amix=inputs=2:duration=first:dropout_transition=0:normalize=0"
             )
             _audio.run_two_pass_loudnorm(
@@ -506,15 +513,16 @@ def main():
     # verify-combat
     p_combat = subparsers.add_parser("verify-combat", help="Verify physical weapon-to-target contact on all punch/strike frames")
     p_combat.add_argument("--spec", required=True, help="Path to poster spec JSON")
-    p_combat.add_argument("--attacker", default=None, help="Attacker root layer ID (defaults to spec.combat.attacker or auto-discovered)")
-    p_combat.add_argument("--weapon", default=None, help="Articulated weapon layer ID (defaults to spec.combat.weapon or auto-discovered)")
-    p_combat.add_argument("--target", default=None, help="Target layer ID (defaults to spec.combat.target or auto-discovered)")
+    p_combat.add_argument("--attacker", default=None, help="Attacker root layer ID (overrides spec.combat.attacker; geometry is declared, never discovered)")
+    p_combat.add_argument("--weapon", default=None, help="Articulated weapon layer ID (overrides spec.combat.weapon)")
+    p_combat.add_argument("--target", default=None, help="Target layer ID (overrides spec.combat.target)")
     p_combat.add_argument("--tolerance", type=int, default=None, help="Maximum allowed whiffing gap in canvas px (default: 40)")
 
     # verify-blocking
     p_block = subparsers.add_parser("verify-blocking", help="Verify co-planar 2D character non-overlap & horizontal stage-lane separation across all frames")
     p_block.add_argument("--spec", required=True, help="Path to poster spec JSON")
     p_block.add_argument("--max-overlap", type=float, default=12.0, help="Maximum allowed torso overlap in canvas px (default: 12.0)")
+    p_block.add_argument("--min-visible-opacity", type=float, default=0.20, help="Opacity at/above which a character counts as visible (default: 0.20)")
 
     # verify-continuity
     p_cont = subparsers.add_parser("verify-continuity", help="Verify cross-shot continuity: backdrop handoff match and character position/visibility seams between consecutive shots")
@@ -790,7 +798,8 @@ def main():
             sys.exit(f"Spec not found: {spec_path}")
         with open(spec_path) as f:
             spec_data = json.load(f)
-        res = verify_stage_blocking(spec_data, max_overlap_px=args.max_overlap)
+        res = verify_stage_blocking(spec_data, max_overlap_px=args.max_overlap,
+                                    min_visible_opacity=args.min_visible_opacity)
         print(f"\n=== Stage Blocking & Non-Overlap Verification: {spec_data.get('id', 'puppet')} ===")
         for p in res["pairs"]:
             print(f"  [{p['status']}] {p['pair']:<22} | min_clearance={p['min_clearance_px']:>6.1f}px | max_overlap={p['max_overlap_px']:>5.1f}px (frame {p['worst_frame']})")
@@ -833,11 +842,18 @@ def main():
                 print(f"\nTimeline Continuity FAILED:\n  " + "\n  ".join(res["errors"]))
                 sys.exit(1)
             warns = [h for h in res["handoffs"] if h["status"] == "BACKDROP_WARN"]
+            unverified = [h for h in res["handoffs"] if h["status"] == "NO_BACKDROP_DECLARED"]
             if warns:
                 print(f"\nTimeline Continuity PASSED with {len(warns)} backdrop warning(s) (non-seamless cuts allowed by config):")
                 for h in warns:
                     print(f"  [BACKDROP_WARN] {h['from_shot']} ends on {h['end_backdrop']!r}, {h['to_shot']} starts on {h['next_start_backdrop']!r}")
-            else:
+            if unverified:
+                print(f"\nNOTE: {len(unverified)} cut(s) had NO declared backdrop identity — their "
+                      f"backdrop continuity was NOT verified (declare a layer 'backdrop' field "
+                      f"to have it checked):")
+                for h in unverified:
+                    print(f"  [NOT CHECKED] {h['from_shot']} -> {h['to_shot']}")
+            if not warns and not unverified:
                 print("\nTimeline Continuity PASSED (backdrop handoffs & character seams verified).")
         elif args.spec:
             spec_path = os.path.join(ROOT, args.spec)
@@ -845,7 +861,10 @@ def main():
                 sys.exit(f"Spec not found: {spec_path}")
             with open(spec_path) as f:
                 spec_data = json.load(f)
-            res = verify_shot_stagecraft(spec_data)
+            from core.rig.verification.stagecraft import DEFAULT_MIN_VISIBLE_OPACITY
+            res = verify_shot_stagecraft(
+                spec_data,
+                min_visible_opacity=(args.min_visible_opacity if args.min_visible_opacity is not None else DEFAULT_MIN_VISIBLE_OPACITY))
             print(json.dumps(res, indent=2, ensure_ascii=False))
             if not res["passed"]:
                 sys.exit(1)
@@ -859,7 +878,7 @@ def main():
             sys.exit(f"Spec not found: {spec_path}")
         with open(spec_path) as f:
             spec_data = json.load(f)
-        fps = spec_data.get("fps", 30)
+        fps = spec_data["fps"]  # required by the schema
         sid = spec_data.get("id", "shot-01")
         audio_target = args.audio or os.path.join(ROOT, "build", f"{sid}.mp4")
         if not os.path.exists(audio_target):

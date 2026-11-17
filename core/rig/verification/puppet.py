@@ -108,7 +108,7 @@ def verify_puppet_rig(spec, out_dir="build/inspect", tolerance=4):
     diag_path = os.path.join(ROOT, out_dir, f"rig_calibration_{spec.get('id', 'puppet')}.png")
     try:
         from PIL import Image, ImageDraw
-        cw, ch = spec.get("canvas", {}).get("w", 1920), spec.get("canvas", {}).get("h", 1080)
+        cw, ch = spec["canvas"]["w"], spec["canvas"]["h"]
         img = Image.new("RGBA", (cw, ch), (20, 16, 12, 255))
         draw = ImageDraw.Draw(img)
 

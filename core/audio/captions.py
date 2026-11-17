@@ -39,11 +39,24 @@ def _split_sentence_clauses(sentence, max_chars=20):
             merged.append(buf)
             buf = cl
     if buf:
-        if merged and len(re.sub(r"\W+", "", buf)) < 6 and len(merged[-1]) + len(buf) <= max_chars + 6:
+        if merged and len(re.sub(r"\W+", "", buf)) < CAPTION_SHORT_FRAGMENT and len(merged[-1]) + len(buf) <= max_chars + CAPTION_MERGE_HEADROOM:
             merged[-1] += buf
         else:
             merged.append(buf)
     return merged
+
+
+# Caption fallback timing layout (used only when the TTS provider returns no
+# sentence boundaries): a small lead before the first clause and a reserved
+# tail margin so clauses never run past the clip's spoken window.
+CAPTION_FALLBACK_LEAD_SEC = 0.05
+CAPTION_FALLBACK_TAIL_SEC = 0.15
+CAPTION_MIN_DURATION_SEC = 0.2
+# Merge a short trailing fragment into the previous clause when the combined
+# line reads naturally: fragment under this many word characters, combined
+# line under max_chars + this much headroom.
+CAPTION_SHORT_FRAGMENT = 6
+CAPTION_MERGE_HEADROOM = 6
 
 
 def clauses_from_boundaries(text, boundaries, total_duration, fps=30, max_chars=20):
@@ -59,8 +72,10 @@ def clauses_from_boundaries(text, boundaries, total_duration, fps=30, max_chars=
         if not raw_sents:
             raw_sents = [text]
         total_chars = max(1, sum(len(s) for s in raw_sents))
-        cursor = 0.05
-        avail = max(0.5, total_duration - 0.15)
+        cursor = CAPTION_FALLBACK_LEAD_SEC
+        tail = CAPTION_FALLBACK_TAIL_SEC
+        min_window = 0.5  # the fallback window never shrinks below half a second
+        avail = max(min_window, total_duration - tail)
         sent_Bounds = []
         for s in raw_sents:
             dur = avail * (len(s) / total_chars)
@@ -72,7 +87,7 @@ def clauses_from_boundaries(text, boundaries, total_duration, fps=30, max_chars=
     for sb in sent_Bounds:
         s_text = sb["text"].strip()
         s_off = max(0.0, float(sb.get("offset_sec", 0.0)))
-        s_dur = max(0.2, float(sb.get("duration_sec", 1.0)))
+        s_dur = max(CAPTION_MIN_DURATION_SEC, float(sb.get("duration_sec", 1.0)))
         clauses = _split_sentence_clauses(s_text, max_chars=max_chars)
         if not clauses:
             continue

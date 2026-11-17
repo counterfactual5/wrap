@@ -16,6 +16,10 @@ def validate_timeline(timeline):
         e(f"timeline id must be a letters/digits/._- string (got {timeline['id']!r})")
     if "bgm" in timeline and timeline["bgm"] is not None and not isinstance(timeline["bgm"], str):
         e("timeline 'bgm' must be a string (audio file path)")
+    if "bgmUnderVoice" in timeline and timeline["bgmUnderVoice"] is not None:
+        buv = timeline["bgmUnderVoice"]
+        if isinstance(buv, bool) or not isinstance(buv, (int, float)) or not (0.0 <= buv <= 1.0):
+            e("timeline 'bgmUnderVoice' must be a number in [0, 1]")
     if "allow_black" in timeline and not isinstance(timeline["allow_black"], bool):
         e("timeline 'allow_black' must be a boolean")
     if "allow_bgm_override_silent" in timeline and not isinstance(timeline["allow_bgm_override_silent"], bool):

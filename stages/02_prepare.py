@@ -14,7 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from core.runtime import manifest
-from core.quality.pixels import edge_key_purity, read_rgb
+from core.quality.pixels import EDGE_KEY_RING, EDGE_KEY_TOL, edge_key_purity, read_rgb
 from core.media.png import read_size, write_png
 from core.runtime.config import ROOT
 from core.spec.shot import gate_of
@@ -93,7 +93,7 @@ def main():
     spec = load_spec(args.spec)
     shot_id = spec.get("id", "shot-01")
     W, H = spec["canvas"]["w"], spec["canvas"]["h"]
-    FPS = spec.get("fps", 30)
+    FPS = spec["fps"]  # required by the schema — a missing fps is a broken spec, not 30
     # Prepared artifacts are namespaced per shot: build/prepared/{shot_id}/.
     # A shared build/prepared/{id}.png let whichever shot ran S2 last win the
     # filename (dark-style shots silently reused a light grid), the same
@@ -226,8 +226,12 @@ def main():
             # Foreground cutout sprite: key out keyColor to true RGBA transparency
             # and scale with decrease + transparent pad so limbs/weapons are never cropped.
             key_hex = L.get("keyColor", "#000000").lstrip("#")
-            sim = L.get("cutoutSimilarity", 0.14)
-            blend = L.get("cutoutBlend", 0.06)
+            sim = L.get("cutoutSimilarity")
+            blend = L.get("cutoutBlend")
+            if sim is None or blend is None:
+                sys.exit(
+                    f"{lid}: cutout:true requires explicit 'cutoutSimilarity'/'cutoutBlend' "
+                    f"(validate the spec — the engine ships no default key match ratio)")
             vf = (
                 f"format=rgba,"
                 f"colorkey=0x{key_hex}:{sim}:{blend},"
@@ -269,7 +273,7 @@ def main():
             if g is not None and not is_opaque_backdrop:
                 purity = edge_key_purity(
                     read_rgb(src, sw, sh), sw, sh, hex_rgb(L["keyColor"]),
-                    ring=g.get("ring", 8), tol=g.get("tol", 12)
+                    ring=g.get("ring", EDGE_KEY_RING), tol=g.get("tol", EDGE_KEY_TOL)
                 )
                 lo = g.get("lo", 0.98)
                 verdict = "PASS" if purity >= lo else "BLOCKED"

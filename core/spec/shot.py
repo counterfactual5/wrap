@@ -70,7 +70,7 @@ def validate(spec):
             e("audio must be a dictionary")
         else:
             for key in spec["audio"]:
-                if key not in {"voiceover", "voice", "rate", "bgm", "bgmOffset"}:
+                if key not in {"voiceover", "voice", "rate", "bgm", "bgmOffset", "bgmUnderVoice"}:
                     e(f"audio.{key} is not a recognized audio field")
             if "ambient" in spec["audio"]:
                 e("migration required: audio.ambient removed; provide an explicit audio file or omit audio for silence")
@@ -78,6 +78,10 @@ def validate(spec):
                 bo = spec["audio"]["bgmOffset"]
                 if isinstance(bo, bool) or not isinstance(bo, (int, float)) or bo < 0:
                     e(f"audio.bgmOffset must be a non-negative number in seconds (got {bo!r})")
+            if "bgmUnderVoice" in spec["audio"] and spec["audio"]["bgmUnderVoice"] is not None:
+                buv = spec["audio"]["bgmUnderVoice"]
+                if isinstance(buv, bool) or not isinstance(buv, (int, float)) or not (0.0 <= buv <= 1.0):
+                    e(f"audio.bgmUnderVoice must be a number in [0, 1] (got {buv!r})")
             if "voiceover" in spec["audio"] and spec["audio"]["voiceover"] is not None:
                 if not isinstance(spec["audio"]["voiceover"], str):
                     e("audio.voiceover must be a string")

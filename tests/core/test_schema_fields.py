@@ -25,6 +25,10 @@ def _spec(layer):
 def _ai(**extra):
     layer = {"id": "hero", "type": "ai", "asset": "a", "keyColor": "#070512",
              "blend": "normal", "rect": [0, 0, 1080, 1920], "z": 0}
+    if extra.get("cutout") and "cutoutSimilarity" not in extra:
+        layer["cutoutSimilarity"] = 0.14
+    if extra.get("cutout") and "cutoutBlend" not in extra:
+        layer["cutoutBlend"] = 0.06
     layer.update(extra)
     return layer
 

@@ -63,10 +63,10 @@ def main():
         with open(style_path) as f:
             style = json.load(f)
 
-    canvas = spec.get("canvas", {})
-    aspect_ratio = aspect_for_canvas(canvas.get("w", 16), canvas.get("h", 9))
+    canvas = spec["canvas"]  # required by the schema
+    aspect_ratio = aspect_for_canvas(canvas["w"], canvas["h"])  # canvas is required
     resolution = style.get("area") or style.get("resolution") or models.DEFAULT_IMAGE_AREA
-    shot_seconds = spec.get("durationInFrames", 0) / max(1, spec.get("fps", 30))
+    shot_seconds = spec["durationInFrames"] / spec["fps"]
 
     # Collect and topologically sort asset generation tasks
     # (independent plates/torsos generate first; dependent kit limbs/weapons and video layers generate after)

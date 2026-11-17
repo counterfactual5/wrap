@@ -8,28 +8,36 @@ from core.media.png import read_size
 from core.spec.naming import hex_rgb
 
 from ..kinematics import eval_channel
+from .stagecraft import DEFAULT_MIN_VISIBLE_OPACITY
 from ..sprites import source_to_canvas_pivot, sprite_bbox
 
 
-def verify_stage_blocking(spec, max_overlap_px=12.0):
+def verify_stage_blocking(spec, max_overlap_px=12.0,
+                          min_visible_opacity=DEFAULT_MIN_VISIBLE_OPACITY,
+                          torso_trim=0.12, min_span_px=40.0):
     """Verify that co-planar 2D cutout characters do not overlap horizontally on the stage plane.
 
-    In 2D shadow puppetry and flat-plane cutout animation, all characters occupy the same
-    optical projection screen (`同平面贴幕`). When two upright characters' torsos overlap
-    horizontally (`overlap_x > max_overlap_px`), their translucent/multiply layers muddy
-    together into an unreadable silhouette.
+    When two upright characters' torsos overlap horizontally (`overlap_x >
+    max_overlap_px`), their translucent/multiply layers muddy together into
+    an unreadable silhouette.
 
-    Rules (100% domain-agnostic, zero character-name hardcoding):
+    Rules (domain-agnostic — measurements are derived, never guessed):
     - Discovers all root cutout character layers (`type == 'ai'`, `cutout == True`, `parent is None`).
-    - Computes each character's core torso horizontal interval `[x_left(f), x_right(f)]` from its
-      actual opaque pixel bounding box mapped into `layer['rect']` + `anim.x(f)`.
-    - Exempts frames where a character is invisible (`opacity < 0.25`), leaping high in the air
-      above head height (`anim.y(f) <= -105`), or collapsed on the ground after impact.
-    - Reports PASS if all upright ground-plane character pairs maintain clean horizontal separation
+    - Torso interval: for assets, derived from the opaque-pixel bounding box
+      mapped into `layer['rect']` + `anim.x(f)`, with `torso_trim` (default 0.12)
+      trimming outer sleeve/staff overhang on each side of the span
+      (span floored at `min_span_px`, default 40.0 canvas px). For asset-less
+      layers, the band is declared by the spec via `blockCore`
+      [leftFrac, rightFrac] (in [0,1] of the rect width) — when missing,
+      verification fails naming the layer instead of assuming 20–80%.
+    - Exempts frames where a character is invisible (opacity < min_visible_opacity,
+      default 0.20) or its layer carries `role: "prop"`. No guessed choreography
+      exemptions (a leap is not assumed above the ground plane).
+    - Reports PASS if all upright character pairs maintain clean horizontal separation
       across all frames `0..durationInFrames-1`, or FAIL with exact colliding pairs and frame windows.
     """
     layers_list = spec.get("layers", [])
-    dur = int(spec.get("durationInFrames", 300))
+    dur = int(spec["durationInFrames"])  # required by the schema
     root_chars = [
         L for L in layers_list
         if L.get("type") == "ai" and L.get("cutout") and not L.get("parent") and L.get("role") != "prop"
@@ -38,9 +46,10 @@ def verify_stage_blocking(spec, max_overlap_px=12.0):
         return {"passed": True, "errors": [], "pairs": []}
 
     char_boxes = {}
+    missing_block_core = []
     for L in root_chars:
         lid = L["id"]
-        rect = L.get("rect", [0, 0, 300, 400])
+        rect = L["rect"]  # required by the schema
         rx, ry, rw, rh = rect
         asset = L.get("asset")
         row = manifest.verified("assets", asset) if asset else None
@@ -51,14 +60,29 @@ def verify_stage_blocking(spec, max_overlap_px=12.0):
             bx0, by0, bx1, by1 = sprite_bbox(buf, sw, sh, hex_rgb(L.get("keyColor", "#ffffff")))
             p0 = source_to_canvas_pivot(sw, sh, rect, bx0, by0)
             p1 = source_to_canvas_pivot(sw, sh, rect, bx1, by1)
-            span_w = max(40.0, p1[0] - p0[0])
-            # Core torso silhouette (trimming 12% outer sleeve/staff tip overhang on each side)
-            base_left = p0[0] + span_w * 0.12
-            base_right = p1[0] - span_w * 0.12
+            span_w = max(min_span_px, p1[0] - p0[0])
+            # Core torso silhouette (trimming outer sleeve/staff tip overhang on each side)
+            base_left = p0[0] + span_w * torso_trim
+            base_right = p1[0] - span_w * torso_trim
         else:
-            base_left = rx + rw * 0.20
-            base_right = rx + rw * 0.80
+            block_core = L.get("blockCore")
+            if not (isinstance(block_core, list) and len(block_core) == 2):
+                missing_block_core.append(lid)
+                continue
+            base_left = rx + rw * block_core[0]
+            base_right = rx + rw * block_core[1]
         char_boxes[lid] = (base_left, base_right, L)
+    if missing_block_core:
+        return {
+            "passed": False,
+            "errors": [
+                f"verify-blocking cannot measure the torso band of asset-less character "
+                f"layer(s) {missing_block_core}: declare a 'blockCore' [leftFrac, rightFrac] "
+                f"(in [0,1]) on the layer, or give it an asset (the box is then derived "
+                f"from its opaque pixels). The engine does not guess torso bands."
+            ],
+            "pairs": [],
+        }
 
     errors = []
     pair_summaries = []
@@ -79,19 +103,7 @@ def verify_stage_blocking(spec, max_overlap_px=12.0):
             for f in range(dur):
                 op_a = eval_channel(anim_a.get("opacity", []), f, 1.0)
                 op_b = eval_channel(anim_b.get("opacity", []), f, 1.0)
-                if op_a < 0.25 or op_b < 0.25:
-                    continue
-
-                ya = eval_channel(anim_a.get("y", []), f, 0.0)
-                yb = eval_channel(anim_b.get("y", []), f, 0.0)
-                # High-altitude aerial leap/cloud flight passes above the ground plane
-                if ya <= -105.0 or yb <= -105.0 or abs(ya - yb) >= 105.0:
-                    continue
-
-                # Check if either character has switched to a shattered/collapsed ground pose
-                rot_a = abs(eval_channel(anim_a.get("rotate", []), f, 0.0))
-                rot_b = abs(eval_channel(anim_b.get("rotate", []), f, 0.0))
-                if (ya >= 18.0 and rot_a >= 12.0) or (yb >= 18.0 and rot_b >= 12.0):
+                if op_a < min_visible_opacity or op_b < min_visible_opacity:
                     continue
 
                 xa = eval_channel(anim_a.get("x", []), f, 0.0)

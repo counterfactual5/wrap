@@ -83,15 +83,15 @@ def solve_2bone_ik(hip, foot, L1, L2, bend_dir=1):
     }
 
 
-def solve_leg_ground_lock(hip_x, hip_y, ground_y, foot_offset_x, L1=160, L2=160, bend_dir=1):
+def solve_leg_ground_lock(hip_x, hip_y, ground_y, foot_offset_x, L1, L2, bend_dir=1):
     """Lock a puppet's foot to the ground plane while the hip moves dynamically."""
     foot_x = hip_x + foot_offset_x
     foot_y = ground_y
     return solve_2bone_ik([hip_x, hip_y], [foot_x, foot_y], L1, L2, bend_dir=bend_dir)
 
 
-def solve_spring_damper_track(driver_kfs, total_frames, fps=30, omega=18.0, zeta=0.25,
-                              coupling=0.45, base_kfs=None, step_frames=2, max_accel=4500.0):
+def solve_spring_damper_track(driver_kfs, total_frames, fps, omega, zeta,
+                              coupling, base_kfs=None, step_frames=2, max_accel=4500.0):
     """Simulate a 2nd-order damped spring-mass oscillator driven by parent acceleration.
 
     Models secondary appendages (pheasant plumes, silk ribbons, tassels, or chart needles)

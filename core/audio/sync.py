@@ -63,6 +63,20 @@ def _rescale_frame(f, old_max, new_max, anchors=None):
     return int(round(f * new_max / old_max))
 
 
+def _required(spec, key):
+    """A schema-required field, read without a fallback.
+
+    The spec schema requires `fps` and `durationInFrames`; a spec missing
+    them is malformed. Silently assuming 30 fps would re-time the whole
+    shot's audio against the wrong clock, so the read fails loudly.
+    """
+    if key not in spec:
+        raise ValueError(
+            f"spec is missing the required field {key!r} — sync-audio cannot guess the "
+            f"shot's timing (write {key!r} explicitly)")
+    return spec[key]
+
+
 def _rescale_spec_timings(spec, old_frames, new_frames, anchors=None):
     """Piecewise clause-anchored (or proportional) rescaling of layer anim keyframes,
     poses, and tracks.events frames."""
@@ -108,7 +122,8 @@ def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=2
     with open(spec_path) as f:
         spec = json.load(f)
 
-    fps = spec.get("fps", 30)
+    fps = _required(spec, "fps")
+    duration_frames = _required(spec, "durationInFrames")
     audio_spec = spec.get("audio") or {}
     voiceover_text = (audio_spec.get("voiceover") or "").strip()
     tracks = spec.setdefault("tracks", {})
@@ -126,7 +141,7 @@ def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=2
             voiceover_text, voice=voice, out_path=tmp_wav, rate=rate
         )
 
-    old_frames = spec.get("durationInFrames", 150)
+    old_frames = duration_frames
     required_frames = int(math.ceil((raw_dur + 0.6) * fps))
     new_frames = max(old_frames, required_frames) if fit_duration else old_frames
 

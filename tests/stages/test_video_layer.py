@@ -638,9 +638,11 @@ class TestVideoFirstFrameAndReferenceValidation(unittest.TestCase):
             "layers": [
                 {"id": "lantern-big", "type": "ai", "asset": "city-silhouette",
                  "keyColor": "#070512", "blend": "normal", "cutout": True,
+                 "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
                  "rect": [100, 100, 600, 600], "z": 1},
                 {"id": "lantern-small", "type": "ai", "asset": "city-silhouette",
                  "keyColor": "#070512", "blend": "normal", "cutout": True,
+                 "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
                  "rect": [700, 100, 200, 200], "z": 2},
             ],
             "gates": [{"id": "motion", "metric": "changed_pixel_ratio", "lo": 0.0001, "hi": 0.15}],

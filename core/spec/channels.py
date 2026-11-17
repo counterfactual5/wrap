@@ -6,7 +6,13 @@ and validated on its own, apart from the layer's own fields.
 import os
 import re
 
-from .constants import ANIM_CHANNELS, ANIM_EASES, SPRING_CHANNELS
+from .constants import (
+    ANIM_CHANNELS, ANIM_EASES, SPRING_CHANNELS,
+    SPRING_OMEGA_MIN, SPRING_OMEGA_MAX,
+    SPRING_ZETA_MIN, SPRING_ZETA_MAX,
+    SPRING_COUPLING_MIN, SPRING_COUPLING_MAX,
+    SPRING_ACCEL_MIN, SPRING_ACCEL_MAX,
+)
 
 
 def validate_spring(spring, lid, errs):
@@ -20,10 +26,10 @@ def validate_spring(spring, lid, errs):
         if key not in spring:
             e(f"{lid}: spring.{key} is required (no defaults are provided)")
     for k, (lo, hi) in (
-        ("omega", (1.0, 120.0)),
-        ("zeta", (0.01, 2.0)),
-        ("coupling", (-5.0, 5.0)),
-        ("maxAccel", (1.0, 100000.0)),
+        ("omega", (SPRING_OMEGA_MIN, SPRING_OMEGA_MAX)),
+        ("zeta", (SPRING_ZETA_MIN, SPRING_ZETA_MAX)),
+        ("coupling", (SPRING_COUPLING_MIN, SPRING_COUPLING_MAX)),
+        ("maxAccel", (SPRING_ACCEL_MIN, SPRING_ACCEL_MAX)),
     ):
         if k in spring:
             v = spring[k]
@@ -63,6 +69,9 @@ def _norm_tokens(s):
     return "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", str(s).lower()))
 
 
+CAPTION_VOICEOVER_OVERLAP_MIN = 0.60
+
+
 def validate_captions_against_voiceover(items, voiceover_text, lid, errs):
     """Ensure captions items share a single source of truth with audio.voiceover."""
     if not isinstance(items, list) or not items:
@@ -85,7 +94,7 @@ def validate_captions_against_voiceover(items, voiceover_text, lid, errs):
             continue
         it_bigrams = [it_norm[i:i + 2] for i in range(len(it_norm) - 1)]
         overlap = sum(1 for bg in it_bigrams if bg in vo_bigrams) / max(1, len(it_bigrams))
-        if overlap < 0.60:
+        if overlap < CAPTION_VOICEOVER_OVERLAP_MIN:
             errs.append(
                 f"{lid}: captions item[{idx}] {it_text!r} does not match audio.voiceover "
                 f"(bigram overlap {overlap:.0%} < 60%) — subtitles and voiceover must share a "

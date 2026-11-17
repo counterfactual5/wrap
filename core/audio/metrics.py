@@ -12,6 +12,12 @@ import re
 import struct
 import subprocess
 
+# Speech/foreground must clear these floors to count as real content in an
+# audible shot — the documented name for the -25/-45 dB thresholds.
+SPEECH_MAX_FLOOR_DB = -25.0
+SPEECH_MEAN_FLOOR_DB = -45.0
+
+
 def measure_audio_silence(file_path, start=None, duration=None):
     """Detects audio silence and content presence using FFmpeg volumedetect.
     Returns dict with max_volume, mean_volume, speech_max_volume, speech_mean_volume,
@@ -41,7 +47,7 @@ def measure_audio_silence(file_path, start=None, duration=None):
     m_sp_mean = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", res_sp.stderr)
     sp_max = float(m_sp_max.group(1)) if m_sp_max else -99.0
     sp_mean = float(m_sp_mean.group(1)) if m_sp_mean else -99.0
-    has_content = (sp_max >= -25.0 and sp_mean >= -45.0)
+    has_content = (sp_max >= SPEECH_MAX_FLOOR_DB and sp_mean >= SPEECH_MEAN_FLOOR_DB)
 
     return {
         "measurement_ok": res.returncode == 0 and m_max is not None,

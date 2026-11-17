@@ -174,8 +174,18 @@ class TestTimelineBgmIntent(unittest.TestCase):
     def test_audible_shot_mixes_without_consent(self):
         self.shot("audible", audio={"bgm": "bed.wav"})
         self.render_clip("audible", audible=True)
-        self.timeline(["audible"], **{FLAG: False})
+        self.timeline(["audible"], bgmUnderVoice=0.24, **{FLAG: False})
         self.assertIn("timeline bgm: mixed", self.assert_assembled())
+
+    def test_mixing_under_shot_audio_requires_a_declared_duck_ratio(self):
+        """The engine ships no default bed level: an audible shot under a
+        timeline BGM bed must declare timeline 'bgmUnderVoice'."""
+        self.shot("audible", audio={"bgm": "bed.wav"})
+        self.render_clip("audible", audible=True)
+        self.timeline(["audible"])
+        result, text = self.cli()
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertIn("bgmUnderVoice", text)
 
     def test_integrity_cannot_be_bypassed_by_consent_or_existing_render(self):
         self.shot("quiet")

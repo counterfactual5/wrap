@@ -61,6 +61,8 @@ class TestRigIKAndChoreography(unittest.TestCase):
         # Spec with whiffing (gap > 40px)
         whiff_spec = {
             "tracks": {"events": [{"frame": 62, "kind": "contact"}]},
+            "combat": {"attacker": "hero", "weapon": "hero-armstaff", "target": "enemy",
+                       "tolerance": 40, "tipOffset": [535.0, -268.0], "refWidth": 1090.0},
             "layers": [
                 {"id": "hero", "rect": [400, 500, 100, 200], "anim": {"x": [[0, 0], [62, 0]]}},
                 {"id": "hero-armstaff", "rect": [400, 500, 300, 300], "pivot": [450, 550], "anim": {"rotate": [[0, 0], [62, 50]]}},
@@ -74,6 +76,8 @@ class TestRigIKAndChoreography(unittest.TestCase):
         # Spec with contact (weapon reaches target)
         hit_spec = {
             "tracks": {"events": [{"frame": 62, "kind": "contact"}]},
+            "combat": {"attacker": "hero", "weapon": "hero-armstaff", "target": "enemy",
+                       "tolerance": 40, "tipOffset": [535.0, -268.0], "refWidth": 1090.0},
             "layers": [
                 {"id": "hero", "rect": [540, 485, 104, 280], "anim": {"x": [[0, 0], [62, 260]]}},
                 {"id": "hero-armstaff", "rect": [327, 440, 476, 530], "pivot": [583.9, 606.8], "anim": {"rotate": [[0, 0], [62, 50]]}},
@@ -102,6 +106,22 @@ class TestRigIKAndChoreography(unittest.TestCase):
 
 
 
+
+    def test_11b_verify_combat_refuses_to_guess_weapon_geometry(self):
+        """Zero guessed fallbacks: missing tipOffset/refWidth is an explicit error."""
+        from core.rig.verification.combat import verify_combat_contact
+        spec = {
+            "tracks": {"events": [{"frame": 10, "kind": "contact"}]},
+            "combat": {"attacker": "hero", "weapon": "staff", "target": "enemy"},
+            "layers": [
+                {"id": "hero", "rect": [0, 0, 100, 200], "anim": {"x": [[0, 0], [10, 0]]}},
+                {"id": "staff", "rect": [0, 0, 300, 300], "pivot": [50, 50], "anim": {"rotate": [[0, 0], [10, 0]]}},
+                {"id": "enemy", "rect": [600, 0, 200, 300], "anim": {"x": [[0, 0], [10, 0]]}},
+            ],
+        }
+        res = verify_combat_contact(spec)
+        self.assertFalse(res["passed"])
+        self.assertTrue(any("tipOffset" in e for e in res["errors"]), res["errors"])
 
     def test_11_verify_combat_missing_layers_no_keyerror(self):
         """P1-3: verify_combat_contact and CLI verify-combat return clean error without KeyError: 'details'."""
@@ -224,6 +244,8 @@ class TestRigIKAndChoreography(unittest.TestCase):
                     "keyColor": "#ffffff",
                     "blend": "normal",
                     "cutout": True,
+                    "cutoutSimilarity": 0.14,
+                    "cutoutBlend": 0.06,
                     "rect": [240, 480, 600, 900],
                     "z": 1,
                 }
@@ -252,6 +274,52 @@ class TestRigIKAndChoreography(unittest.TestCase):
             rep = verify_timeline_continuity(tl_data, root_dir=tmp)
             self.assertEqual(rep["handoffs"][0]["char_jumps"], [])
 
+
+
+
+
+
+class TestBlockingNoGuessedBands(unittest.TestCase):
+    """verify-blocking must measure torso bands, never assume 20-80%."""
+
+    def test_assetless_character_without_blockcore_fails(self):
+        from core.rig import verify_stage_blocking
+        spec = {
+            "id": "lane",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 30,
+            "layers": [
+                {"id": "a", "type": "ai", "asset": "a.png", "cutout": True, "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
+                 "keyColor": "#ffffff", "blend": "normal", "rect": [10, 0, 200, 400], "z": 1},
+                {"id": "b", "type": "ai", "asset": "b.png", "cutout": True, "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
+                 "keyColor": "#ffffff", "blend": "normal", "rect": [40, 0, 200, 400], "z": 2},
+            ],
+            "gates": [],
+        }
+        res = verify_stage_blocking(spec)
+        self.assertFalse(res["passed"], res)
+        self.assertTrue(any("blockCore" in e for e in res["errors"]), res["errors"])
+
+    def test_assetless_character_with_blockcore_measured(self):
+        from core.rig import verify_stage_blocking
+        spec = {
+            "id": "lane",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 30,
+            "layers": [
+                {"id": "a", "type": "ai", "asset": "a.png", "cutout": True, "blockCore": [0.25, 0.75],
+                 "keyColor": "#ffffff", "blend": "normal", "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
+                 "rect": [100, 0, 200, 400], "z": 1},
+                {"id": "b", "type": "ai", "asset": "b.png", "cutout": True, "blockCore": [0.25, 0.75],
+                 "keyColor": "#ffffff", "blend": "normal", "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
+                 "rect": [700, 0, 200, 400], "z": 2},
+            ],
+            "gates": [],
+        }
+        res = verify_stage_blocking(spec)
+        self.assertTrue(res["passed"], res)
 
 
 if __name__ == "__main__":

@@ -69,7 +69,8 @@ class TestSyncSpecAudio(unittest.TestCase):
             for i in range(2):
                 path = os.path.join(tmp, f"{i}.json")
                 with open(path, "w") as f:
-                    json.dump({"id": "same", "audio": {"voiceover": str(i), "voice": "TestVoice"}}, f)
+                    json.dump({"id": "same", "fps": 30, "durationInFrames": 60,
+                           "audio": {"voiceover": str(i), "voice": "TestVoice"}}, f)
                 specs.append(path)
             with patch("core.audio.sync.synthesize_voiceover_with_timings", side_effect=synthesize):
                 with ThreadPoolExecutor(max_workers=2) as pool:

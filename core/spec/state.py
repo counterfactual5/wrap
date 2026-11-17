@@ -26,7 +26,7 @@ def carry_state_from(prev_spec, new_shot_id):
             for ch, kfs in L["anim"].items():
                 if isinstance(kfs, list) and kfs:
                     last_val = kfs[-1][1]
-                    carried_anim[ch] = [[0, last_val], [out.get("durationInFrames", 150) - 1, last_val]]
+                    carried_anim[ch] = [[0, last_val], [out["durationInFrames"] - 1, last_val]]
             if carried_anim:
                 L["anim"] = carried_anim
         new_layers.append(L)

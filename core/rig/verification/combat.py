@@ -10,10 +10,15 @@ def verify_combat_contact(spec, attacker_id=None, weapon_id=None,
                           target_id=None, tolerance=None, tip_offset=None, ref_width=None):
     """Verify that the attacker's weapon physically contacts the target hitbox on all punch frames.
 
-    Reads combat participants & weapon geometry from:
+    All geometry is declared, never guessed. Sources, in priority order:
     1. Explicit function arguments (`attacker_id`, `weapon_id`, `target_id`, `tolerance`, `tip_offset`, `ref_width`),
-    2. Or `spec["combat"]` (`{"attacker": "...", "weapon": "...", "target": "...", "tolerance": 40, "tipOffset": [dx, dy], "refWidth": 1090}`),
-    3. Or automatic topological discovery (locating the root parent with an articulated weapon/arm child and the opposing character layer).
+    2. Or `spec["combat"]` (`{"attacker": "...", "weapon": "...", "target": "...", "tolerance": 40,
+       "tipOffset": [dx, dy], "refWidth": 1090}`).
+    `ref_width` may additionally be derived from the weapon asset's frozen
+    manifest bytes (its width); when absent everywhere, the call fails before
+    any measurement — the engine never invents weapon geometry.
+    Missing layers or geometry are reported as a failed verdict with an
+    actionable error message, never as a guess.
     """
     combat_cfg = spec.get("combat") if isinstance(spec.get("combat"), dict) else {}
     layers_list = spec.get("layers", [])
@@ -24,53 +29,24 @@ def verify_combat_contact(spec, attacker_id=None, weapon_id=None,
     target_id = target_id or combat_cfg.get("target")
     if tolerance is None:
         tolerance = combat_cfg.get("tolerance", 40)
-    tip_offset = tip_offset or combat_cfg.get("tipOffset")
-    ref_width = ref_width or combat_cfg.get("refWidth")
-
-    # Auto-discover from layer topology if not explicitly specified
-    if not weapon_id:
-        for l in layers_list:
-            lid = l.get("id", "").lower()
-            ktype = (l.get("kit") or {}).get("type", "")
-            is_weapon_like = (ktype == "weapon" or "staff" in lid or "weapon" in lid or "sword" in lid or "blade" in lid or "lance" in lid or "spear" in lid or "arm" in lid)
-            if is_weapon_like and (l.get("parent") or "pivot" in l):
-                weapon_id = l["id"]
-                if not attacker_id:
-                    if l.get("parent"):
-                        attacker_id = l["parent"]
-                    elif "-" in l["id"]:
-                        prefix = l["id"].split("-")[0]
-                        if prefix in layers:
-                            attacker_id = prefix
-                break
-
-    if not attacker_id and weapon_id and weapon_id in layers:
-        attacker_id = layers[weapon_id].get("parent")
-        if not attacker_id and "-" in weapon_id:
-            prefix = weapon_id.split("-")[0]
-            if prefix in layers:
-                attacker_id = prefix
-
-    if not target_id:
-        for l in layers_list:
-            lid = l.get("id")
-            if lid and lid not in (attacker_id, weapon_id) and not l.get("parent") and (l.get("cutout") or l.get("poses") or "anim" in l):
-                ltype = l.get("type")
-                if ltype in (None, "ai", "component", "code") and l.get("draw") not in ("field", "path", "captions", "grid", "dots"):
-                    target_id = lid
-                    break
+    tip_offset = tip_offset if tip_offset is not None else combat_cfg.get("tipOffset")
+    ref_width = ref_width if ref_width is not None else combat_cfg.get("refWidth")
 
     attacker = layers.get(attacker_id) if attacker_id else None
     weapon = layers.get(weapon_id) if weapon_id else None
     target = layers.get(target_id) if target_id else None
 
-    if not attacker or not weapon or not target:
+    missing_layers = [f"layer {l!r}" for l in (attacker_id, weapon_id, target_id)
+                      if not (layers.get(l))]
+    if missing_layers:
         return {
             "passed": False,
             "details": [],
             "errors": [
-                f"Missing attacker, weapon, or target layer in spec (resolved attacker={attacker_id!r}, weapon={weapon_id!r}, target={target_id!r}). "
-                f"Declare 'combat': {{'attacker': '...', 'weapon': '...', 'target': '...'}} in spec or pass --attacker/--weapon/--target."
+                f"Missing attacker, weapon, or target layer in spec (resolved attacker={attacker_id!r}, "
+                f"weapon={weapon_id!r}, target={target_id!r}; absent: {', '.join(missing_layers)}). "
+                f"Declare 'combat': {{'attacker': '...', 'weapon': '...', 'target': '...'}} in spec "
+                f"or pass --attacker/--weapon/--target."
             ],
         }
 
@@ -81,25 +57,43 @@ def verify_combat_contact(spec, attacker_id=None, weapon_id=None,
     errors = []
     details = []
 
-    w_rect = weapon.get("rect", [0, 0, 476, 530])
-    p0 = weapon.get("pivot", [attacker["rect"][0] + attacker["rect"][2] * 0.5, attacker["rect"][1] + attacker["rect"][3] * 0.35])
-
+    missing = []
+    w_rect = weapon.get("rect")
+    if not (isinstance(w_rect, list) and len(w_rect) == 4 and w_rect[2] > 0):
+        missing.append(f"weapon layer {weapon_id!r} needs 'rect' [x,y,w,h] with positive width")
+    p0 = weapon.get("pivot")
+    if not (isinstance(p0, list) and len(p0) == 2):
+        missing.append(f"weapon layer {weapon_id!r} needs 'pivot' [x,y] (canvas px) to locate the weapon tip")
     if ref_width is None:
         w_asset = weapon.get("asset")
         w_row = manifest.verified("assets", w_asset) if w_asset else None
         if w_row and isinstance(w_row.get("size"), list) and w_row["size"][0] > 0:
             ref_width = float(w_row["size"][0])
         else:
-            ref_width = 1090.0
+            missing.append(
+                f"weapon asset {w_asset!r}: manifest row lacks 'size' — declare spec.combat 'refWidth' "
+                f"(the weapon artwork's width in source pixels)")
+    if ref_width is not None and not (
+            isinstance(ref_width, (int, float)) and not isinstance(ref_width, bool) and ref_width > 0):
+        missing.append("spec.combat 'refWidth' must be a positive number")
+    if tip_offset is not None and not (isinstance(tip_offset, (list, tuple)) and len(tip_offset) == 2):
+        missing.append("spec.combat 'tipOffset' must be [dx, dy] (source pixels)")
+    if tip_offset is None:
+        missing.append(
+            "declare spec.combat 'tipOffset' [dx, dy] (weapon tip relative to its pivot, in source pixels)")
+    t_rect = target.get("rect") if target else None
+    if not (isinstance(t_rect, list) and len(t_rect) == 4 and t_rect[2] > 0):
+        missing.append(f"target layer {target_id!r} needs 'rect' [x,y,w,h] with positive width")
+    if missing:
+        return {
+            "passed": False,
+            "details": [],
+            "errors": [f"verify-combat cannot measure contact: {m}." for m in missing],
+        }
 
-    scale = w_rect[2] / float(ref_width) if w_rect[2] > 0 and ref_width > 0 else 0.42
-
-    if tip_offset is not None and len(tip_offset) == 2:
-        dx0 = float(tip_offset[0]) * scale
-        dy0 = float(tip_offset[1]) * scale
-    else:
-        dx0 = 535.0 * scale
-        dy0 = -268.0 * scale
+    scale = w_rect[2] / float(ref_width)
+    dx0 = float(tip_offset[0]) * scale
+    dy0 = float(tip_offset[1]) * scale
 
     for f in punches:
         wa_x = eval_channel(attacker.get("anim", {}).get("x", []), f)
@@ -117,7 +111,7 @@ def verify_combat_contact(spec, attacker_id=None, weapon_id=None,
         tip_x = px + (dx0 * math.cos(tot_rot) - dy0 * math.sin(tot_rot))
         tip_y = py + (dx0 * math.sin(tot_rot) + dy0 * math.cos(tot_rot))
 
-        t_rect = target.get("rect", [980, 509, 246, 330])
+        t_rect = target.get("rect")
         t_min = t_rect[0] + bg_x
         t_max = t_min + t_rect[2]
 

@@ -174,13 +174,13 @@ def main():
     def measure(g):
         inp = ("-framerate", str(FPS))
         if g["metric"] == "changed_pixel_ratio":
-            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp))
+            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", metrics.DEFAULT_LUMA_DELTA), inp))
         if g["metric"] == "subject_motion_ratio":
             # Same metric, restricted to the region outside g["region"] — a
             # panning bar can no longer mask a static AI subject.
             band = g.get("region")
             exclude = tuple(band) if band else None
-            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", 6), inp, exclude_band=exclude))
+            return metrics.median(metrics.changed_pixel_ratios(frames, W, H, g.get("lumaDelta", metrics.DEFAULT_LUMA_DELTA), inp, exclude_band=exclude))
         if g["metric"] in ("red_pixel_ratio", "accent_color_ratio"):
             from core.spec.naming import hex_rgb
             color = g.get("color")
@@ -265,6 +265,7 @@ def main():
     # from a video layer's native track has no `audio` block, and skipping
     # the gates there would let an unmeasured soundtrack through.
     from core import audio
+    from core.audio.shot import VOICEOVER_TAIL_TOLERANCE
     av_probe = audio.measure_av_durations(mp4)
     if av_probe.get("has_audio"):
         # The spec asks for no soundtrack at all. The mp4 carries a compliant
@@ -354,10 +355,10 @@ def main():
             if vmeta.get("has_voice"):
                 raw_d = float(vmeta.get("raw_voice_duration", 0.0))
                 tgt_d = float(vmeta.get("target_duration", spec["durationInFrames"] / max(1, FPS)))
-                trunc_ok = not vmeta.get("truncated", raw_d > tgt_d + 0.25)
+                trunc_ok = not vmeta.get("truncated", raw_d > tgt_d + VOICEOVER_TAIL_TOLERANCE)
                 red |= not trunc_ok
                 if trunc_ok:
-                    print(f"PASS  truncation voiceover_truncation {raw_d:.2f} s  [<= {tgt_d + 0.25:.2f} s]")
+                    print(f"PASS  truncation voiceover_truncation {raw_d:.2f} s  [<= {tgt_d + VOICEOVER_TAIL_TOLERANCE:.2f} s]")
                 else:
                     print(
                         f"FAIL  truncation voiceover_truncation raw={raw_d:.2f}s > shot={tgt_d:.2f}s "
@@ -367,7 +368,7 @@ def main():
                     "id": "voiceover_truncation",
                     "metric": "voiceover_vs_shot_duration",
                     "value": raw_d,
-                    "hi": round(tgt_d + 0.25, 3),
+                    "hi": round(tgt_d + VOICEOVER_TAIL_TOLERANCE, 3),
                     "pass": trunc_ok,
                 })
 

@@ -22,10 +22,13 @@ from core.spec.timeline import validate_timeline  # noqa: E402
 
 def _shot(shot_id, backdrop, hero_x, hero_end_opacity=1.0, hero="hero-a"):
     layers = [
-        {"id": "bg", "type": "ai", "asset": backdrop, "keyColor": "#ffffff",
-         "blend": "normal", "rect": [0, 0, 1920, 1080], "z": 0},
+        # The engine no longer guesses backdrop identity from an asset name:
+        # the identity is declared via the layer's `backdrop` field.
+        {"id": "bg", "type": "ai", "asset": backdrop, "backdrop": backdrop,
+         "keyColor": "#ffffff", "blend": "normal", "rect": [0, 0, 1920, 1080], "z": 0},
         {"id": "hero", "type": "ai", "asset": hero, "keyColor": "#ffffff",
-         "blend": "normal", "cutout": True, "rect": [hero_x, 480, 300, 600], "z": 1,
+         "blend": "normal", "cutout": True, "cutoutSimilarity": 0.14, "cutoutBlend": 0.06,
+         "rect": [hero_x, 480, 300, 600], "z": 1,
          **({"anim": {"opacity": [[0, 1.0], [59, float(hero_end_opacity)]]}}
             if hero_end_opacity != 1.0 else {})},
     ]

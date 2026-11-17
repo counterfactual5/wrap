@@ -81,10 +81,11 @@ on anything else.
 | `prompt` | generation prompt (S1 only). The layer's own prompt is the **only** prompt source — `style` files contribute nothing to prompts; poses may carry their own |
 | `input_asset` / `reference_images` | image-to-image / multi-image fusion sources (frozen assets or other `ai` assets) |
 | `keyColor` + `blend` | edge keying (`#rrggbb`, `multiply`/`screen`/`normal`) |
-| `cutout` (+`cutoutSimilarity`/`cutoutBlend`) | chroma cutout with `fit: "contain"` |
+| `cutout` (+`cutoutSimilarity`/`cutoutBlend`, both required when `cutout:true`) | chroma cutout with `fit: "contain"` |
 | `poses` | `[{frame, asset}]` — frame-switched sprite swaps (weapon arm → bare arm, …) |
 | `motion.zoom` | `[z0, z1]` continuous camera push-in/pull-out on the image |
 | `fit` | `cover` (crop) or `contain` (letterbox), default `cover` |
+| `backdrop` | project-declared identity of this layer's background (a string; the same string across two shots means "the same place") — read by `verify-continuity` for the cross-shot backdrop handoff, never inferred |
 
 ### `video` — a generated clip
 
@@ -275,6 +276,11 @@ is a valid, first-class choice; generated video defaults to muted.
 - **The clip owns the audio**: `muted: false` on a video layer, and
   `audio.voiceover` left empty for that shot. **At most one** video layer may be
   unmuted — two unmuted tracks own the soundtrack and the encoder refuses.
+- **Voice + BGM**: both set → spec.audio `bgmUnderVoice` (0..1, e.g. 0.25)
+  is REQUIRED — the engine ships no default duck ratio; voice-only or
+  music-only shots run full volume. A timeline bed mixed under audible shot
+  audio needs the same declaration on the timeline (`timeline.bgmUnderVoice`);
+  beds over fully-silent films are mastered to −16 LUFS alone.
 - Mixing TTS/BGM and an unmuted clip in one shot is refused at validate/S3
   ("audio conflict"). `sync-audio` aligns `durationInFrames` and `tracks.captions` to
   the synthesized TTS clause timings and piecewise-warps every layer's
@@ -442,9 +448,17 @@ generic geometry — no acting presets and no material model:
 - **`spring`** — secondary motion (inertia lag/overshoot) driven by a
   channel of the parent.
 - **`verify-blocking`** — co-planar characters must not overlap in the same
-  horizontal lane (lane separation + max overlap).
+  horizontal lane (`--max-overlap`, `--min-visible-opacity`). The torso band
+  is a measurement, not a guess: for asset layers it is derived from the
+  opaque-pixel bounding box; for asset-less characters it is declared as
+  `blockCore` [leftFrac, rightFrac] in [0,1] on the layer — missing is a
+  failed verdict, not a fallback. Exemptions are declared (`role: "prop"`
+  or invisible characters); no guessed choreography exemptions.
 - **`verify-combat`** — weapon-tip/target contact on the `tracks.events`
-  `kind: "contact"` frames.
+  `kind: "contact"` frames. Weapon geometry is declared, never guessed:
+  `spec.combat` carries `attacker`/`weapon`/`target`, `tipOffset` (tip vs
+  pivot, source px) and `refWidth`; missing values are a failed verdict,
+  not a guess.
 - **`verify-continuity`** — cross-shot handoffs: shot k's tail backdrop must
   equal shot k+1's opening backdrop (mismatch = hard failure unless
   `--allow-non-seamless` or the timeline's `continuity` block sets
@@ -456,6 +470,10 @@ generic geometry — no acting presets and no material model:
   validated at load); CLI flags override. `--spec` mode runs the generic
   stagecraft report (spec validation + backdrop/character states) and takes
   no continuity knobs.
+  **A cut whose layers declare no `backdrop` identity is reported as
+  NOT CHECKED, never as PASS** — the backdrop identity is a project
+  declaration (`layer.backdrop`, a string that means "same place" across two
+  shots); without it there is nothing to compare and the engine says so.
 
 Acting decisions (which pose, when, with what spring values) are authored in
 the spec per video; the engine verifies geometry, not performance.

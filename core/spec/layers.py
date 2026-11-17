@@ -58,6 +58,15 @@ def _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs):
     cutout = L.get("cutout")
     if cutout is not None and not isinstance(cutout, bool):
         e(f"{lid}: cutout must be a boolean (true or false), got {cutout!r}")
+    if cutout is True:
+        csim_must_be_declared = L.get("cutoutSimilarity")
+        if csim_must_be_declared is None:
+            e(f"{lid}: cutout:true requires an explicit 'cutoutSimilarity' — the engine "
+              f"ships no default key-matching ratio (measure it against your key color)")
+        cblend_must_be_declared = L.get("cutoutBlend")
+        if cblend_must_be_declared is None:
+            e(f"{lid}: cutout:true requires an explicit 'cutoutBlend' — the engine "
+              f"ships no default blend width (start from a rendered proof, not a guess)")
     csim = L.get("cutoutSimilarity")
     if csim is not None and not (
             isinstance(csim, (int, float)) and not isinstance(csim, bool) and 0 < csim <= 1):
@@ -258,6 +267,19 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
             e(f"{lid}: clipRect must be [x,y,w,h] ints")
         elif cr[2] <= 0 or cr[3] <= 0:
             e(f"{lid}: clipRect w/h must be positive")
+    lc = L.get("blockCore")
+    if lc is not None:
+        if not (isinstance(lc, list) and len(lc) == 2
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and 0.0 <= v <= 1.0 for v in lc)):
+            e(f"{lid}: blockCore must be [leftFrac, rightFrac] in [0,1] "
+              f"(the torso band of the rect used by verify-blocking)")
+    bd = L.get("backdrop")
+    if bd is not None:
+        if not isinstance(bd, str) or not bd.strip():
+            e(f"{lid}: backdrop must be a non-empty string — the project's own "
+              f"identity for this background (the same identity across two shots "
+              f"means 'the same place'; verify-continuity compares these)")
     piv = L.get("pivot")
     if piv is not None:
         if not (isinstance(piv, list) and len(piv) == 2

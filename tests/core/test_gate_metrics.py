@@ -115,6 +115,7 @@ class TestGateMetrics(unittest.TestCase):
                 "voiceover": fixture,  # a path to a source file (prepare_shot_audio treats it as the voice)
                 "voice": "TestVoice",
                 "bgm": fixture,
+                "bgmUnderVoice": 0.25,  # duck music to 25% under speech — declared, not defaulted
             }
             out_m4a = os.path.join(tmp, "shot_audio.m4a")
             wav_path = prepare_shot_audio(audio_spec, duration_in_frames=150, fps=30, out_path=out_m4a)

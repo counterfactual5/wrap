@@ -3,6 +3,13 @@ All ratios are fractions of total pixels (resolution independent)."""
 import statistics
 import subprocess
 
+from core.spec.constants import (
+    STATIC_ACTIVE_FRACTION,
+    DEFAULT_LUMA_DELTA,
+    EDGE_KEY_RING,
+    EDGE_KEY_TOL,
+)
+
 
 def _frames(src, w, h, pix_fmt, bpp, extra_in=()):
     cmd = ["ffmpeg", "-v", "error", *extra_in, "-i", src, "-f", "rawvideo", "-pix_fmt", pix_fmt, "-"]
@@ -41,14 +48,15 @@ def dedup_cadence_ratios(ratios, dup_tol=5e-5, max_hold=6):
       pairs bounded by active motion steps is a cadence hold and is stripped so
       the gate measures the actual frame-step motion.
     - A contiguous static run longer than `max_hold` frames (`> 6` frames), or a
-      shot where active steps make up `< 15%` of frame pairs, is a genuine static
-      or frozen clip — its zeros are kept in full so static footage still fails.
+      shot where active steps make up `< STATIC_ACTIVE_FRACTION` of frame pairs,
+      is a genuine static or frozen clip — its zeros are kept in full so static
+      footage still fails.
     """
     if not ratios:
         return ratios
     n = len(ratios)
     active_count = sum(1 for r in ratios if r > dup_tol)
-    if active_count == 0 or active_count < max(1, int(n * 0.15)):
+    if active_count == 0 or active_count < max(1, int(n * STATIC_ACTIVE_FRACTION)):
         return ratios
 
     filtered = []
@@ -69,7 +77,7 @@ def dedup_cadence_ratios(ratios, dup_tol=5e-5, max_hold=6):
     return filtered if filtered else ratios
 
 
-def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None, dedup_cadence=True):
+def changed_pixel_ratios(src, w, h, luma_delta=None, extra_in=(), exclude_band=None, dedup_cadence=True):
     """Per adjacent-frame pair: share of pixels whose luma differs by > luma_delta.
     exclude_band=(y0, y1) drops those canvas rows from both the count and the
     denominator, so a foreground bar panning across the frame cannot mask a
@@ -77,6 +85,8 @@ def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None
     first, so static content is nearly free. When dedup_cadence=True (default),
     short cadence repeat holds (<= 6 frames, e.g. slow-motion playbackRate < 1)
     are stripped before returning so the motion gate measures stepped frames."""
+    if luma_delta is None:
+        luma_delta = DEFAULT_LUMA_DELTA
     out, prev = [], None
     y0, y1 = exclude_band if exclude_band else (h, h)  # empty range when unused
     denom = w * (h - (y1 - y0))
@@ -85,7 +95,6 @@ def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None
     for f in _frames(src, w, h, "gray", 1, extra_in):
         if prev is not None:
             n = 0
-            # Use memoryview for faster access
             pv = memoryview(prev)
             fv = memoryview(f)
             ld = luma_delta
@@ -97,8 +106,6 @@ def changed_pixel_ratios(src, w, h, luma_delta=6, extra_in=(), exclude_band=None
                 b = fv[base:base + w]
                 if a == b:
                     continue
-                # Fast path for differences
-                # Use zip is slower but correct; optimize with builtins where possible
                 na = a.tobytes()
                 nb = b.tobytes()
                 for p, q in zip(na, nb):
@@ -155,9 +162,13 @@ def red_pixel_ratios(src, w, h, extra_in=()):
     return [red_ratio_of_frame(f, w, h) for f in _frames(src, w, h, "rgb24", 3, extra_in)]
 
 
-def edge_key_purity(rgb, w, h, key, ring=8, tol=12):
+def edge_key_purity(rgb, w, h, key, ring=None, tol=None):
     """Share of the outer `ring`-px frame whose RGB (Euclidean) distance to `key` <= tol.
     Plain RGB distance, not CIE ΔE: good enough to detect gradients / vignettes / outlines."""
+    if ring is None:
+        ring = EDGE_KEY_RING
+    if tol is None:
+        tol = EDGE_KEY_TOL
     kr, kg, kb = key
     t2 = tol * tol
     ok = total = 0

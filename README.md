@@ -64,7 +64,9 @@ right — a judge reads the contact sheet against the spec's checklist.
 ### Layer vocabulary (the whole of it)
 
 - **`ai`** — a still image: `asset`, generation `prompt`/`input_asset`/
-  `reference_images`, `keyColor`+`blend` keying, `cutout`, `poses`
+  `reference_images`, `keyColor`+`blend` keying, `cutout`
+  (`cutoutSimilarity`/`cutoutBlend` are required — the engine guesses nothing),
+  `poses`
   (frame-switched sprite swaps), `motion.zoom`, `fit`.
 - **`video`** — a clip: `asset`, generation `model`/`duration`/
   `resolution`/`first_frame`/`last_frame`/`reference_images`, `trim`,
@@ -127,6 +129,8 @@ at validate/S3 ("audio conflict"). Never invent music with code just because
 it is possible. `sync-audio` warps
 `durationInFrames`, `tracks.captions` and every layer's keyframes to the
 TTS clause boundaries. At most one video layer may set `muted: false`.
+Voice+BGM mixes require an explicit `bgmUnderVoice` ratio in `spec.audio`
+(0..1 — e.g. 0.25); the engine ships no default duck.
 S4 measures the output to check that an intentionally silent shot is actually
 silent. A timeline BGM may cover silent shots only with explicit
 `allow_bgm_override_silent: true`.

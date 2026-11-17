@@ -11,6 +11,11 @@ from core.runtime.config import ROOT
 from core.audio.captions import clauses_from_boundaries
 from core.audio.mastering import run_two_pass_loudnorm
 from core.audio.tts import get_audio_duration, synthesize_voiceover_with_timings
+
+# A voiceover longer than the shot keeps its tail clipped without exceeding
+# this tolerance (25% second). Used by prepare_shot_audio's truncation flag
+# and by the S4 truncation gate — keep them in one place.
+VOICEOVER_TAIL_TOLERANCE = 0.25
 from core.audio.integrity import verify_audio
 
 def shot_is_intentionally_silent(spec):
@@ -34,6 +39,13 @@ def shot_is_intentionally_silent(spec):
         if isinstance(L, dict) and L.get("type") == "video" and not L.get("muted", True):
             return False
     return True
+
+
+# BGM bed fade envelope (shot audio): a short fade in/out so the bed never
+# pops at the cut boundaries. Documented shape: min(max_cap, 10% of the
+# shot), max_cap 0.04 s.
+BG_FADE_MAX_SEC = 0.04
+BG_FADE_FRAC_OF_DURATION = 0.1
 
 
 def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=None):
@@ -91,7 +103,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
         "has_voice": has_voice,
         "raw_voice_duration": round(raw_voice_dur, 3),
         "target_duration": round(target_duration, 3),
-        "truncated": bool(has_voice and raw_voice_dur > target_duration + 0.25),
+        "truncated": bool(has_voice and raw_voice_dur > target_duration + VOICEOVER_TAIL_TOLERANCE),
         "clauses": clauses,
         "bgm": bgm_type,
         "bgm_offset": bgm_offset,
@@ -104,7 +116,17 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
 
     # Resolve BGM source (if any)
     has_bgm = bool(bgm_type and str(bgm_type).strip() and str(bgm_type).strip().lower() != "none")
-    bgm_vol = 0.22 if has_voice else 1.0  # Background music is ducked when voiceover is present; full volume for music-only shots
+    # The engine ships no default duck ratio for music under speech; the
+    # author declares it. Voice-only or music-only shots run full volume.
+    bgm_vol = 1.0
+    if has_voice and has_bgm:
+        bgm_under = audio_spec.get("bgmUnderVoice") if isinstance(audio_spec, dict) else None
+        if bgm_under is None:
+            raise ValueError(
+                "audio.voiceover and audio.bgm are both set: the engine ships no default duck "
+                "ratio — declare spec.audio 'bgmUnderVoice' (0..1, e.g. 0.25 for background "
+                "music at 25% under the speech)")
+        bgm_vol = float(bgm_under)
 
     if has_bgm:
         # Check file paths: absolute, relative to ROOT, or in assets/
@@ -116,7 +138,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
         found_bgm = next((p for p in candidates if os.path.exists(p)), None)
         if found_bgm:
             found_bgm = verify_audio(found_bgm)
-            fade_dur = min(0.04, target_duration * 0.1)
+            fade_dur = min(BG_FADE_MAX_SEC, target_duration * BG_FADE_FRAC_OF_DURATION)
             fade_filter = f"afade=t=in:ss=0:d={fade_dur:.3f},afade=t=out:st={max(0.0, target_duration - fade_dur):.3f}:d={fade_dur:.3f}"
             seek_args = ["-ss", f"{bgm_offset:.3f}"] if bgm_offset > 0 else []
             subprocess.run([

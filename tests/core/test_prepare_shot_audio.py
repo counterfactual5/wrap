@@ -33,8 +33,8 @@ class TestPrepareShotAudioScratchFiles(unittest.TestCase):
             fake_ambient(1, bgm)
             out1 = os.path.join(tmp, "shot-a.aac")
             out2 = os.path.join(tmp, "shot-b.aac")
-            audio.prepare_shot_audio({"voiceover": "你好世界", "voice": "TestVoice", "bgm": bgm}, 30, 30, out1)
-            audio.prepare_shot_audio({"voiceover": "你好世界", "voice": "TestVoice", "bgm": bgm}, 30, 30, out2)
+            audio.prepare_shot_audio({"voiceover": "你好世界", "voice": "TestVoice", "bgm": bgm, "bgmUnderVoice": 0.25}, 30, 30, out1)
+            audio.prepare_shot_audio({"voiceover": "你好世界", "voice": "TestVoice", "bgm": bgm, "bgmUnderVoice": 0.25}, 30, 30, out2)
 
         self.assertEqual(len(loudnorm_calls), 2)
         for inputs, out in ((loudnorm_calls[0], out1), (loudnorm_calls[1], out2)):
@@ -51,3 +51,31 @@ class TestPrepareShotAudioScratchFiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBgmUnderVoiceIsDeclared(unittest.TestCase):
+    """Voice+BGM mixes must declare the duck ratio; the engine ships none."""
+
+    def test_voice_and_bgm_without_bgmUnderVoice_is_an_error(self):
+        from unittest import mock
+        import contextlib
+        import tempfile, os
+        from core.audio import shot as audio_shot
+        from core.audio import mastering
+
+        def fake_synth(text, voice, out_path, rate="+0%"):
+            with open(out_path, "w") as f:
+                f.write("voice")
+            return out_path, 1.0, []
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(audio_shot, "synthesize_voiceover_with_timings", side_effect=fake_synth), \
+                mock.patch.object(audio_shot, "verify_audio", side_effect=lambda p: p):
+            bgm = os.path.join(tmp, "music.wav")
+            with open(bgm, "w") as f:
+                f.write("bgm")
+            with self.assertRaises(ValueError) as ctx:
+                audio_shot.prepare_shot_audio(
+                    {"voiceover": "你好", "voice": "TestVoice", "bgm": bgm},
+                    30, 30, os.path.join(tmp, "out.aac"))
+            self.assertIn("bgmUnderVoice", str(ctx.exception))
