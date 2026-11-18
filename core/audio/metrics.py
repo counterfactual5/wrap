@@ -2,8 +2,14 @@
 
 - measure_audio_silence: Silence and speech-band content flags via volumedetect
 - measure_audio_loudness: Integrated loudness (LUFS) via EBU R128
-- measure_av_durations: Video/audio stream durations and their delta
+- measure_audio_loudness_detail: The same measurement plus a measurement_ok flag
+- measure_av_durations: Video/audio stream durations, their delta, and a
+  measurement_ok flag
 - detect_audio_punches: Percussion/plowsive transient peaks mapped to frames
+
+Every measurement that can fail reports WHETHER it succeeded. A probe that
+could not read the file is not the same thing as a file that measures zero:
+the gates must fail on the first and reason about the second.
 """
 import json
 import math
@@ -16,6 +22,25 @@ import subprocess
 # audible shot — the documented name for the -25/-45 dB thresholds.
 SPEECH_MAX_FLOOR_DB = -25.0
 SPEECH_MEAN_FLOOR_DB = -45.0
+
+# EBU R128's absolute gate: a track at or below this integrates to the floor
+# and carries no loudness to judge. It is what a silent track measures, and it
+# must not be reported as "too quiet" the way a broken probe is reported as
+# "not measurable".
+EBU_SILENCE_FLOOR_LUFS = -70.0
+
+# How much of a tool's stderr is quoted back in an error message.
+STDERR_TAIL_CHARS = 400
+
+
+def _stderr_tail(text, limit=STDERR_TAIL_CHARS):
+    """The last lines of a tool's stderr, trimmed to one readable line."""
+    if not text:
+        return ""
+    tail = " ".join(str(text).split())
+    if len(tail) > limit:
+        tail = "..." + tail[-limit:]
+    return tail
 
 
 def measure_audio_silence(file_path, start=None, duration=None):
@@ -60,10 +85,21 @@ def measure_audio_silence(file_path, start=None, duration=None):
     }
 
 
-def measure_audio_loudness(file_path, start=None, duration=None):
-    """Measures Integrated Loudness (LUFS) using FFmpeg EBU R128 filter.
-    Optional start/duration window a seek to a segment (per-shot loudness in a
-    concatenated full video)."""
+def measure_audio_loudness_detail(file_path, start=None, duration=None):
+    """Measures Integrated Loudness (LUFS) AND reports whether it could be measured.
+
+    Returns a dict:
+      - lufs:           the integrated loudness, or None when there is none
+      - measurement_ok: True when the measurement is trustworthy
+      - silent:         True when the track is silent (no loudness to report —
+                         a legitimate state, NOT a measurement failure)
+      - error:          why the measurement failed, or None
+
+    A silent track and a broken probe must not look alike: a silent track
+    integrates to the EBU floor (-70 LUFS), while a probe that failed to run
+    produced no reading at all. The gates use `measurement_ok` to fail on the
+    second and exempt the first.
+    """
     cmd = ["ffmpeg", "-hide_banner"]
     if start is not None:
         cmd += ["-ss", f"{start:.3f}"]
@@ -71,32 +107,104 @@ def measure_audio_loudness(file_path, start=None, duration=None):
         cmd += ["-t", f"{duration:.3f}"]
     cmd += ["-i", file_path, "-af", "ebur128", "-f", "null", "-"]
     res = subprocess.run(cmd, capture_output=True, text=True)
-    matches = re.findall(r"I:\s*([-\d.]+)\s*LUFS", res.stderr)
+    stderr = res.stderr or ""
+    if res.returncode != 0:
+        return {
+            "lufs": None,
+            "measurement_ok": False,
+            "silent": False,
+            "error": (f"ffmpeg exited {res.returncode} while measuring the loudness "
+                      f"of {file_path}: {_stderr_tail(stderr)}"),
+        }
+    matches = re.findall(r"I:\s*([-\d.]+)\s*LUFS", stderr)
     if matches:
-        return float(matches[-1])
-    return None
+        try:
+            value = float(matches[-1])
+        except ValueError:
+            value = None
+        if value is not None and math.isfinite(value):
+            # A track at the EBU absolute gate is silent: it has no loudness
+            # to judge, which is a different thing from a failed measurement.
+            return {"lufs": value, "measurement_ok": True,
+                    "silent": value <= EBU_SILENCE_FLOOR_LUFS, "error": None}
+    # ffmpeg ran but produced no loudness reading. A silent track has no
+    # loudness to report (that is legitimate); anything else is a probe that
+    # could not measure, and must not pass as "nothing to check".
+    silence = measure_audio_silence(file_path, start=start, duration=duration)
+    if silence.get("measurement_ok") and silence.get("is_silent"):
+        return {"lufs": None, "measurement_ok": True, "silent": True, "error": None}
+    return {
+        "lufs": None,
+        "measurement_ok": False,
+        "silent": False,
+        "error": (f"ffmpeg produced no loudness reading for {file_path}: "
+                  f"{_stderr_tail(stderr)}"),
+    }
+
+
+def measure_audio_loudness(file_path, start=None, duration=None):
+    """Integrated loudness (LUFS), or None when it could not be measured.
+
+    Thin wrapper over measure_audio_loudness_detail for callers that only
+    need the number; the gates use the detail form so a failed measurement
+    cannot be mistaken for "no measurement required".
+    """
+    return measure_audio_loudness_detail(file_path, start=start, duration=duration)["lufs"]
 
 
 def measure_av_durations(file_path):
-    """Measures video and audio stream durations and their absolute delta in seconds."""
+    """Measures video and audio stream durations and their absolute delta in seconds.
+
+    Also reports `measurement_ok`: False when ffprobe could not read the file
+    at all. A failed probe is NOT "this file has no audio track" — it means
+    the audio gates have nothing to measure and must fail, not pass.
+    """
     cmd = [
         "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
         "-of", "json", file_path
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
-    try:
-        data = json.loads(res.stdout)
-        durs = {s["codec_type"]: float(s["duration"]) for s in data.get("streams", []) if "duration" in s}
-        vid_d = durs.get("video", 0.0)
-        aud_d = durs.get("audio", 0.0)
+    if res.returncode != 0:
         return {
-            "video_duration": vid_d,
-            "audio_duration": aud_d,
-            "delta": abs(vid_d - aud_d),
-            "has_audio": "audio" in durs
+            "measurement_ok": False,
+            "error": (f"ffprobe exited {res.returncode} while probing {file_path}: "
+                      f"{_stderr_tail(res.stderr)}"),
+            "video_duration": 0.0,
+            "audio_duration": 0.0,
+            "delta": 0.0,
+            "has_audio": False,
         }
-    except Exception:
-        return {"video_duration": 0.0, "audio_duration": 0.0, "delta": 0.0, "has_audio": False}
+    try:
+        data = json.loads(res.stdout or "{}")
+        streams = data.get("streams") or []
+        durs = {}
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            codec_type = stream.get("codec_type")
+            if codec_type is None or "duration" not in stream:
+                continue
+            durs[codec_type] = float(stream["duration"])
+    except (ValueError, TypeError) as ex:
+        return {
+            "measurement_ok": False,
+            "error": (f"ffprobe returned unreadable stream data for {file_path}: "
+                      f"{ex}"),
+            "video_duration": 0.0,
+            "audio_duration": 0.0,
+            "delta": 0.0,
+            "has_audio": False,
+        }
+    vid_d = durs.get("video", 0.0)
+    aud_d = durs.get("audio", 0.0)
+    return {
+        "measurement_ok": True,
+        "error": None,
+        "video_duration": vid_d,
+        "audio_duration": aud_d,
+        "delta": abs(vid_d - aud_d),
+        "has_audio": "audio" in durs
+    }
 
 
 def detect_audio_punches(file_path, fps=30, max_punches=6, min_gap_sec=0.45,
@@ -108,6 +216,10 @@ def detect_audio_punches(file_path, fps=30, max_punches=6, min_gap_sec=0.45,
     identifies local transient peaks exceeding `mean + threshold_sigma * std`, and enforces
     a minimum inter-onset gap (`min_gap_sec`) via non-maximum suppression.
     Returns a dict with `punches` (sorted frame indices) and `peaks` (detailed frame/time/flux).
+
+    Raises RuntimeError when ffmpeg could not decode the file: a track that
+    could not be read has no transients to report, and that is not the same
+    thing as a track without any.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"audio file not found: {file_path}")
@@ -118,6 +230,11 @@ def detect_audio_punches(file_path, fps=30, max_punches=6, min_gap_sec=0.45,
         cmd += ["-af", f"highpass=f={float(highpass_hz):.0f}"]
     cmd += ["-ac", "1", "-ar", str(sr), "-f", "s16le", "-"]
     res = subprocess.run(cmd, capture_output=True)
+    if res.returncode != 0:
+        stderr = (res.stderr or b"").decode("utf-8", "replace")
+        raise RuntimeError(
+            f"ffmpeg exited {res.returncode} while decoding {file_path} for punch "
+            f"detection: {_stderr_tail(stderr)}")
     pcm = res.stdout
     n_samples = len(pcm) // 2
     if n_samples < sr // 10:

@@ -11,7 +11,7 @@ import re
 import tempfile
 
 from core.audio.captions import clauses_from_boundaries
-from core.audio.tts import synthesize_voiceover_with_timings
+from core.audio.tts import DEFAULT_SPEECH_RATE, resolve_speech_rate, synthesize_voiceover_with_timings
 
 def _norm_cjk(s):
     return "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", str(s or "").lower()))
@@ -132,7 +132,12 @@ def sync_spec_audio(spec_path, fit_duration=True, rescale_anim=True, max_chars=2
         return {"shot_id": spec.get("id"), "status": "no_voiceover", "captions": old_items}
 
     voice = audio_spec.get("voice")
-    rate = audio_spec.get("rate") or "+0%"
+    # An undeclared rate gets the neutral default; a DECLARED but empty rate is
+    # an error, never a silent "+0%".
+    if "rate" in audio_spec:
+        rate = resolve_speech_rate(audio_spec.get("rate"))
+    else:
+        rate = DEFAULT_SPEECH_RATE
     if voiceover_text and not voice:
         raise ValueError("audio.voiceover requires an explicit audio.voice; the engine ships no default narrator")
     with tempfile.TemporaryDirectory(prefix="wrap-sync-audio-") as temp_dir:

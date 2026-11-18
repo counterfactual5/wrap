@@ -27,6 +27,7 @@ from core.audio.sync import (
 from core.audio.metrics import (
     detect_audio_punches,
     measure_audio_loudness,
+    measure_audio_loudness_detail,
     measure_audio_silence,
     measure_av_durations,
 )

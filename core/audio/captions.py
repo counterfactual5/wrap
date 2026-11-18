@@ -5,7 +5,12 @@
 import re
 
 def _split_sentence_clauses(sentence, max_chars=20):
-    """Split a long Chinese/English sentence into readable subtitle clauses (8..22 chars)."""
+    """Split a long Chinese/English sentence into readable subtitle clauses.
+
+    A clause is at most `max_chars` long; fragments shorter than
+    CAPTION_SHORT_FRAGMENT word characters are merged into their neighbour so
+    captions do not flicker on and off.
+    """
     s = sentence.strip()
     if not s:
         return []
@@ -27,13 +32,13 @@ def _split_sentence_clauses(sentence, max_chars=20):
     if cur.strip():
         raw_clauses.append(cur.strip())
 
-    # Merge tiny fragments (< 7 chars) into adjacent clauses so captions don't flicker
+    # Merge tiny fragments into adjacent clauses so captions don't flicker
     merged = []
     buf = ""
     for cl in raw_clauses:
         if not buf:
             buf = cl
-        elif len(re.sub(r"\W+", "", buf)) < 7 or len(buf) + len(cl) <= max_chars:
+        elif len(re.sub(r"\W+", "", buf)) < CAPTION_SHORT_FRAGMENT or len(buf) + len(cl) <= max_chars:
             buf += cl
         else:
             merged.append(buf)

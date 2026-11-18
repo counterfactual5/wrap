@@ -284,7 +284,25 @@ def main():
     from core import audio
     from core.audio.shot import VOICEOVER_TAIL_TOLERANCE
     av_probe = audio.measure_av_durations(mp4)
-    if av_probe.get("has_audio"):
+    # The narration's own metadata (written by prepare_shot_audio) is what
+    # proves the narration was not cut off. Read it before the branches below
+    # so both the silence and the truncation logic can see it.
+    voice_meta_path = os.path.join(ROOT, ".tmp", f"{shot_id}_audio.aac.meta.json")
+    declared_voiceover = bool(isinstance(spec.get("audio"), dict)
+                              and (spec.get("audio") or {}).get("voiceover"))
+    if not av_probe.get("measurement_ok", True):
+        # The probe FAILED. That is not the same thing as "this file has no
+        # audio track": the gates have nothing to measure, and a check that
+        # cannot measure must fail rather than pass quietly.
+        red = True
+        reason = av_probe.get("error") or "unknown ffprobe error"
+        print(f"FAIL  probe      av_streams           could not probe {mp4}: {reason}")
+        results.append({"id": "audio_probe", "metric": "av_streams", "value": None,
+                        "pass": False, "measurement_ok": False})
+        print("FAIL  silence    audio gates          not measured: the audio probe failed")
+        results.append({"id": "audio_silence", "metric": "audio_max_volume", "value": None,
+                        "pass": False, "measurement_ok": False})
+    elif av_probe.get("has_audio"):
         # The spec asks for no soundtrack at all. The mp4 carries a compliant
         # silent track so concatenation never has to drop a stream, but
         # measuring that track against the speech/loudness gates would report
@@ -309,14 +327,13 @@ def main():
 
             # Check whether this shot declared voiceover narration
             has_voice = False
-            voice_meta_path = os.path.join(ROOT, ".tmp", f"{shot_id}_audio.aac.meta.json")
             if os.path.exists(voice_meta_path):
                 try:
                     with open(voice_meta_path) as mf:
                         has_voice = json.load(mf).get("has_voice", False)
                 except Exception:
                     has_voice = False
-            elif isinstance(spec.get("audio"), dict) and spec.get("audio", {}).get("voiceover"):
+            elif declared_voiceover:
                 has_voice = True
 
             # When a shot has voiceover narration, verify speech band content.
@@ -339,8 +356,25 @@ def main():
             })
 
             # 2. Integrated loudness check: EBU R128 (-16 LUFS target, range [-19.0, -13.0])
-            lufs = audio.measure_audio_loudness(mp4)
-            if lufs is not None:
+            # A measurement that could not be taken is NOT a passing loudness
+            # gate: it fails, with the reason. A legitimately silent track is
+            # a different case — it has no loudness to report, and the silence
+            # gate above already carries that verdict.
+            loud = audio.measure_audio_loudness_detail(mp4)
+            lufs = loud.get("lufs")
+            if loud.get("silent"):
+                # A silent track has no loudness to judge: the silence gate
+                # above carries that verdict, and it is not a measurement
+                # failure.
+                print("WARN  loudness   integrated_loudness  the track is silent — there is no loudness to measure")
+                results.append({
+                    "id": "audio_loudness", "metric": "integrated_loudness",
+                    "value": lufs, "lo": -19.0, "hi": -13.0,
+                    # not a failure — there was nothing to measure; the silence gate carries the verdict
+                    "pass": True, "status": "exempt",
+                    "measurement_ok": True, "silent": True,
+                })
+            elif lufs is not None:
                 loud_ok = (-19.0 <= lufs <= -13.0)
                 red |= not loud_ok
                 print(f"{'PASS' if loud_ok else 'FAIL'}  loudness   integrated_loudness  {lufs:.1f} LUFS  [-19.0, -13.0]")
@@ -349,7 +383,13 @@ def main():
                     "value": lufs, "lo": -19.0, "hi": -13.0, "pass": loud_ok
                 })
             else:
-                print("WARN  loudness   integrated_loudness  could not measure")
+                red = True
+                print(f"FAIL  loudness   integrated_loudness  could not measure: {loud.get('error')}")
+                results.append({
+                    "id": "audio_loudness", "metric": "integrated_loudness",
+                    "value": None, "lo": -19.0, "hi": -13.0, "pass": False,
+                    "measurement_ok": False,
+                })
 
         # 3. AV Duration sync check (diff <= 100ms)
         delta = av_probe["delta"]
@@ -362,38 +402,77 @@ def main():
         })
 
         # 4. Voiceover truncation check: ensure TTS narration was not chopped off by -t shot_duration
-        voice_meta_path = os.path.join(ROOT, ".tmp", f"{shot_id}_audio.aac.meta.json")
+        # The metadata written by prepare_shot_audio is the ONLY record of how
+        # long the narration was. Without it the truncation check cannot run —
+        # and a check that cannot run must fail, not be skipped.
+        vmeta = None
+        meta_error = None
         if os.path.exists(voice_meta_path):
             try:
                 with open(voice_meta_path) as mf:
                     vmeta = json.load(mf)
-            except Exception:
-                vmeta = {}
-            if vmeta.get("has_voice"):
-                raw_d = float(vmeta.get("raw_voice_duration", 0.0))
-                tgt_d = float(vmeta.get("target_duration", spec["durationInFrames"] / max(1, FPS)))
-                trunc_ok = not vmeta.get("truncated", raw_d > tgt_d + VOICEOVER_TAIL_TOLERANCE)
-                red |= not trunc_ok
-                if trunc_ok:
-                    print(f"PASS  truncation voiceover_truncation {raw_d:.2f} s  [<= {tgt_d + VOICEOVER_TAIL_TOLERANCE:.2f} s]")
-                else:
-                    print(
-                        f"FAIL  truncation voiceover_truncation raw={raw_d:.2f}s > shot={tgt_d:.2f}s "
-                        f"(voiceover cut off! Run 'python3 pipeline.py sync-audio --spec <spec>' or increase durationInFrames)"
-                    )
+            except (OSError, ValueError) as ex:
+                meta_error = str(ex)
+        if vmeta is None:
+            if declared_voiceover or meta_error is not None:
+                red = True
+                reason = (f"could not read {voice_meta_path}: {meta_error}" if meta_error
+                          else f"{voice_meta_path} is missing")
+                print(f"FAIL  truncation voiceover_meta        {reason} — the narration's duration was "
+                      f"never measured, so a cut-off voiceover cannot be ruled out")
                 results.append({
                     "id": "voiceover_truncation",
                     "metric": "voiceover_vs_shot_duration",
-                    "value": raw_d,
-                    "hi": round(tgt_d + VOICEOVER_TAIL_TOLERANCE, 3),
-                    "pass": trunc_ok,
+                    "value": None,
+                    "hi": round(spec["durationInFrames"] / max(1, FPS) + VOICEOVER_TAIL_TOLERANCE, 3),
+                    "pass": False,
+                    "measurement_ok": False,
                 })
+        elif vmeta.get("has_voice"):
+            raw_d = float(vmeta.get("raw_voice_duration", 0.0))
+            tgt_d = float(vmeta.get("target_duration", spec["durationInFrames"] / max(1, FPS)))
+            trunc_ok = not vmeta.get("truncated", raw_d > tgt_d + VOICEOVER_TAIL_TOLERANCE)
+            red |= not trunc_ok
+            if trunc_ok:
+                print(f"PASS  truncation voiceover_truncation {raw_d:.2f} s  [<= {tgt_d + VOICEOVER_TAIL_TOLERANCE:.2f} s]")
+            else:
+                print(
+                    f"FAIL  truncation voiceover_truncation raw={raw_d:.2f}s > shot={tgt_d:.2f}s "
+                    f"(voiceover cut off! Run 'python3 pipeline.py sync-audio --spec <spec>' or increase durationInFrames)"
+                )
+            results.append({
+                "id": "voiceover_truncation",
+                "metric": "voiceover_vs_shot_duration",
+                "value": raw_d,
+                "hi": round(tgt_d + VOICEOVER_TAIL_TOLERANCE, 3),
+                "pass": trunc_ok,
+            })
+        elif declared_voiceover:
+            red = True
+            print(f"FAIL  truncation voiceover_meta        {voice_meta_path} records no voiceover, "
+                  f"but the spec declares one — the narration was never measured")
+            results.append({
+                "id": "voiceover_truncation",
+                "metric": "voiceover_vs_shot_duration",
+                "value": None,
+                "hi": round(spec["durationInFrames"] / max(1, FPS) + VOICEOVER_TAIL_TOLERANCE, 3),
+                "pass": False,
+                "measurement_ok": False,
+            })
 
     elif audio.shot_is_intentionally_silent(spec):
         red = True
         print("FAIL  silence    silent shot          audio stream missing or could not be probed")
         results.append({"id": "audio_silence", "metric": "audio_max_volume",
                         "value": None, "pass": False, "measurement_ok": False})
+    else:
+        # The spec asks for a soundtrack, and the rendered mp4 carries none.
+        # Nothing was measured, so nothing was checked — that must fail.
+        red = True
+        print("FAIL  silence    audio track missing  the spec declares a soundtrack, but the mp4 "
+              f"carries no audio stream ({mp4})")
+        results.append({"id": "audio_silence", "metric": "audio_max_volume",
+                        "value": None, "pass": False, "measurement_ok": True})
 
     # Encoder fingerprint: reproducibility is only claimed for the ffmpeg/x264 that
     # produced the mp4. Mismatch = re-encode expected, not a quality failure.
