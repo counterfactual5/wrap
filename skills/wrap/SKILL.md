@@ -285,10 +285,11 @@ is a valid, first-class choice; generated video defaults to muted.
   ("audio conflict"). `sync-audio` aligns `durationInFrames` and `tracks.captions` to
   the synthesized TTS clause timings and piecewise-warps every layer's
   keyframes/poses/events, so visuals stay locked to speech.
-- **TTS fallback is explicit, never fake**: if Synthesis fails on Edge TTS,
-  Google TTS and macOS `say`, S1 raises an error and the voiceover does not ship
+- **TTS fallback is explicit, never fake**: if synthesis fails on Edge TTS and
+  macOS `say`, S1 raises an error and the voiceover does not ship
   as an unintelligible cadence. The only offline voices are the ones the local
-  provider can actually produce.
+  provider can actually produce. A voice neither provider can produce is a
+  hard error — the engine never silently swaps in a different narrator.
 
 **Freeze/black opt-outs.** A shot spec can declare `frame_freeze: true` to permit
 frozen frames (S4 skips freezedetect); a timeline can declare `allow_black: true`

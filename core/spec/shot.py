@@ -3,16 +3,28 @@
 `validate` is the entry point every caller uses — it checks the shot's own
 fields, then each layer through `core.spec.layers`, then the relationships
 between layers (parents, combat) and the gates.
+
+Every field a reader downstream will touch is type-checked HERE: a spec is
+authored by hand, so a wrong type must become an error message, never a
+traceback from deep inside a stage.
 """
-from .channels import validate_combat
+from .channels import validate_combat, validate_captions_against_voiceover
 from .constants import METRICS, HEX
 from .layers import validate_layer
 from .naming import valid_name
 
 
+def _is_number(value):
+    """A number the spec may declare. `bool` is an int in Python, and a
+    boolean where a measurement belongs is a typo, not a 0/1."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def validate(spec):
     errs = []
     e = errs.append
+    if not isinstance(spec, dict):
+        return ["spec must be an object"]
     for k in ("id", "canvas", "fps", "durationInFrames", "layers", "gates"):
         if k not in spec:
             e(f"missing '{k}'")
@@ -23,6 +35,9 @@ def validate(spec):
     if not valid_name(spec["id"]):
         e(f"id must be a letters/digits/._- string (got {spec['id']!r}); it "
           f"names directories under build/ and public/")
+    if not isinstance(spec["canvas"], dict):
+        e("canvas must be an object with w and h")
+        return errs
     W, H = spec["canvas"].get("w"), spec["canvas"].get("h")
     if not (isinstance(W, int) and isinstance(H, int) and W > 0 and H > 0):
         e("canvas.w/h must be positive ints")
@@ -30,14 +45,22 @@ def validate(spec):
         e("fps must be a positive int")
     if not (isinstance(spec["durationInFrames"], int) and spec["durationInFrames"] > 1):
         e("durationInFrames must be an int > 1")
+    layers = spec["layers"]
+    if not isinstance(layers, list):
+        e("layers must be a list")
+        layers = []
+    gates = spec["gates"]
+    if not isinstance(gates, list):
+        e("gates must be a list")
+        gates = []
     ids, zs = set(), set()
-    layer_by_id = {x.get("id"): x for x in spec["layers"] if isinstance(x, dict) and x.get("id")}
-    ai_asset_set = {x.get("asset") for x in spec["layers"] if isinstance(x, dict) and x.get("type") == "ai" and x.get("asset")}
+    layer_by_id = {x.get("id"): x for x in layers if isinstance(x, dict) and x.get("id")}
 
-    for L in spec["layers"]:
-        validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs)
+    for L in layers:
+        validate_layer(L, spec, ids, zs, layer_by_id, errs)
     # Validate parent references across layers (no missing parent, no self/cycle).
-    parent_map = {L.get("id"): L.get("parent") for L in spec["layers"] if L.get("parent") is not None}
+    parent_map = {L.get("id"): L.get("parent") for L in layers
+                  if isinstance(L, dict) and L.get("parent") is not None}
     for lid, par in parent_map.items():
         if not isinstance(par, str) or par not in ids:
             e(f"{lid}: parent {par!r} must reference an existing layer id in this shot")
@@ -59,7 +82,8 @@ def validate(spec):
             e(f"migration required: removed root field {key!r}; media/component fields belong on layers and nonvisual timing belongs in tracks")
     # At most one video layer's own track may own the soundtrack. If two are
     # unmuted the encoder would silently keep the first and drop the other.
-    unmuted_video = [L.get("id") for L in spec["layers"] if L.get("type") == "video" and L.get("muted") is False]
+    unmuted_video = [L.get("id") for L in layers
+                      if isinstance(L, dict) and L.get("type") == "video" and L.get("muted") is False]
     if len(unmuted_video) > 1:
         e(f"only one video layer may have muted:false; got {unmuted_video}")
     if unmuted_video and isinstance(spec.get("audio"), dict) and spec["audio"].get("bgm"):
@@ -88,28 +112,62 @@ def validate(spec):
             if "bgm" in spec["audio"] and spec["audio"]["bgm"] is not None:
                 if not isinstance(spec["audio"]["bgm"], str):
                     e("audio.bgm must be a string (audio file path)")
+    # Captions and the voiceover are ONE source of truth. A caption that does
+    # not match the spoken line ships wrong subtitles silently, so the two are
+    # compared here — at spec level, before anything is rendered.
+    tracks = spec.get("tracks")
+    caption_items = tracks.get("captions") if isinstance(tracks, dict) else None
+    audio_spec = spec.get("audio")
+    voiceover = audio_spec.get("voiceover") if isinstance(audio_spec, dict) else None
+    validate_captions_against_voiceover(
+        caption_items,
+        voiceover if isinstance(voiceover, str) else None,
+        spec.get("id", "shot"),
+        errs,
+    )
     if "combat" in spec and spec["combat"] is not None:
         validate_combat(spec["combat"], ids, errs)
     gids = set()
-    for g in spec["gates"]:
-        if g.get("id") in gids:
-            e(f"duplicate gate id {g.get('id')}")
-        gids.add(g.get("id"))
-        if g.get("metric") not in METRICS:
-            e(f"gate {g.get('id')}: unknown metric {g.get('metric')}")
-        if g.get("metric") in ("accent_color_ratio", "red_pixel_ratio") and not HEX.fullmatch(str(g.get("color", ""))):
-            e(f"gate {g.get('id')}: color must be explicit #rrggbb")
+    for g in gates:
+        if not isinstance(g, dict):
+            e("gate must be an object")
+            continue
+        gid = g.get("id")
+        if gid in gids:
+            e(f"duplicate gate id {gid}")
+        gids.add(gid)
+        metric = g.get("metric")
+        if not isinstance(metric, str) or metric not in METRICS:
+            e(f"gate {gid}: unknown metric {metric!r}")
+        if metric in ("accent_color_ratio", "red_pixel_ratio") and not HEX.fullmatch(str(g.get("color", ""))):
+            e(f"gate {gid}: color must be explicit #rrggbb")
+        # lo/hi are the measured value's bounds: S4 compares the measurement
+        # against them, so a string here would either crash the comparison
+        # or — worse — be compared as text.
         lo, hi = g.get("lo"), g.get("hi")
         if lo is None and hi is None:
-            e(f"gate {g.get('id')}: needs lo and/or hi")
-        if lo is not None and hi is not None and lo > hi:
-            e(f"gate {g.get('id')}: lo > hi")
+            e(f"gate {gid}: needs lo and/or hi")
+        for bound, val in (("lo", lo), ("hi", hi)):
+            if val is not None and not _is_number(val):
+                e(f"gate {gid}: {bound} must be a number (got {val!r})")
+        if lo is not None and hi is not None and _is_number(lo) and _is_number(hi) and lo > hi:
+            e(f"gate {gid}: lo > hi")
+        # lumaDelta / ring / tol are the measurement knobs the pipeline reads
+        # out of this same gate object (S4's luma threshold, S2's edge-key
+        # ring and tolerance). They must be positive numbers: a negative
+        # threshold is not a failure but a WRONG number — `abs(p - q) > -3`
+        # is always true, so the measured ratio would silently become 1.0.
+        for knob in ("lumaDelta", "ring", "tol"):
+            val = g.get(knob)
+            if val is not None and not (_is_number(val) and val > 0):
+                e(f"gate {gid}: {knob} must be a positive number (got {val!r})")
         # region: optional [y0, y1] canvas band excluded from motion metrics,
         # so a panning foreground cannot mask a static subject.
         r = g.get("region")
         if r is not None and not (isinstance(r, list) and len(r) == 2
-                                  and all(isinstance(v, int) for v in r) and 0 <= r[0] < r[1] <= spec["canvas"]["h"]):
-            e(f"gate {g.get('id')}: region must be [y0,y1] ints within canvas height")
+                                  and all(isinstance(v, int) for v in r)
+                                  and isinstance(H, int) and 0 <= r[0] < r[1] <= H):
+            e(f"gate {gid}: region must be [y0,y1] ints within canvas height")
     return errs
 
 

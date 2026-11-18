@@ -36,9 +36,15 @@ def validate_spring(spring, lid, errs):
             if not (isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi):
                 e(f"{lid}: spring.{k} must be a number in [{lo}, {hi}] (got {v!r})")
     for ch_key in ("channel", "driverChannel"):
-        if ch_key in spring and spring[ch_key] is not None:
-            if spring[ch_key] not in SPRING_CHANNELS:
-                e(f"{lid}: spring.{ch_key} must be one of {sorted(SPRING_CHANNELS)} (got {spring[ch_key]!r})")
+        if ch_key not in spring:
+            continue  # already reported as a required field
+        ch_val = spring[ch_key]
+        if not isinstance(ch_val, str) or ch_val not in SPRING_CHANNELS:
+            # A null here would fall through to the renderer's `?? 'rotate'`
+            # and silently drive a channel the author never asked for — the
+            # engine ships no default spring channel.
+            e(f"{lid}: spring.{ch_key} must be one of {sorted(SPRING_CHANNELS)} "
+              f"(got {ch_val!r}) — the engine ships no default spring channel")
 
 
 def validate_combat(combat, layer_ids, errs):
@@ -131,7 +137,14 @@ def validate_anim(anim, lid, errs):
             if ch == "opacity" and not (0 <= v <= 1):
                 e(f"{lid}: anim.opacity values must be within [0, 1]")
                 break
-            if len(kf) == 3 and kf[2] not in ANIM_EASES:
+            if ch == "scale" and v <= 0:
+                # scale(0) collapses the layer to nothing and a negative scale
+                # MIRRORS it — the engine expresses mirroring with flipX, so a
+                # negative scale is a silent mirror nobody asked for.
+                e(f"{lid}: anim.scale values must be > 0 (a negative scale "
+                  f"mirrors the layer — use flipX for that)")
+                break
+            if len(kf) == 3 and (not isinstance(kf[2], str) or kf[2] not in ANIM_EASES):
                 e(f"{lid}: anim.{ch} ease must be one of {sorted(ANIM_EASES)}")
                 break
             if prev_f is not None and f <= prev_f:

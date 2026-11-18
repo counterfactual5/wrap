@@ -4,6 +4,7 @@ The joints and pivots a spec may declare are in SOURCE pixels; the renderer
 needs canvas pixels. This module is the one place that converts between them.
 """
 import os
+import struct
 
 from core.runtime.config import ROOT
 from core.media.geometry import snap_socket_joint, source_to_canvas_pivot
@@ -53,7 +54,10 @@ def resolve_joints(spec):
             continue
         try:
             sw, sh = read_size(os.path.join(ROOT, row["path"]))
-        except (OSError, ValueError):
+        except (OSError, ValueError, struct.error):
+            # struct.error is neither an OSError nor a ValueError: a truncated
+            # or malformed PNG header would otherwise escape as a traceback
+            # instead of "leave this layer alone".
             continue
         want = source_to_canvas_pivot(sw, sh, L["rect"], joint[0], joint[1])
         sock = L.get("socket")
@@ -79,7 +83,7 @@ def resolve_joints(spec):
                         )
                         L["rect"] = snap["rect"]
                         want = snap["pivot"]
-                    except (OSError, ValueError):
+                    except (OSError, ValueError, struct.error):
                         pass
         have = L.get("pivot")
         if have is not None and max(abs(have[0] - want[0]), abs(have[1] - want[1])) > PIVOT_JOINT_TOL:
