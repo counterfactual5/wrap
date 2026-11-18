@@ -143,8 +143,8 @@ need a reason; free-riding needs none.
 |---|---|---|
 | Brief | Director records audience, purpose, constraints and resource budget in `CONCEPT.md`; does not commission content yet | Objective and constraints are explicit; no compulsory reference artists/styles |
 | Capability choice | Director self-probes (~5 min): records live media capabilities in `reports/tool-probe.md`, decides modality, does not generate; a separate scout role is not worth a dispatch — the person choosing the modality must make the call | Separate available, permitted, verified and chosen modalities; choose for the story, not a hardcoded tool priority |
-| Research and script | Dispatch Screenwriter (+ Researcher **only when `kind` is scientific/educational and facts are load-bearing**; otherwise no Researcher); Director does not write the script in the main thread | `SCRIPT.md` exists; claims are sourced or explicitly labelled model-knowledge-unverified when `kind` requires auditing; progression and reading time work for the audience |
-| Design exploration | Dispatch 1–2 Art Directors when design space is genuinely open; otherwise 1 | Subject-led visual intent articulated; differences concern visual storytelling, not only palette |
+| Research and script | Dispatch Screenwriter (+ Researcher **only when `kind` is scientific/educational and facts are load-bearing**; otherwise no Researcher); Director does not write the script in the main thread; may dispatch in parallel with Design exploration | `SCRIPT.md` exists; claims are sourced or explicitly labelled model-knowledge-unverified when `kind` requires auditing; progression and reading time work for the audience |
+| Design exploration | Dispatch 1–2 Art Directors when design space is genuinely open; otherwise 1; may dispatch in parallel with Research and script | Subject-led visual intent articulated; differences concern visual storytelling, not only palette |
 | Treatment | 1 Film Director writes `reports/treatment.md` — motion/pacing/transition grammar, per-beat viewer intent, audio policy, and the subject's signature image with where it lands; Director approves or returns with tradeoffs (one round) | Director cites accepted tradeoffs; Art Director work and the shot plan sequence against it; single-shot briefs skip |
 | Proof and selection | Render styleframes and dispatch the reviewer only if the comparison is blocked or the visual risk is material; Director selects | Selection cites rendered evidence and tradeoffs, not majority vote or proposal length |
 | Shot planning | Director writes `reports/shotlist.md`; skip if brief is a single shot (record skip in one line) | Covers the script without inventing fixed shots/components/layouts |
@@ -153,12 +153,16 @@ need a reason; free-riding needs none.
 | Quality refinement | Director identifies the weakest passage; dispatch one bounded refinement for that passage only; record pass/fail | Before/after compared; improvement may REMOVE text/texture/motion/objects |
 | Final review and delivery | 1 fresh reviewer (T1/T2); T3 = self-review, labelled | All unresolved blockers are noted as such in `DELIVERY.md`; no silent pass |
 
-Design exploration is scaled to uncertainty and budget. For a new visual
-problem, compare two treatments; for a small revision, one justified treatment
-may suffice. T3 may develop alternatives sequentially but must not claim
-independent authors. Do not force one low-density and one high-density design.
-Do not merge two weak proposals automatically: choose, revise or reject based
-on rendered proofs. A coherent winner may be better than combining both.
+**Parallel dispatch where dependencies allow.** Research and script and
+Design exploration are both downstream of Capability choice and produce
+complementary artifacts — what happens vs how it looks — with no cross-
+dependency between them. Dispatch them in the same batch (Screenwriter +
+1–2 Art Directors) instead of sequentially; this halves the pre-Treatment
+timeline. Treatment is the merge point: the Film Director must evaluate
+both and the Director must reconcile any conflict between narrative and
+visual direction before accepting. If the design exploration requires
+scripts that only exist after Treatment, that is a different analysis,
+not a reason to serialize.
 
 ### Zero-template quality contract
 
