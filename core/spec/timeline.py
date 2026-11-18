@@ -1,7 +1,62 @@
 """Timeline validation: the multi-shot sequence file."""
+import os
+import tempfile
+
 from .naming import valid_name
 
 VALID_BEATS = {"hook", "development", "climax", "resolution", "transition", "intro", "outro"}
+
+# The keys a timeline may declare. Every one of them is read by the
+# pipeline (core/assembly/timeline.py, pipeline.py) — an unknown key is a
+# typo the author believes is doing something, so it is refused rather than
+# ignored. Same rule the `continuity` block already follows.
+TIMELINE_KEYS = {"id", "shots", "bgm", "bgmUnderVoice", "allow_black",
+                  "allow_bgm_override_silent", "continuity"}
+# The keys a shot entry may declare.
+SHOT_KEYS = {"spec", "beat", "reason"}
+
+
+def _allowed_roots():
+    """Where a shot's spec may live: the project, or a scratch directory.
+
+    The project root is where a relative shot path resolves. The OS scratch
+    directory is where a timeline that was assembled OUTSIDE the project
+    keeps its shot specs — the CLI accepts such a timeline
+    (`verify-continuity --timeline <file>`), so its shots must be readable
+    too.
+    """
+    from core.runtime.config import ROOT
+    roots = [os.path.realpath(ROOT)]
+    scratch = tempfile.gettempdir()
+    if scratch:
+        roots.append(os.path.realpath(scratch))
+    return roots
+
+
+def _shot_path_problem(rel):
+    """Why a shot's spec path cannot be used, or None when it is fine.
+
+    The path is joined onto the project root by the pipeline
+    (`os.path.join(ROOT, rel)`), so it must stay inside the project: no
+    `..` segments, and an absolute path only when it points inside the
+    project (or a scratch directory).
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        return "must be a non-empty string"
+    parts = rel.replace("\\", "/").split("/")
+    if ".." in parts:
+        return "must not walk out of the project ('..' is refused)"
+    if os.path.isabs(rel):
+        target = os.path.realpath(rel)
+        for root in _allowed_roots():
+            try:
+                if os.path.commonpath([root, target]) == root:
+                    return None
+            except ValueError:  # different drives (Windows)
+                continue
+        return ("must point inside the project (or a scratch directory) — "
+                "an absolute path outside it is refused")
+    return None
 
 
 def validate_timeline(timeline):
@@ -9,6 +64,8 @@ def validate_timeline(timeline):
     e = errs.append
     if not isinstance(timeline, dict):
         return ["timeline must be a dictionary"]
+    for key in sorted(set(timeline) - TIMELINE_KEYS):
+        e(f"timeline: unknown key {key!r}")
     if not timeline.get("id"):
         e("timeline missing 'id'")
     elif not valid_name(timeline["id"]):
@@ -50,9 +107,19 @@ def validate_timeline(timeline):
         if isinstance(s, str):
             if not s.strip():
                 e(f"shot {idx}: spec path cannot be empty")
+            else:
+                problem = _shot_path_problem(s)
+                if problem:
+                    e(f"shot {idx}: spec path {problem} (got {s!r})")
         elif isinstance(s, dict):
+            for key in sorted(set(s) - SHOT_KEYS):
+                e(f"shot {idx}: unknown key {key!r}")
             if not s.get("spec"):
                 e(f"shot {idx}: dict needs 'spec' path")
+            else:
+                problem = _shot_path_problem(s.get("spec"))
+                if problem:
+                    e(f"shot {idx}: 'spec' {problem} (got {s.get('spec')!r})")
             beat = s.get("beat")
             if beat is not None and beat not in VALID_BEATS:
                 e(f"shot {idx}: invalid beat '{beat}', must be one of {sorted(VALID_BEATS)}")

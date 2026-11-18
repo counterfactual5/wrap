@@ -73,9 +73,10 @@ def _extract_video_frames(layer, clip_path, out_dir, n_frames, fps, rw, rh):
             raise RuntimeError(f"video produced no decodable frames: {clip_path}")
         fill = (0, 0, 0, 0)
         for i in range(n_frames):
-            if not wframes:
-                j = None
-            elif layer.get("loop", True):
+            # wframes > 0 here: an empty window raised above, so there is no
+            # "no frames" case to branch on — every frame maps onto a decoded
+            # window frame or onto the transparent fill of an unmounted clip.
+            if layer.get("loop", True):
                 loop_dur = wframes / rate
                 local = i - math.floor(i / loop_dur) * loop_dur
                 j = min(int(local * rate), wframes - 1)

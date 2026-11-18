@@ -5,6 +5,7 @@ import subprocess
 
 from core.runtime import manifest
 from core.runtime.config import ROOT
+from core.audio.sentinel import has_bgm as declares_bgm
 from core.rendering.timeline import atempo_chain, video_timeline
 
 
@@ -41,7 +42,9 @@ def encode_mp4(spec, frames_dir, out_mp4):
     # two would overlap and the S4 audio gates would flag the result.
     clip_audio = video_audio_source(spec)
     has_voice = bool(audio_spec and audio_spec.get("voiceover"))
-    has_bgm = bool(audio_spec and audio_spec.get("bgm"))
+    # `bgm: "none"` is the engine's own "no background music" sentinel — it
+    # must not be read as a request for a soundtrack.
+    has_bgm = declares_bgm(audio_spec.get("bgm") if audio_spec else None)
     wants_tts = has_voice or has_bgm
     if clip_audio and wants_tts:
         raise RuntimeError(

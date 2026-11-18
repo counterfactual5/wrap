@@ -102,9 +102,18 @@ def load():
         return empty
     with open(path) as f:
         m = json.load(f)
+    if not isinstance(m, dict):
+        raise ValueError(
+            f"invalid manifest at {path}: expected an object at the top level, "
+            f"got {type(m).__name__}")
     # Tolerate manifests written before a section existed (or hand-trimmed).
-    for k, v in empty.items():
-        m.setdefault(k, v if not isinstance(v, dict) else {})
+    # A section that is null — or any non-object — carries no rows, so it is
+    # normalized to an empty one. `setdefault` would not do this: it only
+    # fills in a MISSING key, and a null section would then survive into
+    # verified()/register() as a crash.
+    for k in empty:
+        if not isinstance(m.get(k), dict):
+            m[k] = {}
     m["video"] = _migrate_video(m["video"])
     return m
 
@@ -116,6 +125,9 @@ def save(m):
 def register(section, key, relpath, **extra):
     if key is None:
         raise ValueError(f"register({section!r}): key is required (shot id / asset id)")
+    if section not in ("assets", "prepared", "video"):
+        raise ValueError(f"register({section!r}): unknown ledger section "
+                         f"(known: assets, prepared, video)")
     # The ledger is a read-modify-write, so two writers racing (two stages
     # running side by side, a test suite beside a render) would silently drop
     # one of the rows. The lock makes the update atomic; the file is written
@@ -134,7 +146,8 @@ def register(section, key, relpath, **extra):
 def verified(section, key):
     """Row if listed AND file exists AND sha256 matches, else None."""
     m = load()
-    row = m[section].get(key)
+    rows = m.get(section)
+    row = rows.get(key) if isinstance(rows, dict) else None
     if not row:
         return None
     full = os.path.join(ROOT, row["path"])

@@ -20,6 +20,7 @@ import os
 import subprocess
 
 from core.runtime.config import ROOT
+from core.spec.naming import valid_name
 
 
 class AssemblyError(Exception):
@@ -91,6 +92,15 @@ def extract_frame_asset(src, name, at="last"):
     asset, so the manifest stays the single authority on what exists.
     """
     from core.runtime import manifest
+    # The name becomes a path (assets/<name>.png) and a manifest key. A
+    # name carrying "../" would write outside the assets directory, so it
+    # must be a plain identifier — the same rule the shot id follows
+    # (core/spec/naming.py).
+    if not valid_name(name):
+        raise ValueError(
+            f"asset name must be a letters/digits/._- string starting with a "
+            f"letter or digit (got {name!r}); it becomes assets/{name}.png "
+            f"and must not be able to walk out of the assets directory")
     rel_asset = f"assets/{name}.png"
     out_path = os.path.join(ROOT, rel_asset)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -154,23 +164,42 @@ def concat_stream_problem(clips):
     that mixes them is a normal thing for an author to write.
 
     Returns a readable message naming the shots involved, or None when the
-    clips agree."""
+    clips agree.
+
+    A clip that cannot be probed is NOT a clip without audio: the probe
+    failed, so the audio configuration is unknown, and the concat demuxer
+    would drop every track with a zero exit code. A failed probe is
+    therefore reported as a problem, never as an absent track."""
     import json as _json
     import subprocess as _subprocess
 
     if len(clips) < 2:
         return None
-    with_audio, without_audio = [], []
+    with_audio, without_audio, unprobeable = [], [], []
     for shot_id, path in clips:
         res = _subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
              "-of", "json", path], capture_output=True, text=True)
+        if res.returncode != 0:
+            unprobeable.append((shot_id, (res.stderr or "").strip()
+                                or f"ffprobe exited {res.returncode}"))
+            continue
         try:
             streams = _json.loads(res.stdout).get("streams", [])
-        except Exception:
-            streams = []
+        except Exception as ex:
+            unprobeable.append((shot_id, f"ffprobe output is not JSON ({ex})"))
+            continue
         has_audio = any(s.get("codec_type") == "audio" for s in streams)
         (with_audio if has_audio else without_audio).append(shot_id)
+    if unprobeable:
+        names = ", ".join(sid for sid, _ in unprobeable)
+        why = "; ".join(f"{sid}: {reason}" for sid, reason in unprobeable)
+        return (f"the audio configuration of {names} could not be probed, so "
+                f"this timeline's audio streams are UNKNOWN — refusing to "
+                f"concatenate on an unmeasured guess. The concat demuxer "
+                f"drops every audio track when the inputs disagree, with a "
+                f"zero exit code and no warning, and a failed probe looks "
+                f"exactly like a shot without audio. Probe failures: {why}")
     if with_audio and without_audio:
         return (f"the shots disagree on audio: {', '.join(with_audio)} carry an "
                 f"audio track, {', '.join(without_audio)} do not. Concatenating "
@@ -178,6 +207,25 @@ def concat_stream_problem(clips):
                 f"same audio source — a video layer with \"muted\": false and "
                 f"audio.voiceover (or vice versa) — before assembling.")
     return None
+
+
+def _measurement_available(av):
+    """Whether the AV probe measured the file at all.
+
+    `core.audio.metrics.measure_av_durations` reports the probe's success
+    as `measurement_ok` — the same key `measure_audio_silence` already
+    returns. When that key is absent, the only evidence left is the
+    measurement itself: a probed file always has a positive video
+    duration, so all-zero durations mean the probe measured nothing and
+    every derived number (delta, has_audio) is a placeholder.
+
+    The distinction matters: "the file has no audio track" (measured) may
+    skip the audio gates, "the probe failed" (unmeasured) must not."""
+    ok = av.get("measurement_ok")
+    if ok is not None:
+        return bool(ok)
+    return (float(av.get("video_duration") or 0) > 0
+            or float(av.get("audio_duration") or 0) > 0)
 
 
 def gate_full_video(out_path, timeline_id, segments, allow_black=False):
@@ -204,8 +252,20 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
     # 1. Total duration matches the timeline's declared shot durations.
     expected = sum(d for _, _, d in segments)
     av = audio.measure_av_durations(out_path)
+    measured = _measurement_available(av)
+    if not measured:
+        # The probe failed: every duration below is a zero, not a
+        # measurement. A zero delta against a zero expectation would read
+        # as a PASS, so "nothing was measured" has to be a FAIL of its own.
+        why = av.get("error") or "the probe measured nothing"
+        add("av_probe", "ffprobe_streams", why, False, "probe must succeed")
+    if not segments:
+        # Nothing was declared, so nothing can be compared: the duration
+        # gate below would measure the file against 0 s and call it a pass.
+        add("segments", "timeline_segments", 0, False, ">= 1 segment")
     delta = abs(av["video_duration"] - expected)
-    add("duration", "timeline_duration_delta", round(delta, 3), delta <= 0.25, "<= 0.250 s")
+    add("duration", "timeline_duration_delta", round(delta, 3),
+        measured and delta <= 0.25, "<= 0.250 s")
 
     if allow_black:
         print("SKIP  black          blackdetect         timeline allows black (allow_black=true)")
@@ -219,7 +279,13 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
         n_black = bd.count("black_start")
         add("black", "blackdetect", n_black, n_black == 0, "0 intervals")
 
-    if av.get("has_audio"):
+    if not measured:
+        # The file may well carry a soundtrack — the probe could not say.
+        # Skipping the audio gates here would be "did not check" dressed up
+        # as "nothing to check", so the unverifiable state is a FAIL.
+        why = av.get("error") or "the probe measured nothing"
+        add("audio_presence", "audio_track_probe", why, False, "probe must succeed")
+    elif av.get("has_audio"):
         # A timeline can mix silent shots (no soundtrack by design) with
         # shots that carry sound. The silent ones are not "too quiet" — they
         # are silent on purpose — so they must not eat the loudness budget,
@@ -262,7 +328,7 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
         else:
             print("SKIP  loudness_jump (no audible segment)")
     else:
-        print("SKIP  audio gates (assembled video has no audio track)")
+        print("SKIP  audio gates (assembled video has no audio track — measured)")
 
     gates_out = os.path.join(ROOT, "build", f"gates_full_{timeline_id}.json")
     with open(gates_out, "w") as f:

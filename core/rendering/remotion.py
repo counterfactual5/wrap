@@ -24,7 +24,12 @@ def build_props(spec):
     than a PNG, and base64-inlining it would bloat every props file). They are
     staged into public/prepared/{shot}/ and referenced through Remotion's
     staticFile(), which resolves against the bundle's public folder."""
-    shot_id = spec.get("id", "shot-01")
+    # The shot id names the asset namespace (prepared/<shot>/...) and the
+    # directories S3/S4 write to. It is a required field (core/spec/shot.py),
+    # so there is no default to fall back on: a missing id must fail here
+    # instead of landing two different shots on the same "shot-01" and
+    # overwriting each other's assets.
+    shot_id = spec["id"]
     props = {"spec": spec, "prepared": {}, "preparedVideos": {}, "preparedPoses": {}}
     for L in spec["layers"]:
         if L["type"] in ("ai", "image"):
