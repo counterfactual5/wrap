@@ -218,6 +218,28 @@ check duration/readability, and never describe that test as passed.
   evidence by vote. Reviewers read project files but write only their report
   when authorized (otherwise return text for Director to save).
 
+### T1/T2/T3 timing and cost reporting
+
+This experiment did not record wall-clock timings, and the timing/savings
+claims in ## Runtime topology remain unmeasured. When running a multi-agent
+production below on this engine, record the following in `reports/PROCESS.md`
+so claims can be evaluated later:
+
+- **T1 peer path** (when delegation works AND peers have a verified direct
+  messaging path): record `dispatch_ms`, `wait_ms`, `relay_ms`, `render_ms`
+  per stage. Use the measured numbers to compare T1 vs T2 on the same brief
+  and budget. Claim savings only after recording these values.
+- **T2 subagent pipeline** (delegation works, no peer path): record how many
+  dispatches happened and actual wait time per stage. The reported split
+  (dispatch latency / relay / render) is an estimate, not a measurement. If
+  you measured it, say so; if not, say so.
+- **T3 serial**: record dispatch_ms=0, wait_ms=0, relay_ms=0. Do not infer
+  savings without measuring.
+- **Compare fairly**: same brief, same budget, same model and tools; freeze
+  script/design/assets if comparing rework paths. A single pair supports
+  observations, not claims with numbers. Goal: verify or delete the claim
+“T1 cuts main-thread turns” with real measurements.
+
 ### Budgets, provenance and truthful reporting
 
 - Default local rework budget: two rounds per issue; at most three build/render
