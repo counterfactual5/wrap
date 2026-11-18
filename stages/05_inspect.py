@@ -190,7 +190,7 @@ def judge_instructions(shot_id, sheet_rel, checklist):
 
 def generate(args):
     spec = load_spec(args.spec)
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     mp4_path = os.path.join(ROOT, "build", f"{shot_id}.mp4")
 
     if not os.path.exists(mp4_path):
@@ -235,7 +235,7 @@ def generate(args):
 
 def record(args):
     spec = load_spec(args.spec)
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     inspect_json = os.path.join(ROOT, "build", f"inspection_{shot_id}.json")
     if not os.path.exists(inspect_json):
         raise RuntimeError(

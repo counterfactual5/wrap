@@ -34,7 +34,7 @@ def main():
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     frames_dir = os.path.join(ROOT, "build", "frames", shot_id)
 
     render_remotion(spec, frames_dir, shot_id)

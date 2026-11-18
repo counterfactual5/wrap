@@ -91,7 +91,7 @@ def main():
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     W, H = spec["canvas"]["w"], spec["canvas"]["h"]
     FPS = spec["fps"]  # required by the schema — a missing fps is a broken spec, not 30
     # Prepared artifacts are namespaced per shot: build/prepared/{shot_id}/.

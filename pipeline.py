@@ -56,6 +56,18 @@ from core.assembly.timeline import (  # noqa: F401  (re-exported for callers and
 from core.assembly.timeline import load_timeline as _load_timeline
 
 
+def _shot_label(spec):
+    """A shot id for display only — never a fallback that names a namespace.
+
+    `id` names a shot's assets (`build/{id}.mp4`, `rig_calibration_{id}.png`),
+    so it must never be defaulted: a default would collapse every id-less
+    shot onto one namespace. This helper only prints a label, and says
+    plainly when the spec has no id.
+    """
+    sid = spec.get("id") if isinstance(spec, dict) else None
+    return sid if (isinstance(sid, str) and sid.strip()) else "(no id)"
+
+
 def run_stage(cmd_args, desc):
     print(f"\n=== [Stage] {desc} ===")
     env = dict(os.environ)
@@ -759,7 +771,7 @@ def main():
         with open(spec_path) as f:
             spec_data = json.load(f)
         res = verify_puppet_rig(spec_data, tolerance=args.tolerance)
-        print(f"\n=== Puppet Rig Verification: {spec_data.get('id', 'puppet')} ===")
+        print(f"\n=== Puppet Rig Verification: {_shot_label(spec_data)} ===")
         for j in res["joints"]:
             print(f"  [{j['status']}] {j['child_id']} -> {j['parent_id']}: delta={j['delta_px']}px (socket={j['socket_src']}, joint={j['joint_src']}, pivot={j['pivot_canvas']})")
         if res.get("diagnostic_image") and os.path.exists(res["diagnostic_image"]):
@@ -783,7 +795,7 @@ def main():
             target_id=args.target,
             tolerance=args.tolerance,
         )
-        print(f"\n=== Combat Contact Verification: {spec_data.get('id', 'puppet')} ===")
+        print(f"\n=== Combat Contact Verification: {_shot_label(spec_data)} ===")
         for d in (res.get("details") or []):
             print(f"  Frame {d['frame']:3d}: [{d['status']}] weapon_tip={d['weapon_tip']} target_hitbox={d['target_hitbox']} gap={d['gap_px']}px")
         if not res["passed"]:
@@ -800,7 +812,7 @@ def main():
             spec_data = json.load(f)
         res = verify_stage_blocking(spec_data, max_overlap_px=args.max_overlap,
                                     min_visible_opacity=args.min_visible_opacity)
-        print(f"\n=== Stage Blocking & Non-Overlap Verification: {spec_data.get('id', 'puppet')} ===")
+        print(f"\n=== Stage Blocking & Non-Overlap Verification: {_shot_label(spec_data)} ===")
         for p in res["pairs"]:
             print(f"  [{p['status']}] {p['pair']:<22} | min_clearance={p['min_clearance_px']:>6.1f}px | max_overlap={p['max_overlap_px']:>5.1f}px (frame {p['worst_frame']})")
         if not res["passed"]:
@@ -879,7 +891,13 @@ def main():
         with open(spec_path) as f:
             spec_data = json.load(f)
         fps = spec_data["fps"]  # required by the schema
-        sid = spec_data.get("id", "shot-01")
+        # `id` names the shot's asset namespace (build/{id}.mp4, .tmp/{id}_*),
+        # so a missing one must fail here rather than fall back to a default:
+        # this command reads the spec directly and does NOT go through
+        # load_spec/validate, so nothing upstream has already checked it.
+        if not isinstance(spec_data.get("id"), str) or not spec_data["id"].strip():
+            sys.exit(f"Spec is missing a non-empty 'id' (required by the schema): {spec_path}")
+        sid = spec_data["id"]
         audio_target = args.audio or os.path.join(ROOT, "build", f"{sid}.mp4")
         if not os.path.exists(audio_target):
             audio_target = os.path.join(ROOT, ".tmp", f"{sid}_sync_voice.wav")

@@ -111,8 +111,17 @@ def verify_puppet_rig(spec, out_dir="build/inspect", tolerance=4):
             "child_rect": child_rect,
         })
 
-    # Render diagnostic calibration sheet if PIL is available
-    diag_path = os.path.join(ROOT, out_dir, f"rig_calibration_{spec.get('id', 'puppet')}.png")
+    # Render diagnostic calibration sheet if PIL is available.
+    # `id` names the diagnostic file, so a spec without one must not silently
+    # collapse every shot's sheet into "rig_calibration_puppet.png" — the
+    # caller reads the spec straight off disk, so nothing upstream has
+    # checked that `id` is present.
+    shot_id = spec.get("id")
+    if not isinstance(shot_id, str) or not shot_id.strip():
+        raise RuntimeError(
+            "rig verification needs a non-empty 'id' (required by the schema) "
+            "to name its calibration sheet")
+    diag_path = os.path.join(ROOT, out_dir, f"rig_calibration_{shot_id}.png")
     try:
         from PIL import Image, ImageDraw
         cw, ch = spec["canvas"]["w"], spec["canvas"]["h"]

@@ -17,7 +17,7 @@ def video_audio_source(spec):
         is the shot's soundtrack;
       - otherwise the pipeline's TTS chain owns it.
     Returns the prepared clip path, or None."""
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     candidates = [L for L in spec["layers"] if L.get("type") == "video" and not L.get("muted", True)]
     if len(candidates) > 1:
         raise RuntimeError(

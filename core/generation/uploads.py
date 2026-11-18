@@ -68,7 +68,7 @@ def resolve_reference_image_path(ref_name, spec, style=None):
     reference must point at a frozen image; generate or prepare it first,
     then re-run. The `style` argument stays for signature compatibility
     with callers that already pass it."""
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     row = manifest.verified("assets", ref_name)
     if row:
         return os.path.join(ROOT, row["path"]), row["path"]

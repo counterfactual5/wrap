@@ -121,7 +121,7 @@ class GateTestCase(unittest.TestCase):
             self.addCleanup(ctx.stop)
         code = self.gate.main()
         gate_file = os.path.join(self.root, "build", "gates",
-                                 f"{spec.get('id', 'shot-01')}.json")
+                                 f"{spec['id']}.json")
         results = []
         if os.path.exists(gate_file):
             with open(gate_file) as f:

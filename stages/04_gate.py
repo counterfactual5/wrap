@@ -58,7 +58,7 @@ def _video_layers(spec):
     for L in spec["layers"]:
         if L.get("type") != "video":
             continue
-        row = manifest.verified("prepared", f"{spec.get('id', 'shot-01')}/{L['asset']}")
+        row = manifest.verified("prepared", f"{spec['id']}/{L['asset']}")
         dur = ""
         if row:
             path = os.path.join(ROOT, row["path"])
@@ -86,7 +86,7 @@ def _crop_diagnosis(spec):
     for L in spec["layers"]:
         if L.get("type") != "video" or L.get("fit", "cover") != "cover":
             continue
-        row = manifest.verified("prepared", f"{spec.get('id', 'shot-01')}/{L['asset']}")
+        row = manifest.verified("prepared", f"{spec['id']}/{L['asset']}")
         size = (row or {}).get("source_size")
         if not size or len(size) != 2:
             continue
@@ -129,7 +129,7 @@ def _video_hint(spec, reason="low_motion"):
     for L in spec["layers"]:
         if L.get("type") != "video" or L.get("loop", True):
             continue
-        row = manifest.verified("prepared", f"{spec.get('id', 'shot-01')}/{L['asset']}")
+        row = manifest.verified("prepared", f"{spec['id']}/{L['asset']}")
         if row and row.get("shorter_than_shot"):
             ran_out = True
     if ran_out:
@@ -183,7 +183,7 @@ def main():
     args = parser.parse_args()
 
     spec = load_spec(args.spec)
-    shot_id = spec.get("id", "shot-01")
+    shot_id = spec["id"]
     _verify_measured_object(shot_id)
     W, H, FPS = spec["canvas"]["w"], spec["canvas"]["h"], spec["fps"]
     frames = os.path.join(ROOT, "build", "frames", shot_id, "%05d.png")
