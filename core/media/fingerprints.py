@@ -8,6 +8,7 @@ in the S3 stage script) so S4 can verify without importing a stage module.
 import hashlib
 import os
 import subprocess
+from core.runtime.timeouts import PROBE_TIMEOUT
 
 
 def frames_fingerprint(frames_dir):
@@ -27,7 +28,8 @@ def frames_fingerprint(frames_dir):
 
 def encoder_fingerprint():
     """ffmpeg/x264 identity for cross-machine reproducibility checks (S4 compares)."""
-    out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True).stdout
+    out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True,
+                         timeout=PROBE_TIMEOUT).stdout
     first = out.splitlines()[0] if out else "unknown"
     x264 = next((l.strip() for l in out.splitlines() if "x264" in l), "")
     return hashlib.sha256((first + x264).encode()).hexdigest()[:16]

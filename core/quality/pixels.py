@@ -2,7 +2,9 @@
 All ratios are fractions of total pixels (resolution independent)."""
 import statistics
 import subprocess
+import threading
 
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
 from core.spec.constants import (
     STATIC_ACTIVE_FRACTION,
     DEFAULT_LUMA_DELTA,
@@ -12,9 +14,31 @@ from core.spec.constants import (
 
 
 def _frames(src, w, h, pix_fmt, bpp, extra_in=()):
+    """Yield raw frames from `src` as bytes.
+
+    This is a STREAM, not a one-shot command: it reads ffmpeg's stdout frame
+    by frame, so `subprocess.run`'s `timeout=` cannot apply — a blocked read
+    would hang forever. Instead a watchdog kills the process when the budget
+    runs out; the blocked read then returns EOF, and the kill is visible in
+    the return code. The failure is reported as a timeout, not as a generic
+    ffmpeg error, because "the disk wedged" and "ffmpeg failed" call for
+    different fixes.
+    """
     cmd = ["ffmpeg", "-v", "error", *extra_in, "-i", src, "-f", "rawvideo", "-pix_fmt", pix_fmt, "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     size = w * h * bpp
+    timed_out = threading.Event()
+
+    def _on_timeout():
+        timed_out.set()
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(LOCAL_TOOL_TIMEOUT, _on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         while True:
             b = p.stdout.read(size)
@@ -27,8 +51,14 @@ def _frames(src, w, h, pix_fmt, bpp, extra_in=()):
                 break
             yield b
     finally:
+        watchdog.cancel()
         p.stdout.close()
         p.wait()
+    if timed_out.is_set():
+        raise RuntimeError(
+            f"ffmpeg timed out after {LOCAL_TOOL_TIMEOUT}s decoding frames from "
+            f"{src} — the source may be unwritable, or the decode may have "
+            f"stalled")
     if p.returncode not in (0, None):
         raise RuntimeError(f"ffmpeg failed on {src}")
 

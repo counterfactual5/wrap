@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from core.runtime import manifest
 from core.runtime.config import ROOT
 from core.spec.loader import load_spec
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT, PROBE_TIMEOUT
 
 
 def extract_checklist(spec):
@@ -71,7 +72,7 @@ def probe_video_dims(mp4_path):
     res = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "csv=p=0", mp4_path],
-        capture_output=True, text=True)
+        capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     m = re.search(r"(\d+),(\d+)", res.stdout or "")
     return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
@@ -110,7 +111,7 @@ def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
          "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", mp4_path],
-        capture_output=True, text=True, check=True)
+        capture_output=True, text=True, check=True, timeout=PROBE_TIMEOUT)
     try:
         actual_frames = int(probe.stdout.strip())
     except ValueError as exc:
@@ -137,7 +138,7 @@ def generate_contact_sheet(mp4_path, duration_frames, out_sheet_path, grid="3x3"
         "-frames:v", "1",
         out_sheet_path
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=LOCAL_TOOL_TIMEOUT)
     return out_sheet_path
 
 

@@ -7,6 +7,7 @@ from core.runtime import manifest
 from core.runtime.config import ROOT
 from core.audio.sentinel import has_bgm as declares_bgm
 from core.rendering.timeline import atempo_chain, video_timeline
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
 
 
 def video_audio_source(spec):
@@ -155,4 +156,4 @@ def encode_mp4(spec, frames_dir, out_mp4):
 
     cmd.append(out_mp4)
     print(" ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=ROOT)
+    subprocess.run(cmd, check=True, cwd=ROOT, timeout=LOCAL_TOOL_TIMEOUT)

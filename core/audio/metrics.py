@@ -18,6 +18,8 @@ import re
 import struct
 import subprocess
 
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT, PROBE_TIMEOUT
+
 # Speech/foreground must clear these floors to count as real content in an
 # audible shot — the documented name for the -25/-45 dB thresholds.
 SPEECH_MAX_FLOOR_DB = -25.0
@@ -56,7 +58,8 @@ def measure_audio_silence(file_path, start=None, duration=None):
     if duration is not None:
         seek += ["-t", f"{duration:.3f}"]
     cmd = ["ffmpeg", "-hide_banner"] + seek + ["-i", file_path, "-af", "volumedetect", "-f", "null", "-"]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=LOCAL_TOOL_TIMEOUT)
     m_max = re.search(r"max_volume:\s*([-\d.]+)\s*dB", res.stderr)
     m_mean = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", res.stderr)
     max_v = float(m_max.group(1)) if m_max else -99.0
@@ -67,7 +70,8 @@ def measure_audio_silence(file_path, start=None, duration=None):
     # Real speech or foreground audio has solid energy in this band.
     cmd_sp = ["ffmpeg", "-hide_banner"] + seek + ["-i", file_path,
               "-af", "highpass=f=300,lowpass=f=3400,volumedetect", "-f", "null", "-"]
-    res_sp = subprocess.run(cmd_sp, capture_output=True, text=True)
+    res_sp = subprocess.run(cmd_sp, capture_output=True, text=True,
+                            timeout=LOCAL_TOOL_TIMEOUT)
     m_sp_max = re.search(r"max_volume:\s*([-\d.]+)\s*dB", res_sp.stderr)
     m_sp_mean = re.search(r"mean_volume:\s*([-\d.]+)\s*dB", res_sp.stderr)
     sp_max = float(m_sp_max.group(1)) if m_sp_max else -99.0
@@ -106,7 +110,8 @@ def measure_audio_loudness_detail(file_path, start=None, duration=None):
     if duration is not None:
         cmd += ["-t", f"{duration:.3f}"]
     cmd += ["-i", file_path, "-af", "ebur128", "-f", "null", "-"]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=LOCAL_TOOL_TIMEOUT)
     stderr = res.stderr or ""
     if res.returncode != 0:
         return {
@@ -163,7 +168,8 @@ def measure_av_durations(file_path):
         "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
         "-of", "json", file_path
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=PROBE_TIMEOUT)
     if res.returncode != 0:
         return {
             "measurement_ok": False,
@@ -229,7 +235,7 @@ def detect_audio_punches(file_path, fps=30, max_punches=6, min_gap_sec=0.45,
     if highpass_hz and float(highpass_hz) > 0:
         cmd += ["-af", f"highpass=f={float(highpass_hz):.0f}"]
     cmd += ["-ac", "1", "-ar", str(sr), "-f", "s16le", "-"]
-    res = subprocess.run(cmd, capture_output=True)
+    res = subprocess.run(cmd, capture_output=True, timeout=LOCAL_TOOL_TIMEOUT)
     if res.returncode != 0:
         stderr = (res.stderr or b"").decode("utf-8", "replace")
         raise RuntimeError(

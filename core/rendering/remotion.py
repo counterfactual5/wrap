@@ -7,6 +7,7 @@ import subprocess
 
 from core.runtime import manifest
 from core.runtime.config import ENGINE_ROOT, ROOT
+from core.runtime.timeouts import render_timeout_seconds
 from core.rendering.quartz import _render_quartz_fallback
 
 RENDERER_REMOTION = "remotion"
@@ -174,10 +175,16 @@ def render_remotion(spec, out_dir, shot_id):
     # remotion.config.ts resolves the engine root from this (webpack rewrites
     # __dirname while bundling the config, so it cannot locate the engine).
     env["WRAP_ENGINE_ROOT"] = ENGINE_ROOT
+    # A render drives a headless browser: it can wedge on a dead GPU, a
+    # browser that never returns, or a bundle that never finishes. The
+    # budget scales with the shot so a long film is not cut off, and the
+    # timeout names the command instead of hanging forever.
+    render_budget = render_timeout_seconds(
+        spec.get("durationInFrames", 0) / max(1, spec.get("fps", 30)))
     try:
         proc = subprocess.run(cmd, check=True, cwd=ENGINE_ROOT, env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              text=True)
+                              text=True, timeout=render_budget)
         if proc.stdout:
             print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
         if proc.stderr:
@@ -206,6 +213,17 @@ def render_remotion(spec, out_dir, shot_id):
             f"the Remotion renderer could not be launched: {ex}\n"
             f"  `npx` must be on PATH (Node.js), and `node` too unless "
             f"NODE_BIN points at it.\n"
+            f"invoked: {' '.join(cmd)}\n  (cwd={ENGINE_ROOT})") from ex
+    except subprocess.TimeoutExpired as ex:
+        # The renderer wedged. A timeout is neither a missing tool nor a
+        # missing frame: say which, and clean the partial tree so a retry
+        # starts from a known state.
+        shutil.rmtree(os.path.join(out_dir, "rm"), ignore_errors=True)
+        raise RuntimeError(
+            f"the Remotion renderer timed out after {render_budget}s for shot "
+            f"{shot_id!r}; no fallback was attempted.\n"
+            f"  the browser may have wedged, or the shot is longer than the "
+            f"budget allows.\n"
             f"invoked: {' '.join(cmd)}\n  (cwd={ENGINE_ROOT})") from ex
     except subprocess.CalledProcessError as ex:
         raise RuntimeError(

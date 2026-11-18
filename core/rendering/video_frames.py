@@ -8,6 +8,7 @@ import zlib
 
 from core.runtime.config import ROOT
 from core.rendering.timeline import video_timeline
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
 
 
 def _write_solid_png(path, w, h, rgba):
@@ -66,7 +67,7 @@ def _extract_video_frames(layer, clip_path, out_dir, n_frames, fps, rw, rh):
            "-vf", ",".join(vf), "-frames:v", str(cap),
            os.path.join(window_dir, "%05d.png")]
     try:
-        subprocess.run(cmd, check=True, cwd=ROOT)
+        subprocess.run(cmd, check=True, cwd=ROOT, timeout=LOCAL_TOOL_TIMEOUT)
         window = sorted(f for f in os.listdir(window_dir) if f.endswith(".png"))
         wframes = len(window)
         if not wframes:

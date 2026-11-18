@@ -33,7 +33,9 @@ class TestSyncSpecAudio(unittest.TestCase):
             barrier.wait(timeout=5)
             return []
 
-        def ffmpeg(args, check):
+        def ffmpeg(args, check, timeout=None):
+            # `timeout` is part of every production subprocess call now
+            # (core/runtime/timeouts.py); the fake accepts and ignores it.
             with open(args[args.index("-i") + 1]) as src, open(args[-1], "w") as dst:
                 dst.write(src.read())
 

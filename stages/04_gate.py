@@ -20,6 +20,7 @@ from core.quality import pixels as metrics
 from core.media.fingerprints import encoder_fingerprint, frames_fingerprint
 from core.runtime.config import ROOT
 from core.spec.loader import load_spec
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT, PROBE_TIMEOUT
 
 
 def _verify_measured_object(shot_id):
@@ -64,7 +65,8 @@ def _video_layers(spec):
             path = os.path.join(ROOT, row["path"])
             res = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "csv=p=0", path], capture_output=True, text=True)
+                 "-of", "csv=p=0", path], capture_output=True, text=True,
+                timeout=PROBE_TIMEOUT)
             value = res.stdout.strip()
             if value:
                 dur = f" ({value}s)"
@@ -258,7 +260,7 @@ def main():
     else:
         fz = subprocess.run(
             ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.5", "-f", "null", "-"],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=LOCAL_TOOL_TIMEOUT
         ).stderr
         frozen = [l for l in fz.splitlines() if "freeze_start" in l]
     print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")

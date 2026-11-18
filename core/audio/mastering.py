@@ -6,6 +6,7 @@ import json
 import math
 import re
 import subprocess
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
 
 def run_two_pass_loudnorm(input_args, filter_flag, base_filter, target_duration, out_path,
                           codec_args=("-c:a", "aac", "-b:a", "192k")):
@@ -28,7 +29,8 @@ def run_two_pass_loudnorm(input_args, filter_flag, base_filter, target_duration,
         + dur_args
         + ["-f", "null", "-"]
     )
-    res1 = subprocess.run(pass1_cmd, capture_output=True, text=True)
+    res1 = subprocess.run(pass1_cmd, capture_output=True, text=True,
+                          timeout=LOCAL_TOOL_TIMEOUT)
     ln_pass2 = ln_base
     matches = re.findall(r"\{\s*\"input_i\"[\s\S]*?\}", (res1.stderr or "") + (res1.stdout or ""))
     if matches:
@@ -57,5 +59,5 @@ def run_two_pass_loudnorm(input_args, filter_flag, base_filter, target_duration,
         + list(codec_args)
         + [out_path]
     )
-    subprocess.run(pass2_cmd, check=True)
+    subprocess.run(pass2_cmd, check=True, timeout=LOCAL_TOOL_TIMEOUT)
     return out_path

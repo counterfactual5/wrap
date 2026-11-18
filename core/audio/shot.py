@@ -24,6 +24,7 @@ from core.audio.tts import (
 # and by the S4 truncation gate — keep them in one place.
 VOICEOVER_TAIL_TOLERANCE = 0.25
 from core.audio.integrity import verify_audio
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
 
 # File extensions that mark a declared voiceover/BGM value as a FILE reference
 # rather than narration text. macOS `say` writes .aiff itself, and the
@@ -212,7 +213,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
                     "-i", found_bgm, "-t", str(target_duration),
                     "-af", fade_filter,
                     "-ar", "44100", "-ac", "2", tmp_bgm
-                ], check=True)
+                ], check=True, timeout=LOCAL_TOOL_TIMEOUT)
             else:
                 raise FileNotFoundError(f"BGM file not found: {bgm_type}; built-in music presets were removed")
 
@@ -258,7 +259,7 @@ def prepare_shot_audio(audio_spec, duration_in_frames, fps, out_path, punches=No
                 "-t", str(target_duration),
                 "-c:a", "aac", "-b:a", "192k",
                 out_path
-            ], check=True)
+            ], check=True, timeout=LOCAL_TOOL_TIMEOUT)
 
         return out_path
     finally:

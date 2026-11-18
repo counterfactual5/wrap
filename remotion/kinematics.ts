@@ -1,8 +1,21 @@
 // Generic interpolation and spring integration; project code owns choreography.
 import type {Anim, Ease, Keyframe, Layer} from './spec';
 
+// The ease vocabulary is shared with the Python side
+// (core/spec/constants.py: ANIM_EASES). Both ends must reject the same
+// values: `core/spec/channels.py` already refuses an ease outside this set,
+// but a spec fed straight to the renderer (a Remotion Studio preview of a
+// hand-edited or stale props file) never passes through that check. When
+// the two ends disagree, Python raised and TypeScript silently rendered a
+// straight line — the silent half is the dangerous one.
+export const EASES: readonly Ease[] = [
+  'linear', 'in', 'out', 'inout', 'snap', 'overshoot', 'step',
+];
+
 export const applyEase = (t: number, ease: Ease): number => {
   switch (ease) {
+    case 'linear':
+      return t;
     case 'in':
       return t * t;
     case 'out':
@@ -18,8 +31,15 @@ export const applyEase = (t: number, ease: Ease): number => {
     }
     case 'step':
       return t < 1 ? 0 : 1;
-    default:
-      return t;
+    default: {
+      // Mirror apply_ease in core/rig/kinematics.py: an unknown ease is an
+      // error, never a silent linear.
+      const unknown = String(ease);
+      throw new Error(
+        `unknown ease ${JSON.stringify(unknown)}; expected one of ` +
+          `${JSON.stringify(EASES)}`,
+      );
+    }
   }
 };
 

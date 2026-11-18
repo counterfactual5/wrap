@@ -20,6 +20,7 @@ from core.runtime.config import ROOT
 from core.spec.shot import gate_of
 from core.spec.naming import hex_rgb
 from core.spec.loader import load_spec
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT, PROBE_TIMEOUT
 
 
 # Upscale factor above which a video layer's softness is worth flagging.
@@ -31,7 +32,7 @@ def _video_source_size(path):
     res = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "csv=p=0", path],
-        capture_output=True, text=True)
+        capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     parts = res.stdout.strip().split(",")
     if len(parts) >= 2:
         try:
@@ -52,7 +53,7 @@ def _video_source_info(path):
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height,nb_frames,duration",
          "-of", "json", path],
-        capture_output=True, text=True)
+        capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     w = h = frames = None
     dur = 0.0
     try:
@@ -77,7 +78,8 @@ def _video_source_info(path):
         # Some containers report the duration on the format, not the stream.
         res = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", path], capture_output=True, text=True)
+             "-of", "csv=p=0", path], capture_output=True, text=True,
+            timeout=PROBE_TIMEOUT)
         try:
             dur = float(res.stdout.strip())
         except ValueError:
@@ -160,7 +162,7 @@ def main():
             else:
                 cmd.append("-an")
             cmd.append(out_path)
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, timeout=LOCAL_TOOL_TIMEOUT)
 
             # The clip's native size vs the canvas: a clip generated at 768P
             # (9:16 -> 768x1344) is upscaled to 1080x1920, and the upscale
@@ -294,7 +296,7 @@ def main():
                 subprocess.run(
                     ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
                      os.path.join(ROOT, rel)],
-                    check=True
+                    check=True, timeout=LOCAL_TOOL_TIMEOUT
                 )
                 manifest.register("prepared", f"{shot_id}/{asset_name}", rel, source="scaled", purity=purity, size=[pw, ph])
                 print(f"prepared {rel} {pw}x{ph}")
@@ -306,7 +308,7 @@ def main():
                 subprocess.run(
                     ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf,
                      os.path.join(ROOT, rel_layer)],
-                    check=True
+                    check=True, timeout=LOCAL_TOOL_TIMEOUT
                 )
                 manifest.register("prepared", f"{shot_id}/{layer_key}", rel_layer, source="scaled", purity=purity, size=[pw, ph])
                 print(f"prepared {rel_layer} {pw}x{ph} (layer-scoped for {L['id']})")

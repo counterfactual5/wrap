@@ -21,6 +21,11 @@ import subprocess
 
 from core.runtime.config import ROOT
 from core.spec.naming import valid_name
+from core.runtime.timeouts import (
+    EXTRACT_FRAME_TIMEOUT,
+    LOCAL_TOOL_TIMEOUT,
+    PROBE_TIMEOUT,
+)
 
 
 class AssemblyError(Exception):
@@ -117,7 +122,7 @@ def extract_frame_asset(src, name, at="last"):
         seek = ["-ss", at]
     cmd = (["ffmpeg", "-v", "error", "-y"] + seek + ["-i", src]
            + ["-frames:v", "1", "-update", "1", out_path])
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=EXTRACT_FRAME_TIMEOUT)
     if proc.returncode != 0:
         raise RuntimeError(
             f"Frame extraction failed (ffmpeg exit {proc.returncode}):\n"
@@ -179,7 +184,8 @@ def concat_stream_problem(clips):
     for shot_id, path in clips:
         res = _subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
-             "-of", "json", path], capture_output=True, text=True)
+             "-of", "json", path], capture_output=True, text=True,
+            timeout=PROBE_TIMEOUT)
         if res.returncode != 0:
             unprobeable.append((shot_id, (res.stderr or "").strip()
                                 or f"ffprobe exited {res.returncode}"))
@@ -275,7 +281,7 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
             ["ffmpeg", "-hide_banner", "-i", out_path,
              "-vf", "blackdetect=d=0.2:picture_black_ratio_th=0.98:pixel_black_th=0.02",
              "-f", "null", "-"],
-            capture_output=True, text=True).stderr
+            capture_output=True, text=True, timeout=LOCAL_TOOL_TIMEOUT).stderr
         n_black = bd.count("black_start")
         add("black", "blackdetect", n_black, n_black == 0, "0 intervals")
 

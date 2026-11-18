@@ -54,6 +54,7 @@ from core.assembly.timeline import (  # noqa: F401  (re-exported for callers and
     spec_references_asset,
 )
 from core.assembly.timeline import load_timeline as _load_timeline
+from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT, STAGE_TIMEOUT, run_with_timeout
 
 
 def _shot_label(spec):
@@ -73,7 +74,10 @@ def run_stage(cmd_args, desc):
     env = dict(os.environ)
     python_path = env.get("PYTHONPATH")
     env["PYTHONPATH"] = ENGINE_ROOT + (os.pathsep + python_path if python_path else "")
-    res = subprocess.run([sys.executable] + cmd_args, cwd=ROOT, env=env)
+    # A stage that wedges (a renderer waiting on a dead browser) must not
+    # take the whole run down silently: the timeout names the stage.
+    res = run_with_timeout([sys.executable] + cmd_args, STAGE_TIMEOUT,
+                            cwd=ROOT, env=env)
     if res.returncode != 0:
         print(f"FAILED: {desc} exited with code {res.returncode}", file=sys.stderr)
         sys.exit(res.returncode)
@@ -284,7 +288,7 @@ def assemble_timeline(tl, out_rel=None):
     subprocess.run([
         "ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0",
         "-i", concat_txt, "-an", "-c:v", "copy", v_out,
-    ], check=True)
+    ], check=True, timeout=LOCAL_TOOL_TIMEOUT)
 
     a_out = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_audio.m4a")
     raw_a_out = os.path.join(ROOT, ".tmp", f"concat_{tl_id}_raw_audio.m4a")
@@ -297,7 +301,7 @@ def assemble_timeline(tl, out_rel=None):
         + ["-filter_complex", f"{chains}concat=n={len(rendered_mp4s)}:v=0:a=1[aout]",
            "-map", "[aout]", "-c:a", "aac", "-b:a", "192k",
            "-ar", "44100", "-ac", "2", raw_a_out],
-        check=True)
+        check=True, timeout=LOCAL_TOOL_TIMEOUT)
 
     tl_bgm = (tl.get("bgm") or "").strip() if isinstance(tl.get("bgm"), str) else ""
     if tl_bgm and tl_bgm.lower() != "none":
@@ -315,7 +319,7 @@ def assemble_timeline(tl, out_rel=None):
                 "ffmpeg", "-v", "error", "-y", "-stream_loop", "-1",
                 "-i", found_bgm, "-t", str(total_dur),
                 "-af", fade_f, "-ar", "44100", "-ac", "2", tl_bgm_wav
-            ], check=True)
+            ], check=True, timeout=LOCAL_TOOL_TIMEOUT)
         else:
             raise FileNotFoundError(f"Timeline BGM file not found: {tl_bgm}; built-in music presets were removed")
 
@@ -352,7 +356,7 @@ def assemble_timeline(tl, out_rel=None):
     subprocess.run([
         "ffmpeg", "-v", "error", "-y", "-i", v_out, "-i", a_out,
         "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart", out_path,
-    ], check=True)
+    ], check=True, timeout=LOCAL_TOOL_TIMEOUT)
     print(f"Successfully generated: {out_path} (size: {os.path.getsize(out_path)} bytes)")
 
     # Keep both build/<timeline_id>.mp4 and build/full.mp4 synchronized when

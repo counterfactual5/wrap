@@ -18,6 +18,14 @@ import urllib.request
 
 from core.runtime.config import ROOT
 from core.runtime import manifest
+from core.runtime.timeouts import (
+    LOCAL_TOOL_TIMEOUT,
+    NETWORK_FETCH_TIMEOUT,
+    PROBE_TIMEOUT,
+    SAY_BASE_TIMEOUT,
+    VOICE_LIST_TIMEOUT,
+    say_timeout,
+)
 from core.audio.integrity import _identity, register_audio, verify_audio
 
 # The neutral speech rate: "no change from the provider's own default".
@@ -50,7 +58,8 @@ def get_audio_duration(file_path):
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", file_path
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=PROBE_TIMEOUT)
     if res.returncode != 0:
         raise RuntimeError(
             f"ffprobe exited {res.returncode} while measuring the duration of "
@@ -91,7 +100,8 @@ def _say_voices():
         return _SAY_VOICES
     voices = {}
     try:
-        res = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=20)
+        res = subprocess.run(["say", "-v", "?"], capture_output=True, text=True,
+                         timeout=VOICE_LIST_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as ex:
         print(f"macOS say voice list unavailable: {ex}")
         _SAY_VOICES = voices
@@ -178,7 +188,7 @@ def _download_neural_tts(text, out_mp3):
         url,
         headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
     )
-    with urllib.request.urlopen(req, timeout=10) as resp, open(out_mp3, "wb") as f:
+    with urllib.request.urlopen(req, timeout=NETWORK_FETCH_TIMEOUT) as resp, open(out_mp3, "wb") as f:
         f.write(resp.read())
 
 
@@ -278,7 +288,10 @@ def _synthesize_voiceover_with_timings(text, voice, out_path, rate, temp_dir):
         wpm = _say_wpm(rate)
         tmp_aiff = os.path.join(temp_dir, "temp_speech.aiff")
         try:
-            subprocess.run(["say", "-v", say_voice, "-r", str(wpm), text, "-o", tmp_aiff], check=True)
+            # `say` can block on a stuck audio device — budget follows the
+            # narration's length, because that is what decides its runtime.
+            subprocess.run(["say", "-v", say_voice, "-r", str(wpm), text, "-o", tmp_aiff],
+                           check=True, timeout=say_timeout(text))
             if os.path.exists(tmp_aiff) and os.path.getsize(tmp_aiff) > 4096 and get_audio_duration(tmp_aiff) > 0.5:
                 raw_audio = tmp_aiff
                 tts_success = True
@@ -311,7 +324,7 @@ def _synthesize_voiceover_with_timings(text, voice, out_path, rate, temp_dir):
         "ffmpeg", "-v", "error", "-y", "-i", raw_audio,
         "-af", master_filter,
         "-ar", "44100", "-ac", "2", out_path
-    ], check=True)
+    ], check=True, timeout=LOCAL_TOOL_TIMEOUT)
 
     if os.path.exists(raw_audio):
         os.remove(raw_audio)
