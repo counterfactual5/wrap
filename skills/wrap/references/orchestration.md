@@ -153,6 +153,55 @@ need a reason; free-riding needs none.
 | Quality refinement | Director identifies the weakest passage; dispatch one bounded refinement for that passage only; record pass/fail | Before/after compared; improvement may REMOVE text/texture/motion/objects |
 | Final review and delivery | 1 fresh reviewer (T1/T2); T3 = self-review, labelled | All unresolved blockers are noted as such in `DELIVERY.md`; no silent pass |
 
+### Topology (T2 — this host)
+
+```
+mermaid
+flowchart TD
+    D[Director<br/>main thread]:::main
+
+    D --> B[Brief<br/>CONCEPT.md]
+    B --> C[Capability choice<br/>self-probe, no dispatch]
+    C --> P{Parallel batch}
+
+    P --> SW[Screenwriter<br/>reports/SCRIPT.md]
+    P --> AD[Art Director ×1-2<br/>reports/DESIGN.md]
+    SW -.->|shared brief| AD
+    AD -.->|shared brief| SW
+
+    SW --> T[Film Director<br/>Treatment]
+    AD --> T
+    T --> D{Director<br/>accept or return}
+
+    D --> PS[Proof & selection<br/>styleframes]
+    PS --> SP[Shot planning<br/>shotlist.md]
+    SP --> BL[Build<br/>Builders ×N<br/>disjoint file domains]
+
+    BL --> E[S1..S5 engine<br/>remotion + gates]
+    E --> R[Rendered review<br/>fresh Visual Reviewer<br/>if figures/objects present]
+    R --> Q[Quality refinement<br/>weakest passage only]
+    Q --> F[Final review<br/>fresh reviewer]
+    F --> V[Delivery<br/>DELIVERY.md]
+
+    D -.->|dispatches all| SW
+    D -.->|dispatches all| AD
+    D -.->|dispatches all| T
+    D -.->|dispatches all| BL
+    D -.->|dispatches all| R
+    D -.->|dispatches all| F
+
+    classDef main fill:#d4e2f3,stroke:#2c5aa0,stroke-width:2px
+    classDef sub fill:#f5f0e1,stroke:#8b7355
+    class SW,AD,T,BL,R,F sub
+```
+
+All arrows are **dispatch → result**. The dotted arrows from Director are the
+only cross-agent communication path: subagents cannot talk to each other on
+this host (T2), so every question between two subagents costs one extra
+dispatch through the main thread. Parallel batch `P` is the one place where
+two subagents launch together; they share a brief file but cannot reply to
+each other once either exits.
+
 **Parallel dispatch where dependencies allow.** Research and script and
 Design exploration are both downstream of Capability choice and produce
 complementary artifacts — what happens vs how it looks — with no cross-
