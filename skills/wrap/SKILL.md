@@ -409,6 +409,13 @@ a single-shot or a SMALL-WORK fast-path edit (one read of the stage table
 plus the final review labelled honestly suffice), and in T3 every review
 is self-review — label it as such.
 
+One lesson worth carrying out of the playbook even in T3: the
+**subject-literalism guard** — name the subject's single most iconic image
+and make sure the film actually shows it. A chain of specialists each
+executing the upstream document faithfully can still produce a film that
+never shows the one thing the subject is *known for*; see
+`references/orchestration.md` § Subject-literalism guard.
+
 ## Quick start
 
 ```bash

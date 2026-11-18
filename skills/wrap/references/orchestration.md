@@ -89,6 +89,29 @@ The one question per candidate dispatch:
   the main thread writes the treatment explicitly — skipping it removes the
   film's creative intent, not its production value.
 
+**Subject-literalism guard — every treatment and every design must answer
+one question in writing: *what is the single most iconic image of this
+subject in the public imagination, and will this film let the viewer see it
+at least once?*** Then verify the finished film against that answer in the
+rendered review.
+
+This is the failure mode the relay does not catch by itself. A chain of
+specialists who each receive only the upstream document will each execute
+correctly and still produce a film that misses the subject's signature image
+— nobody in the chain is asked what the subject *looks like* to an outside
+viewer, so the omission is invisible to every role. Measured: a shadow-puppet
+film built by a full multi-role relay was praised for craft, then judged by a
+blind reviewer as "never once an actual shadow on the lit screen" — the
+defining image of the entire art form, absent while every documented beat was
+implemented faithfully.
+
+The guard is one line, not a style mandate: it names the image and checks it
+is on screen. It does not forbid flat, monochrome, minimal or deliberately
+unusual treatments — those remain valid answers as long as the signature
+image is present. When the answer is "this subject has no single iconic
+image" (some abstract or procedural subjects), the Director records that
+judgement explicitly rather than inventing one.
+
 Apply the rule to each segment; do not pre-fill a roster, do not dispatch for
 show:
 
@@ -96,7 +119,7 @@ show:
 |---|---|---|
 | Script | Dispatch 1 Screenwriter (+ 1 fact reviewer **only if** the `kind` requires it) | Reviewer finds causal error → 1 resize/rewrite |
 | Design | Dispatch 1 Art Director per candidate direction **only** if the design space is open; otherwise 1 | Ambiguous brief or two genuinely viable styles → +1 arm for comparison |
-| Treatment | 1 Film Director — writes `reports/treatment.md`; Director accepts or returns with tradeoffs, one round | Brief is a single shot → skip, record in one line |
+| Treatment | 1 Film Director — writes `reports/treatment.md`; Director accepts or returns with tradeoffs, one round; the treatment must name the subject's signature image and how it appears | Brief is a single shot → skip, record in one line |
 | Shot plan | Director writes; skip if the brief is a single shot (state skip in one line) | — |
 | Build | Dispatch builders per disjoint file domain; parallel when profitable | Any file-domain task that is non-trivial and has no owner |
 | Render | Director runs render | — |
@@ -122,7 +145,7 @@ need a reason; free-riding needs none.
 | Capability choice | Director self-probes (~5 min): records live media capabilities in `reports/tool-probe.md`, decides modality, does not generate; a separate scout role is not worth a dispatch — the person choosing the modality must make the call | Separate available, permitted, verified and chosen modalities; choose for the story, not a hardcoded tool priority |
 | Research and script | Dispatch Screenwriter (+ Researcher **only when `kind` is scientific/educational and facts are load-bearing**; otherwise no Researcher); Director does not write the script in the main thread | `SCRIPT.md` exists; claims are sourced or explicitly labelled model-knowledge-unverified when `kind` requires auditing; progression and reading time work for the audience |
 | Design exploration | Dispatch 1–2 Art Directors when design space is genuinely open; otherwise 1 | Subject-led visual intent articulated; differences concern visual storytelling, not only palette |
-| Treatment | 1 Film Director writes `reports/treatment.md` — motion/pacing/transition grammar, per-beat viewer intent, audio policy; Director approves or returns with tradeoffs (one round) | Director cites accepted tradeoffs; Art Director work and the shot plan sequence against it; single-shot briefs skip |
+| Treatment | 1 Film Director writes `reports/treatment.md` — motion/pacing/transition grammar, per-beat viewer intent, audio policy, and the subject's signature image with where it lands; Director approves or returns with tradeoffs (one round) | Director cites accepted tradeoffs; Art Director work and the shot plan sequence against it; single-shot briefs skip |
 | Proof and selection | Render styleframes and dispatch the reviewer only if the comparison is blocked or the visual risk is material; Director selects | Selection cites rendered evidence and tradeoffs, not majority vote or proposal length |
 | Shot planning | Director writes `reports/shotlist.md`; skip if brief is a single shot (record skip in one line) | Covers the script without inventing fixed shots/components/layouts |
 | Build and compile | Dispatch Builders per disjoint file domain (parallel when profitable); Director integrates and runs S1–S5 | All in scope implement; real exit codes captured |
