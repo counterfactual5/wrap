@@ -78,4 +78,15 @@
     a transparency mechanism, not an equivalent of `screen`/additive
     blending; verify the composited result visually.
 
+
+Part of the wrap skill — see skills/wrap/SKILL.md.
+
+17. **Gate PASS is not visual plausibility.** A shot can satisfy every
+    motion, purity, silence and freeze gate while the authored figure/object
+    reads as an unrelated blob, stick figure or scattered collection of
+    rectangles — the gate cannot see whether the silhouette coheres. Always
+    inspect the rendered output once with fresh eyes and ask: "does this look
+    like [the thing it claims to be]?" This single check will catch the
+    failure before release.
+
 Part of the wrap skill — see skills/wrap/SKILL.md.

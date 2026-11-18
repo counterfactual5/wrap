@@ -124,7 +124,7 @@ show:
 | Build | Dispatch builders per disjoint file domain; parallel when profitable | Any file-domain task that is non-trivial and has no owner |
 | Render | Director runs render | — |
 | Gates | Director runs gates; no subagent; fix loop only if failure — then dispatch the fix | Gate tells you *which file*; dispatch only that owner |
-| Rendered review | 0 or 1 fresh Visual Reviewer, only if the render is novel / error-prone / adjudication-blocking | Authoring blind spot likely: unusual camera, POV, typography, or a prior near-miss on the same brief |
+| Rendered review | 1 fresh Visual Reviewer **when the shot contains authored figures/objects/creatures** (e.g. puppet, character, vehicle, creature, instrument) **or the brief demands finished-quality publication**; required for any final delivery. 0 otherwise. | Any shot with authored figures/objects gets an independent plausibility check; any shot without them (plain text, pure diagram) uses the Director's self-check + the zero-template visual floor |
 | Final review | 1 fresh reviewer (T1/T2); T3 = self-review, labelled | verdict == fail → rewire; needs-work → owner re-renders |
 | Delivery | Director alone | — |
 
@@ -146,10 +146,10 @@ need a reason; free-riding needs none.
 | Research and script | Dispatch Screenwriter (+ Researcher **only when `kind` is scientific/educational and facts are load-bearing**; otherwise no Researcher); Director does not write the script in the main thread; may dispatch in parallel with Design exploration | `SCRIPT.md` exists; claims are sourced or explicitly labelled model-knowledge-unverified when `kind` requires auditing; progression and reading time work for the audience |
 | Design exploration | Dispatch 1–2 Art Directors when design space is genuinely open; otherwise 1; may dispatch in parallel with Research and script | Subject-led visual intent articulated; differences concern visual storytelling, not only palette |
 | Treatment | 1 Film Director writes `reports/treatment.md` — motion/pacing/transition grammar, per-beat viewer intent, audio policy, and the subject's signature image with where it lands; Director approves or returns with tradeoffs (one round) | Director cites accepted tradeoffs; Art Director work and the shot plan sequence against it; single-shot briefs skip |
-| Proof and selection | **Styleframe gate**: render ONE frame of the most visually complex element (a character, a hand, any organic form) BEFORE building the animation. If it doesn't read correctly, fix the visual or redesign the approach — do not animate an unreadable shape for 525 frames. Director selects after this gate. | The styleframe reads as its intended object at delivery size; only then does Build begin |
+| Proof and selection | Render styleframes and dispatch the reviewer only if the comparison is blocked or the visual risk is material; Director selects | Selection cites rendered evidence and tradeoffs, not majority vote or proposal length |
 | Shot planning | Director writes `reports/shotlist.md`; skip if brief is a single shot (record skip in one line) | Covers the script without inventing fixed shots/components/layouts |
 | Build and compile | Dispatch Builders per disjoint file domain (parallel when profitable); Director integrates and runs S1–S5 | All in scope implement; real exit codes captured |
-| Rendered review | 1 fresh Visual Reviewer when the render is novel / risky / adjudication-blocking; Director may self-check if a skip is logged | Reviewed artifacts passed; every defect has an owner |
+| Rendered review | 1 fresh Visual Reviewer **when the shot contains authored figures/objects/creatures (e.g. puppet, character, instrument, vehicle)** — this is **not optional**; Director may self-check only when all shots are purely textual/diagrammatic and a skip is logged | Reviewed artifacts passed; every defect has an owner |
 | Quality refinement | Director identifies the weakest passage; dispatch one bounded refinement for that passage only; record pass/fail | Before/after compared; improvement may REMOVE text/texture/motion/objects |
 | Final review and delivery | 1 fresh reviewer (T1/T2); T3 = self-review, labelled | All unresolved blockers are noted as such in `DELIVERY.md`; no silent pass |
 
@@ -163,17 +163,6 @@ both and the Director must reconcile any conflict between narrative and
 visual direction before accepting. If the design exploration requires
 scripts that only exist after Treatment, that is a different analysis,
 not a reason to serialize.
-
-**Medium-suitability check — before choosing procedural components.**
-Programmatic SVG/CSS excels at geometric subjects (grids, diagrams,
-isometric structures, flat design) and fails at organic forms (hands,
-faces, articulated bodies, flowing fabric). When the subject involves
-organic forms and no image-generation backend is available, this is a
-**medium mismatch**: either find an authorized image source, simplify the
-subject's visual language to work with geometry, or accept that the
-organic element will read as a symbol rather than a depiction. Do not
-discover this after rendering 525 frames — check it at the styleframe
-gate above.
 
 ### Zero-template quality contract
 
