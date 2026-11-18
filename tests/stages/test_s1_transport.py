@@ -8,6 +8,15 @@ Python files import.
 
 Test doubles, not network calls: the CLI is invoked through a patched
 subprocess.run so no real generation is billed or awaited.
+
+tests/fixtures/connector_schemas.json is the offline snapshot of the
+connector input schemas. It is copied from the live CLI, so refresh it with
+the commands below whenever the backend changes a schema:
+
+    mcode-tools connector tool connector__matrix__generate_image
+    mcode-tools connector tool connector__matrix__submit_video_generation
+
+(The CLI may print node warnings before the JSON — parse from the first '{'.)
 """
 import json
 import os
@@ -170,7 +179,9 @@ class TestGenerateRequestShape(unittest.TestCase):
                                    aspect_ratio="9:16", resolution="2K")
 
         req = captured["payload"]["requests"][0]
-        self.assertEqual(req["model"], "Test-Image")
+        # The backend schema has no `model` field: the model is a local
+        # capability key, not something the transport sends.
+        self.assertNotIn("model", req)
         self.assertEqual(req["aspect_ratio"], "9:16")
         self.assertEqual(req["area"], "2K")
         self.assertNotIn("resolution", req)
@@ -200,51 +211,127 @@ class TestGenerateRequestShape(unittest.TestCase):
         self.assertNotIn("input_urls", req)
 
 
-def _assert_matches_schema(tc, value, schema, path="root"):
-    """Validate a JSON value against a subset of JSON Schema (type, required,
-    properties, additionalProperties: false, enum, items, oneOf)."""
-    if "oneOf" in schema:
-        errors = []
-        for sub in schema["oneOf"]:
-            try:
-                _assert_matches_schema(tc, value, sub, path=path)
-                return
-            except AssertionError as ex:
-                errors.append(str(ex))
-        tc.fail(f"{path}: value {value!r} matched none of oneOf schemas: {errors}")
+def _schema_error(value, schema, path="root"):
+    """Return an error message if `value` violates `schema`, else None.
 
-    expected_type = schema.get("type")
-    if expected_type == "object":
-        tc.assertIsInstance(value, dict, f"{path}: expected object, got {type(value).__name__}")
-        for req_key in schema.get("required", ()):
-            tc.assertIn(req_key, value, f"{path}: missing required key {req_key!r}")
+    Covers the JSON Schema subset the live connector schemas actually use:
+    type, required, properties, additionalProperties:false, enum, const,
+    items, minItems/maxItems, minLength/maxLength, minimum/maximum, and the
+    combinators anyOf / oneOf / allOf / not / if-then-else. Object
+    constraints apply to every dict value even when the schema omits
+    "type" — the live schema writes its if/then conditions as bare
+    {"required": [...]} objects."""
+    if not isinstance(schema, dict):
+        return None
+
+    if "const" in schema and value != schema["const"]:
+        return f"{path}: {value!r} != const {schema['const']!r}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{path}: {value!r} not in enum {schema['enum']!r}"
+
+    for sub in schema.get("allOf", []):
+        err = _schema_error(value, sub, path)
+        if err:
+            return err
+
+    if "anyOf" in schema:
+        errs = []
+        for sub in schema["anyOf"]:
+            err = _schema_error(value, sub, path)
+            if err is None:
+                break
+            errs.append(err)
+        else:
+            return f"{path}: value {value!r} matched none of anyOf schemas: {errs}"
+
+    if "oneOf" in schema:
+        matched = sum(1 for sub in schema["oneOf"]
+                      if _schema_error(value, sub, path) is None)
+        if matched != 1:
+            return (f"{path}: value {value!r} matched {matched} of oneOf "
+                    f"schemas (exactly one required)")
+
+    if "not" in schema and _schema_error(value, schema["not"], path) is None:
+        return f"{path}: value {value!r} must not match the forbidden schema"
+
+    if "if" in schema:
+        branch = ("then" if _schema_error(value, schema["if"], path) is None
+                  else "else")
+        if branch in schema:
+            err = _schema_error(value, schema[branch], path)
+            if err:
+                return err
+
+    expected = schema.get("type")
+    if expected == "object" and not isinstance(value, dict):
+        return f"{path}: expected object, got {type(value).__name__}"
+    if expected == "array" and not isinstance(value, list):
+        return f"{path}: expected array, got {type(value).__name__}"
+    if expected == "string" and not isinstance(value, str):
+        return f"{path}: expected string, got {value!r}"
+    if expected == "integer" and (not isinstance(value, int)
+                                  or isinstance(value, bool)):
+        return f"{path}: expected integer, got {value!r}"
+    if expected == "number" and (not isinstance(value, (int, float))
+                                 or isinstance(value, bool)):
+        return f"{path}: expected number, got {value!r}"
+
+    if isinstance(value, dict):
+        for key in schema.get("required", ()):
+            if key not in value:
+                return f"{path}: missing required key {key!r}"
         props = schema.get("properties", {})
         if schema.get("additionalProperties") is False:
-            unknown = set(value.keys()) - set(props.keys())
-            tc.assertEqual(
-                unknown, set(),
-                f"{path}: unknown key(s) {sorted(unknown)} rejected by additionalProperties:false "
-                f"(allowed: {sorted(props.keys())})"
-            )
-        for k, v in value.items():
-            if k in props:
-                _assert_matches_schema(tc, v, props[k], path=f"{path}.{k}")
-    elif expected_type == "array":
-        tc.assertIsInstance(value, list, f"{path}: expected array, got {type(value).__name__}")
-        if "minItems" in schema:
-            tc.assertGreaterEqual(len(value), schema["minItems"], f"{path}: array too short")
-        if "maxItems" in schema:
-            tc.assertLessEqual(len(value), schema["maxItems"], f"{path}: array too long")
+            unknown = sorted(set(value) - set(props))
+            if unknown:
+                return (f"{path}: unknown key(s) {unknown} rejected by "
+                        f"additionalProperties:false (allowed: {sorted(props)})")
+        for key, sub_value in value.items():
+            if key in props:
+                err = _schema_error(sub_value, props[key], f"{path}.{key}")
+                if err:
+                    return err
+    elif isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            return f"{path}: array too short ({len(value)} < {schema['minItems']})"
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            return f"{path}: array too long ({len(value)} > {schema['maxItems']})"
         if "items" in schema:
             for idx, item in enumerate(value):
-                _assert_matches_schema(tc, item, schema["items"], path=f"{path}[{idx}]")
-    elif expected_type == "string":
-        tc.assertIsInstance(value, str, f"{path}: expected string, got {value!r}")
-        if "enum" in schema:
-            tc.assertIn(value, schema["enum"], f"{path}: {value!r} not in enum {schema['enum']}")
-    elif expected_type == "integer":
-        tc.assertTrue(isinstance(value, int) and not isinstance(value, bool),
-                      f"{path}: expected integer, got {value!r}")
+                err = _schema_error(item, schema["items"], f"{path}[{idx}]")
+                if err:
+                    return err
+    elif isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return f"{path}: string shorter than minLength {schema['minLength']}"
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return f"{path}: string longer than maxLength {schema['maxLength']}"
+    elif isinstance(value, int) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            return f"{path}: {value!r} < minimum {schema['minimum']}"
+        if "maximum" in schema and value > schema["maximum"]:
+            return f"{path}: {value!r} > maximum {schema['maximum']}"
+    return None
+
+
+def _assert_matches_schema(tc, value, schema, path="root"):
+    """Validate a JSON value against a connector input_schema."""
+    err = _schema_error(value, schema, path)
+    if err:
+        tc.fail(err)
+
+
+def _strip_annotations(schema):
+    """The schema without human-readable annotations (description/default).
+
+    Doc text may change server-side without changing the contract; the
+    structural part — fields, types, enums, required — must not drift."""
+    if isinstance(schema, dict):
+        return {k: _strip_annotations(v) for k, v in schema.items()
+                if k not in ("description", "default")}
+    if isinstance(schema, list):
+        return [_strip_annotations(v) for v in schema]
+    return schema
 
 
 class TestConnectorSchemaContract(unittest.TestCase):
@@ -253,9 +340,48 @@ class TestConnectorSchemaContract(unittest.TestCase):
 
     SNAPSHOT_PATH = os.path.join(ROOT, "tests", "fixtures", "connector_schemas.json")
 
+    # The live video schema constrains `model` to the backend's real model
+    # names, so a payload that must MATCH the schema has to use one of them —
+    # the shared synthetic fixture catalog ("Test-Max") cannot satisfy that
+    # enum. The capability entry below declares what the test payload needs.
+    LIVE_VIDEO_MODEL = "MiniMax-H3"
+    LIVE_VIDEO_MODELS = {
+        "MiniMax-H3": {"min_dur": 4, "max_dur": 15,
+                       "resolutions": ["768P", "2K"],
+                       "reference_types": ["first_frame", "last_frame"],
+                       "audio": True, "input_image": True, "last_frame": True,
+                       "reference_media": True},
+    }
+
     def _load_snapshot(self):
         with open(self.SNAPSHOT_PATH) as f:
             return json.load(f)
+
+    def _live_input_schema(self, tool_name):
+        """The live input_schema for one connector tool (skips if unreachable)."""
+        import shutil
+        if not shutil.which("mcode-tools"):
+            self.skipTest("mcode-tools CLI is not installed in this environment")
+        try:
+            proc = subprocess.run(
+                ["mcode-tools", "connector", "tool", tool_name],
+                capture_output=True, text=True, timeout=30
+            )
+        except Exception as ex:
+            self.skipTest(f"mcode-tools connector tool unreachable: {ex}")
+        if proc.returncode != 0 or not proc.stdout.strip():
+            self.skipTest(f"mcode-tools connector tool unavailable (code {proc.returncode})")
+        # The CLI may print node warnings before the JSON — parse from the
+        # first '{' instead of assuming the whole output is JSON.
+        raw = proc.stdout
+        start = raw.find("{")
+        if start < 0:
+            self.skipTest("mcode-tools output contained no JSON object")
+        try:
+            tool_info = json.loads(raw[start:])
+        except Exception as ex:
+            self.skipTest(f"mcode-tools output is not JSON: {ex}")
+        return tool_info.get("input_schema") or tool_info.get("inputSchema") or tool_info
 
     def _capture_image_payload(self, **kwargs):
         captured = {}
@@ -280,14 +406,16 @@ class TestConnectorSchemaContract(unittest.TestCase):
         captured = {}
         from tests.helpers import TEST_VIDEO_MODELS
         from core.generation import models
-        kwargs.setdefault("model", "Test-Max")
+        kwargs.setdefault("model", self.LIVE_VIDEO_MODEL)
         kwargs.setdefault("resolution", "768P")
+        catalog = dict(self.LIVE_VIDEO_MODELS)
+        catalog.update(TEST_VIDEO_MODELS)
 
         def fake_call(tool, payload, timeout=None):
             captured["payload"] = payload
             return {"task_id": "t-1", "status": "submitted"}
 
-        with mock.patch.dict(models.VIDEO_MODELS, TEST_VIDEO_MODELS), \
+        with mock.patch.dict(models.VIDEO_MODELS, catalog), \
                 mock.patch.object(gen_video, "_connector_call", side_effect=fake_call):
             s1.submit_video_generation("test video prompt", **kwargs)
         return captured["payload"]
@@ -298,9 +426,17 @@ class TestConnectorSchemaContract(unittest.TestCase):
 
         # 1. Text-to-image payload
         p1 = self._capture_image_payload(aspect_ratio="16:9", resolution="2K")
-        self.assertEqual(p1["requests"][0]["model"], "Test-Image")
+        req = p1["requests"][0]
+        # The backend schema has no `model` field: the payload must not carry
+        # one (it would only survive while the backend stays lenient).
+        self.assertNotIn("model", req)
+        for key in ("prompt", "aspect_ratio", "area", "output_file"):
+            self.assertIn(key, req)
+        self.assertEqual(req["prompt"], "test prompt")
+        self.assertEqual(req["aspect_ratio"], "16:9")
+        self.assertEqual(req["area"], "2K")
         _assert_matches_schema(self, p1, schema)
-        for k in p1["requests"][0]:
+        for k in req:
             self.assertIn(k, req_props)
 
         # 2. Image-to-image payload with reference_images
@@ -308,6 +444,7 @@ class TestConnectorSchemaContract(unittest.TestCase):
             aspect_ratio="9:16", resolution="4K",
             input_urls=["https://example.invalid/ref.png"]
         )
+        self.assertNotIn("model", p2["requests"][0])
         _assert_matches_schema(self, p2, schema)
 
         # 3. Regression guard: legacy 'resolution' or 'input_urls' keys must fail the schema check
@@ -320,51 +457,90 @@ class TestConnectorSchemaContract(unittest.TestCase):
         schema = self._load_snapshot()["connector__matrix__submit_video_generation"]["input_schema"]
 
         # 1. Text-to-video payload
-        v1 = self._capture_video_payload(model="Test-Max", duration=6, ratio="9:16", resolution="768P")
+        v1 = self._capture_video_payload(model=self.LIVE_VIDEO_MODEL, duration=6,
+                                         ratio="9:16", resolution="768P")
+        self.assertEqual(v1["model"], self.LIVE_VIDEO_MODEL)
         _assert_matches_schema(self, v1, schema)
 
         # 2. Keyframe first_frame + last_frame payload
         v2 = self._capture_video_payload(
-            model="Test-Max", duration=6, resolution="768P",
+            model=self.LIVE_VIDEO_MODEL, duration=6, resolution="768P",
             input_image={"url": "https://example.invalid/first.png"},
             last_frame_image={"url": "https://example.invalid/last.png"},
             reference_images=[{"url": "https://example.invalid/ref1.png"}],
         )
+        self.assertEqual(v2["model"], self.LIVE_VIDEO_MODEL)
         _assert_matches_schema(self, v2, schema)
         self.assertEqual(v2["ratio"], "adaptive")
         self.assertEqual(v2["reference_type"], "first_frame")
 
-    def test_02_live_mcode_tools_schema_matches_payload_and_snapshot(self):
-        import shutil
-        if not shutil.which("mcode-tools"):
-            self.skipTest("mcode-tools CLI is not installed in this environment")
-        try:
-            proc = subprocess.run(
-                ["mcode-tools", "connector", "tool", "connector__matrix__generate_image"],
-                capture_output=True, text=True, timeout=15
-            )
-        except Exception as ex:
-            self.skipTest(f"mcode-tools connector tool unreachable: {ex}")
-        if proc.returncode != 0 or not proc.stdout.strip():
-            self.skipTest(f"mcode-tools connector tool unavailable (code {proc.returncode})")
-        try:
-            tool_info = json.loads(proc.stdout)
-        except Exception as ex:
-            self.skipTest(f"mcode-tools output is not JSON: {ex}")
+        # The live schema pins `model` to the backend's real model names and
+        # constrains resolution/duration per model — a payload that ignores
+        # those must fail the contract check.
+        with self.assertRaises(AssertionError):
+            _assert_matches_schema(self, dict(v1, model="Test-Max"), schema)
+        with self.assertRaises(AssertionError):
+            _assert_matches_schema(self, dict(v1, resolution="1080P"), schema)
 
-        live_schema = tool_info.get("input_schema") or tool_info.get("inputSchema") or tool_info
+    def test_02_live_mcode_tools_schema_matches_payload_and_snapshot(self):
+        live_schema = self._live_input_schema("connector__matrix__generate_image")
         req_schema = ((live_schema.get("properties") or {}).get("requests") or {}).get("items") or {}
         live_props = req_schema.get("properties") or {}
         if not live_props:
             self.skipTest("live tool schema did not contain requests.items.properties")
+        self.assertNotIn("model", live_props,
+                         "the live image schema no longer declares a `model` field")
 
         for payload in (
             self._capture_image_payload(aspect_ratio="16:9", resolution="2K"),
             self._capture_image_payload(aspect_ratio="9:16", resolution="2K", input_urls=["https://example.invalid/a.png"]),
         ):
             req = payload["requests"][0]
+            self.assertNotIn("model", req)
             for k in req:
                 self.assertIn(k, live_props, f"payload key {k!r} not in live requests[].properties")
+
+    def test_03_image_request_keys_are_declared_and_model_is_not(self):
+        """Regression guard: every key the image transport sends must be a
+        declared field of the schema, and the removed `model` must stay out
+        of both the schema and the payload."""
+        schema = self._load_snapshot()["connector__matrix__generate_image"]["input_schema"]
+        req_props = schema["properties"]["requests"]["items"]["properties"]
+        self.assertNotIn("model", req_props,
+                         "the snapshot still advertises `model` — the backend "
+                         "schema has no such field")
+        for payload in (
+            self._capture_image_payload(aspect_ratio="16:9", resolution="2K"),
+            self._capture_image_payload(aspect_ratio="9:16", resolution="4K",
+                                        input_urls=["https://example.invalid/ref.png"]),
+        ):
+            req = payload["requests"][0]
+            self.assertNotIn("model", req, "the image payload must not send `model`")
+            for key in req:
+                self.assertIn(key, req_props,
+                              f"payload key {key!r} is not declared in the schema")
+
+        # The schema itself rejects the removed field — so a payload that
+        # carried `model` would be refused by a strict backend.
+        with self.assertRaises(AssertionError):
+            _assert_matches_schema(
+                self, {"requests": [{"prompt": "x", "model": "Test-Image"}]}, schema)
+
+    def test_04_offline_snapshot_matches_live_schema(self):
+        """The offline snapshot must stay same-source with the live schema.
+
+        Doc text may change server-side; the structural contract (fields,
+        types, enums, required) must not drift without a snapshot refresh."""
+        snapshot = self._load_snapshot()
+        for tool_name in ("connector__matrix__generate_image",
+                          "connector__matrix__submit_video_generation"):
+            with self.subTest(tool=tool_name):
+                live = self._live_input_schema(tool_name)
+                self.assertEqual(
+                    _strip_annotations(live),
+                    _strip_annotations(snapshot[tool_name]["input_schema"]),
+                    f"{tool_name} snapshot is stale — refresh it with "
+                    f"`mcode-tools connector tool {tool_name}`")
 
 
 if __name__ == "__main__":

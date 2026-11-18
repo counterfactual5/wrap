@@ -12,6 +12,10 @@ Model / aspect / area are NEVER defaulted here: the call carries the
 explicit values the stage resolved (core/generation/models.py), or the
 env-declared ones. The connector tool is a transport adapter — it does not
 discover models or capabilities, and neither does this module.
+
+The image `model` stays LOCAL: it selects the declared aspect_ratio / area
+ladders, but the backend's input schema has no `model` field (and requests[]
+forbids additional properties), so the model name is never sent.
 """
 import json
 import os
@@ -132,9 +136,16 @@ def call_generate_image(prompt, asset_name, aspect_ratio=None, resolution=None,
     env-provided default (core/generation/models.py:resolve_image_model),
     the aspect and area from explicit arguments, env capabilities, or the
     model's sole declared value — and an empty prompt is refused before any
-    bytes move. The connector tool below is a transport adapter; the 'model'
-    field in the request is an explicit schema parameter, not a discovery
-    hook.
+    bytes move. The connector tool below is a transport adapter.
+
+    `model` is a LOCAL capability key, not a request field. It is resolved
+    against the declared image catalog (resolve_image_model refuses a model
+    that is not declared) and it selects the aspect_ratio / area ladders
+    (resolve_image_aspect / resolve_image_area), so the `image_models`
+    capability declaration still constrains the call. It is deliberately NOT
+    sent to the backend: the connector's input schema has no `model` field
+    and requests[] rejects additional properties, so a request carrying one
+    only survives while the backend stays lenient.
     """
     if not (prompt or "").strip():
         raise RuntimeError(
@@ -148,7 +159,10 @@ def call_generate_image(prompt, asset_name, aspect_ratio=None, resolution=None,
     os.makedirs(tmp_dir, exist_ok=True)
     gen_file = os.path.join(tmp_dir, "gen.json")
     request = {
-        "model": model,
+        # No `model` field: the backend's requests[] schema has none and
+        # forbids additional properties. The model is not dead weight — it
+        # was resolved above against the declared capability catalog and it
+        # decided the aspect_ratio / area ladders sent here.
         "prompt": prompt.strip(),
         "aspect_ratio": aspect_ratio,
         "area": resolution,
