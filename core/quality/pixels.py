@@ -116,14 +116,28 @@ def changed_pixel_ratios(src, w, h, luma_delta=None, extra_in=(), exclude_band=N
     return dedup_cadence_ratios(out) if dedup_cadence else out
 
 
+# Per-channel tolerance for the accent-colour mask. One value for every
+# channel: the mask must not privilege red, or the same gate measures a
+# saturated accent far more loosely than a desaturated one (a neutral grey
+# used to accept a 70px band on red and 40px on green/blue, so its shadowed
+# pixels fell outside the mask and the measured ratio came out low).
+COLOR_MASK_TOL = 40
+
+
 def _mask_tables(rgb_hex):
     """Per-channel 0/1 translate tables for 'pixel is close to this color'.
-    Derived from the spec's layer color, not hardcoded red: hue is kept by
-    requiring the dominant channel high and the other two low, each within a
-    tolerance band around the target channel values."""
+    Derived from the spec's layer color, not hardcoded red.
+
+    Each channel gets the SAME tolerance band around its own target value,
+    so the mask is invariant under channel permutation: swapping the red and
+    green components of the target swaps the accepted set the same way. The
+    "dominant channel high, the others low" property the mask is meant to
+    keep falls out of the target's own values — the channel whose target is
+    high only accepts high values, and the low ones only accept low values —
+    rather than from privileging one channel by name."""
     r0, g0, b0 = rgb_hex
-    tol = 40
-    t_r = bytes(1 if abs(v - r0) <= tol + 30 else 0 for v in range(256))
+    tol = COLOR_MASK_TOL
+    t_r = bytes(1 if abs(v - r0) <= tol else 0 for v in range(256))
     t_g = bytes(1 if abs(v - g0) <= tol else 0 for v in range(256))
     t_b = bytes(1 if abs(v - b0) <= tol else 0 for v in range(256))
     return t_r, t_g, t_b
