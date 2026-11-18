@@ -6,7 +6,6 @@ export type Anim = Partial<Record<'x' | 'y' | 'scale' | 'opacity' | 'rotate' | '
 export type GeometricMotion = {
   type: 'geometric';
   zoom?: [number, number];
-  pan?: [number, number];
 };
 export type PoseSpec = {frame: number; asset: string};
 export type SpringSpec = {

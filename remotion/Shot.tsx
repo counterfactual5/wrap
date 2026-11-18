@@ -113,15 +113,20 @@ const LayerNode: React.FC<{
 const MediaLayer: React.FC<{layer: AiLayer | VideoLayer; src: string}> = ({layer, src}) => {
   const frame = useCurrentFrame();
   const {durationInFrames, fps} = useVideoConfig();
+  // motion.zoom is a live capability: the contract accepts it for prepared
+  // media (core/spec/layers.py) and the renderer interpolates it below.
+  // motion.pan is NOT: the contract removed it and refuses it with
+  // "migration required: motion.pan removed; use anim.x". The renderer
+  // must not apply it either — an implicit render of a removed word is a
+  // contract hole. The sanctioned channel is anim.x, which the layer
+  // transform chain already applies (LayerNode -> evalLayerTransform).
   const zoom = layer.motion?.zoom ?? [1, 1];
-  const pan = layer.motion?.pan ?? [0, 0];
   const end = Math.max(1, durationInFrames - 1);
   const scale = interpolate(frame, [0, end], zoom);
-  const x = interpolate(frame, [0, end], pan);
   const style: React.CSSProperties = {
     position: 'absolute', width: '100%', height: '100%',
     objectFit: layer.fit ?? 'cover',
-    transform: `translateX(${x}px) scale(${scale})`,
+    transform: `scale(${scale})`,
     transformOrigin: 'center',
   };
   return <div style={{position: 'absolute', left: layer.rect[0], top: layer.rect[1],

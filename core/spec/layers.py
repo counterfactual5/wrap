@@ -30,27 +30,45 @@ def zoom_supported(layer):
     return layer.get("type") in ("ai", "video")
 
 
-def _check_img_ref(lid, ref_val, field_label, kind_label, layer_by_id, ai_asset_set, errs):
+def _check_manifest_asset_name(lid, value, field_label, kind_label, errs):
+    """A manifest asset name is a BARE name: no path, no `.png` suffix.
+
+    The ledger keys assets by that bare name (`assets/<name>.png` on disk),
+    so a name carrying a path or an extension can never be found in it and
+    would only fail much later, in S1/S2, as "no verified asset in manifest".
+    """
     e = errs.append
-    if not isinstance(ref_val, str) or not ref_val.strip():
+    if not isinstance(value, str) or not value.strip():
         e(f"{lid}: {field_label} must be a non-empty string")
+        return False
+    if "/" in value or value.endswith(".png") or not valid_name(value):
+        kind = f"{kind_label} " if kind_label else ""
+        e(f"{lid}: {kind}{field_label} must name a manifest asset (got {value!r})")
+        return False
+    return True
+
+
+def _check_img_ref(lid, ref_val, field_label, kind_label, layer_by_id, errs):
+    e = errs.append
+    if not _check_manifest_asset_name(lid, ref_val, field_label, kind_label, errs):
         return
-    if "/" in ref_val or ref_val.endswith(".png") or not valid_name(ref_val):
-        e(f"{lid}: {kind_label} {field_label} must name a manifest asset (got {ref_val!r})")
-        return
-    if ref_val in layer_by_id and ref_val not in ai_asset_set:
+    if ref_val in layer_by_id:
+        # The name may be an ai layer's id — S1 uploads that layer's own
+        # image as the source. Any other layer kind has no image to hand
+        # over, so a component/video layer is refused here rather than
+        # silently producing a broken request.
         target_l = layer_by_id[ref_val]
         if target_l.get("type") != "ai":
             e(f"{lid}: {field_label} must reference an ai layer or a frozen image asset")
 
 
-def _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs):
+def _validate_ai_layer(L, lid, layer_by_id, errs):
     e = errs.append
     if not L.get("asset"):
         e(f"{lid}: ai layer needs 'asset'")
     if L.get("blend") not in BLENDS:
         e(f"{lid}: blend is required, one of {sorted(BLENDS)}")
-    if not HEX.match(L.get("keyColor", "")):
+    if not HEX.fullmatch(str(L.get("keyColor", ""))):
         e(f"{lid}: keyColor must be #rrggbb")
     p = L.get("prompt")
     if p is not None and not isinstance(p, str):
@@ -94,15 +112,14 @@ def _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs):
                     e(f"{lid}: poses frames must be strictly increasing")
                     break
                 prev_pf = pf
-                if not valid_name(pa):
-                    e(f"{lid}: poses[{pidx}].asset must be a valid asset name (got {pa!r})")
+                if not _check_manifest_asset_name(lid, pa, f"poses[{pidx}].asset", "", errs):
                     break
     src = L.get("input_asset")
     if src is not None:
         # Image-to-image: the source must be a frozen local asset, another
         # ai layer, or a static code layer (grid/dots), so S1 can upload it
         # and hand the backend a reachable URL.
-        _check_img_ref(lid, src, "input_asset", "ai", layer_by_id, ai_asset_set, errs)
+        _check_img_ref(lid, src, "input_asset", "ai", layer_by_id, errs)
     for rk, max_cnt in (("reference_images", 16), ("reference_assets", 16)):
         if rk in L and L[rk] is not None:
             rlist = L[rk]
@@ -110,10 +127,10 @@ def _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs):
                 e(f"{lid}: ai {rk} must be a list of 1..{max_cnt} asset/layer names")
             else:
                 for item in rlist:
-                    _check_img_ref(lid, item, rk, "ai", layer_by_id, ai_asset_set, errs)
+                    _check_img_ref(lid, item, rk, "ai", layer_by_id, errs)
 
 
-def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs, generation_model=None):
+def _validate_video_layer(L, lid, layer_by_id, errs, generation_model=None):
     e = errs.append
     # A video layer references a frozen video asset (mp4). It has no
     # key color: edge keying is a still-image concept, so the purity
@@ -175,7 +192,7 @@ def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs, generation_mo
     ff_key = next((k for k in ("first_frame", "input_asset", "input_image") if k in L and L[k] is not None), None)
     ff_val = L.get(ff_key) if ff_key else None
     if ff_key is not None:
-        _check_img_ref(lid, ff_val, ff_key, "video", layer_by_id, ai_asset_set, errs)
+        _check_img_ref(lid, ff_val, ff_key, "video", layer_by_id, errs)
         if eff_model and not models.video_supports_input_image(eff_model):
             e(f"{lid}: {eff_model} does not support {ff_key}")
         if ratio is not None and ratio != "adaptive":
@@ -184,7 +201,7 @@ def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs, generation_mo
     lf_key = next((k for k in ("last_frame", "last_frame_image", "last_frame_asset") if k in L and L[k] is not None), None)
     lf_val = L.get(lf_key) if lf_key else None
     if lf_key is not None:
-        _check_img_ref(lid, lf_val, lf_key, "video", layer_by_id, ai_asset_set, errs)
+        _check_img_ref(lid, lf_val, lf_key, "video", layer_by_id, errs)
         if ff_key is None:
             e(f"{lid}: {lf_key} requires first_frame / input_image")
         if eff_model and not models.video_supports_last_frame(eff_model):
@@ -214,7 +231,7 @@ def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs, generation_mo
                 e(f"{lid}: {rk} must be a list of 1..{max_cnt} asset/layer names")
             else:
                 for item in rlist:
-                    _check_img_ref(lid, item, rk, "video", layer_by_id, ai_asset_set, errs)
+                    _check_img_ref(lid, item, rk, "video", layer_by_id, errs)
 
     # reference_videos / reference_audios are accepted by the backend,
     # but S1 cannot resolve a video or audio SOURCE: they are not
@@ -229,7 +246,7 @@ def _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs, generation_mo
               f"dropped from the request. Use reference_images instead.")
 
 
-def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
+def validate_layer(L, spec, ids, zs, layer_by_id, errs):
     """Validate one layer of a shot, appending any problem to `errs`."""
     e = errs.append
     if not isinstance(L, dict):
@@ -251,10 +268,20 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
     if asset is not None and not valid_name(asset):
         e(f"{lid}: asset must be a letters/digits/._- string (got {asset!r}) "
           f"— it names a file under assets/")
-    if L.get("z") in zs:
-        e(f"{lid}: duplicate z {L.get('z')}")
-    zs.add(L.get("z"))
-    if L.get("type") not in constants.LAYER_TYPES:
+    z = L.get("z")
+    if isinstance(z, bool) or not isinstance(z, int):
+        # The renderer stacks the layers by z (remotion/Shot.tsx sorts on
+        # it). A missing or non-integer z sorts as NaN and leaves the
+        # stacking order to chance, so it is refused here instead.
+        e(f"{lid}: z must be an int (the renderer stacks layers by z) — got {z!r}")
+    else:
+        if z in zs:
+            e(f"{lid}: duplicate z {z}")
+        zs.add(z)
+    ltype = L.get("type")
+    if not isinstance(ltype, str):
+        e(f"{lid}: type must be a string (got {ltype!r})")
+    elif ltype not in constants.LAYER_TYPES:
         e(f"{lid}: migration required: type must be one of {sorted(constants.LAYER_TYPES)}; author legacy visuals as project components")
     r = L.get("rect")
     if not (isinstance(r, list) and len(r) == 4 and all(isinstance(v, int) for v in r)):
@@ -335,9 +362,9 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
                     if isinstance(rval, bool) or not isinstance(rval, (int, float)) or rval <= 0:
                         e(f"{lid}: kit.{k_rad} must be a positive number")
     if L.get("type") == "ai":
-        _validate_ai_layer(L, lid, layer_by_id, ai_asset_set, errs)
+        _validate_ai_layer(L, lid, layer_by_id, errs)
     if L.get("type") == "video":
-        _validate_video_layer(L, lid, layer_by_id, ai_asset_set, errs)
+        _validate_video_layer(L, lid, layer_by_id, errs)
     if "anim" in L:
         validate_anim(L["anim"], lid, errs)
     if "spring" in L and L["spring"] is not None:
@@ -358,21 +385,28 @@ def validate_layer(L, spec, ids, zs, layer_by_id, ai_asset_set, errs):
             e(f"{lid}: component props must be an object")
     m = L.get("motion")
     if m is not None:
-        if m.get("type") != "geometric":
+        if not isinstance(m, dict):
+            e(f"{lid}: motion must be an object (got {m!r})")
+        elif m.get("type") != "geometric":
             e(f"{lid}: motion.type must be 'geometric' (numbers, not prose)")
-        z = m.get("zoom")
-        if z is not None and not (len(z) == 2 and all(isinstance(v, (int, float)) for v in z) and z[0] >= 1 and z[1] >= 1):
-            e(f"{lid}: zoom must be [from,to] numbers >= 1")
-        p = m.get("pan")
-        if p is not None and not (len(p) == 2 and all(isinstance(v, (int, float)) for v in p)):
-            e(f"{lid}: pan must be [xFrom,xTo] numbers")
-        if z is not None and not zoom_supported(L):
-            # The validator must not refuse what the renderer can do — and
-            # must not promise what it cannot. The message names the layer
-            # kind so the author knows which channel to use instead.
-            e(f"{lid}: zoom is unsupported; use anim.scale")
-        if p is not None:
-            e(f"{lid}: migration required: motion.pan removed; use anim.x")
+        else:
+            z = m.get("zoom")
+            if z is not None and not (isinstance(z, list) and len(z) == 2
+                                      and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                              for v in z) and z[0] >= 1 and z[1] >= 1):
+                e(f"{lid}: zoom must be [from,to] numbers >= 1")
+            p = m.get("pan")
+            if p is not None and not (isinstance(p, list) and len(p) == 2
+                                      and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                              for v in p)):
+                e(f"{lid}: pan must be [xFrom,xTo] numbers")
+            if z is not None and not zoom_supported(L):
+                # The validator must not refuse what the renderer can do — and
+                # must not promise what it cannot. The message names the layer
+                # kind so the author knows which channel to use instead.
+                e(f"{lid}: zoom is unsupported; use anim.scale")
+            if p is not None:
+                e(f"{lid}: migration required: motion.pan removed; use anim.x")
 
 
 def validate_video_generation(layer, model):
@@ -382,5 +416,5 @@ def validate_video_generation(layer, model):
     resolution = layer.get("resolution")
     if resolution is not None and resolution not in models.video_resolutions(model):
         errors.append(f"{model}: unsupported resolution {resolution!r}")
-    _validate_video_layer(layer, layer.get("id", "?"), {}, set(), errors, generation_model=model)
+    _validate_video_layer(layer, layer.get("id", "?"), {}, errors, generation_model=model)
     return errors
