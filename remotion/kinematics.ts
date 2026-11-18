@@ -74,6 +74,11 @@ const selectAnimChannel = (anim: Anim | undefined, name: string): Keyframe[] | u
   }
 };
 
+// A spring field that is present but null is as undeclared as a missing one:
+// the engine ships no defaults, so both must fail loudly. `??` cannot catch
+// this — it merges null *and* undefined into a default.
+const isUndeclared = (v: unknown): v is undefined | null => v === undefined || v === null;
+
 const computeSpringOffset = (
   layer: Layer,
   parentLayer: Layer | undefined,
@@ -82,9 +87,9 @@ const computeSpringOffset = (
 ): number => {
   const sp = layer.spring;
   if (!sp) return 0.0;
-  if (sp.omega === undefined || sp.zeta === undefined || sp.coupling === undefined ||
-      sp.maxAccel === undefined || sp.channel === undefined || sp.driverChannel === undefined) {
-    throw new Error(`spring on ${layer.id} is incomplete; the engine ships no defaults — declare omega, zeta, coupling, maxAccel, channel, driverChannel`);
+  if (isUndeclared(sp.omega) || isUndeclared(sp.zeta) || isUndeclared(sp.coupling) ||
+      isUndeclared(sp.maxAccel) || isUndeclared(sp.channel) || isUndeclared(sp.driverChannel)) {
+    throw new Error(`spring on ${layer.id} is incomplete (missing or null); the engine ships no defaults — declare omega, zeta, coupling, maxAccel, channel, driverChannel`);
   }
   const omega = sp.omega;
   const zeta = sp.zeta;
@@ -127,7 +132,9 @@ export const evalLayerTransform = (
 
   const parentLayer = layer.parent ? layerMap[layer.parent] : undefined;
   const spOffset = computeSpringOffset(layer, parentLayer, frame, fps);
-  const spCh = layer.spring?.channel ?? 'rotate';
+  // computeSpringOffset has already rejected an undeclared channel, so a
+  // declared spring always carries a real channel name here.
+  const spCh = layer.spring ? layer.spring.channel : 'rotate';
   let sx = s.x;
   let sy = s.y;
   let srot = s.rotate;
