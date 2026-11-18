@@ -188,3 +188,71 @@ class TestTimelineContinuityValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestComponentCharacterCoverage(unittest.TestCase):
+    """verify-blocking covers component character layers; verify_puppet_rig covers component rigs."""
+
+    def test_blocking_covers_component_characters(self):
+        from core.rig import verify_stage_blocking
+        spec = {
+            "id": "comp",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 10,
+            "layers": [
+                {"id": "warrior", "type": "component", "component": "Warrior",
+                 "role": "humanoid", "rect": [10, 100, 200, 400], "z": 0,
+                 "keyColor": "#ffffff", "blend": "normal", "blockCore": [0.2, 0.8]},
+                {"id": "sage", "type": "component", "component": "Sage",
+                 "role": "humanoid", "rect": [30, 100, 200, 400], "z": 1,
+                 "keyColor": "#ffffff", "blend": "normal", "blockCore": [0.2, 0.8]},
+            ],
+            "gates": [],
+        }
+        res = verify_stage_blocking(spec)
+        self.assertFalse(res["passed"], res)
+        self.assertTrue(any("overlap" in e.lower() or "warrior" in e.lower() for e in res["errors"]), res["errors"])
+
+    def test_blocking_disjoint_component_characters_pass(self):
+        from core.rig import verify_stage_blocking
+        spec = {
+            "id": "comp",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 10,
+            "layers": [
+                {"id": "a", "type": "component", "component": "A",
+                 "role": "humanoid", "rect": [0, 100, 200, 400], "z": 0,
+                 "keyColor": "#ffffff", "blend": "normal", "blockCore": [0.2, 0.8]},
+                {"id": "b", "type": "component", "component": "B",
+                 "role": "humanoid", "rect": [400, 100, 200, 400], "z": 1,
+                 "keyColor": "#ffffff", "blend": "normal", "blockCore": [0.2, 0.8]},
+            ],
+            "gates": [],
+        }
+        res = verify_stage_blocking(spec)
+        self.assertTrue(res["passed"], res)
+
+    def test_puppet_rig_covers_component_rig(self):
+        from core.rig.verification import puppet as puppet_mod
+        spec = {
+            "id": "comp",
+            "canvas": {"w": 1080, "h": 1920},
+            "fps": 30,
+            "durationInFrames": 10,
+            "layers": [
+                {"id": "body", "type": "component", "component": "Body",
+                 "role": "humanoid", "rect": [0, 0, 400, 600], "z": 0,
+                 "keyColor": "#ffffff", "blend": "normal", "blockCore": [0.2, 0.8],
+                 "kit": {"socket": [200, 200]}},
+                {"id": "arm", "type": "component", "component": "Arm",
+                 "role": "humanoid", "parent": "body", "rect": [0, 0, 400, 600], "z": 1,
+                 "keyColor": "#ffffff", "blend": "normal", "blockCore": [0.4, 0.6],
+                 "kit": {"socket": [200, 200], "joint": [150, 250]}},
+            ],
+            "gates": [],
+        }
+        res = puppet_mod.verify_puppet_rig(spec, out_dir="build/test-inspect")
+        self.assertIn("joints", res, res)
+        # component pairs should produce results, not be skipped
+        self.assertTrue(len(res["joints"]) >= 1 or any("missing" not in e.lower() for e in res["errors"]), res)

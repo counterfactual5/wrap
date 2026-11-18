@@ -35,43 +35,50 @@ def verify_puppet_rig(spec, out_dir="build/inspect", tolerance=4):
             errors.append(f"{L['id']}: missing socket or joint in kit configuration")
             continue
 
-        # Get parent asset and child asset dimensions
+        # Get parent asset and child asset dimensions. Asset-backed layers were
+        # pixel assets whose size came from the manifest (older rows don't carry it, so
+        # read it from the file). Project components have no pixel assets at all — the
+        # layer's `rect` IS its canvas boundary; treat that as the source size so the
+        # same scale=1.0 math applies.
         par_asset = par.get("asset")
         child_asset = L.get("asset")
-        par_row = manifest.verified("assets", par_asset)
-        child_row = manifest.verified("assets", child_asset)
+        has_asset = (par_asset is not None) or (child_asset is not None)
 
-        if not par_row or not child_row:
-            errors.append(f"{L['id']}: missing verified manifest asset for parent ({par_asset}) or child ({child_asset})")
-            continue
+        if not has_asset:
+            par_rect = par.get("rect")
+            child_rect_ = L.get("rect")
+            if not par_rect or not child_rect_:
+                errors.append(f"{L['id']}: component pair missing 'rect' (parent or child)")
+                continue
+            par_size = (par_rect[2], par_rect[3])
+            child_size = (child_rect_[2], child_rect_[3])
+        else:
+            par_row = manifest.verified("assets", par_asset) if par_asset else None
+            child_row = manifest.verified("assets", child_asset) if child_asset else None
+            if not par_row or not child_row:
+                errors.append(f"{L['id']}: missing verified manifest asset for parent ({par_asset}) or child ({child_asset})")
+                continue
 
-        # Get parent asset and child asset dimensions. The manifest row does
-        # NOT always carry the source size — assets frozen before S1 started
-        # recording it have no "size" field — so read it from the file, the
-        # same way core.spec.resolution.resolve_joints does. The manifest is the
-        # authority on WHICH file is frozen; the file is the authority on
-        # its dimensions. Reading the row blindly crashed with a KeyError on
-        # every rigged shot.
-        def _source_size(row):
-            if not row:
-                return None
-            size = row.get("size")
-            if (isinstance(size, (list, tuple)) and len(size) == 2
-                    and size[0] > 0 and size[1] > 0):
-                return (int(size[0]), int(size[1]))
-            try:
-                w, h = read_size(os.path.join(ROOT, row["path"]))
-                return (int(w), int(h))
-            except (OSError, ValueError, KeyError, TypeError):
-                return None
+            def _source_size(row):
+                if not row:
+                    return None
+                size = row.get("size")
+                if (isinstance(size, (list, tuple)) and len(size) == 2
+                        and size[0] > 0 and size[1] > 0):
+                    return (int(size[0]), int(size[1]))
+                try:
+                    w, h = read_size(os.path.join(ROOT, row["path"]))
+                    return (int(w), int(h))
+                except (OSError, ValueError, KeyError, TypeError):
+                    return None
 
-        par_size = _source_size(par_row)
-        child_size = _source_size(child_row)
-        if not par_size or not child_size:
-            errors.append(
-                f"{L['id']}: could not read the source size of parent ({par_asset}) "
-                f"or child ({child_asset}) — the asset file is missing or unreadable")
-            continue
+            par_size = _source_size(par_row)
+            child_size = _source_size(child_row)
+            if not par_size or not child_size:
+                errors.append(
+                    f"{L['id']}: could not read the source size of parent ({par_asset}) "
+                    f"or child ({child_asset}) — the asset file is missing or unreadable")
+                continue
         par_rect = par.get("rect", [0, 0, par_size[0], par_size[1]])
         part_scale = L.get("partScale", 1.0)
 

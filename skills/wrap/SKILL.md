@@ -447,20 +447,21 @@ list (`validate`, `inspect-sprite`, `derive-poses`, `unpack-kit`, …).
 For multi-part image rigs (characters, puppets, props) the engine provides
 generic geometry — no acting presets and no material model:
 
-- **Parenting & sockets** — a child layer: `parent`, `joint` (in child asset
-  pixels), `pivot` (in canvas coordinates); the parent declares `sockets`.
-  `pipeline.py snap-joint` computes the exact `rect`/`pivot`;
-  `verify-rig` checks alignment against its configured tolerance (inspect CLI defaults).
+- **`verify-rig`** — skeletal puppet joint alignment, socket calibration,
+  rendered diagnostic overlay. Asset-backed layers verify against the frozen
+  manifest; project component layers verify against their declared `rect`.
+  Both paths use the same `snap_socket_joint` math (scale=1.0 for components).
 - **`poses`** — frame-switched sprite swaps on an `ai` layer.
 - **`spring`** — secondary motion (inertia lag/overshoot) driven by a
   channel of the parent.
 - **`verify-blocking`** — co-planar characters must not overlap in the same
-  horizontal lane (`--max-overlap`, `--min-visible-opacity`). The torso band
-  is a measurement, not a guess: for asset layers it is derived from the
-  opaque-pixel bounding box; for asset-less characters it is declared as
-  `blockCore` [leftFrac, rightFrac] in [0,1] on the layer — missing is a
-  failed verdict, not a fallback. Exemptions are declared (`role: "prop"`
-  or invisible characters); no guessed choreography exemptions.
+  horizontal lane (`--max-overlap`, `--min-visible-opacity`). Discovers
+  `ai` + `cutout` characters and `component` + `role` humanoid/quadruped/mech
+  characters. The torso band is measured: for asset layers it is derived from
+  the opaque-pixel bounding box; for asset-less and component characters it
+  is declared as `blockCore` [leftFrac, rightFrac] in [0,1] on the layer —
+  missing is a failed verdict, not a fallback. Exemptions are declared
+  (`role: "prop"` or invisible characters); no guessed exemptions.
 - **`verify-combat`** — weapon-tip/target contact on the `tracks.events`
   `kind: "contact"` frames. Weapon geometry is declared, never guessed:
   `spec.combat` carries `attacker`/`weapon`/`target`, `tipOffset` (tip vs

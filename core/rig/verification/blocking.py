@@ -15,21 +15,24 @@ from ..sprites import source_to_canvas_pivot, sprite_bbox
 def verify_stage_blocking(spec, max_overlap_px=12.0,
                           min_visible_opacity=DEFAULT_MIN_VISIBLE_OPACITY,
                           torso_trim=0.12, min_span_px=40.0):
-    """Verify that co-planar 2D cutout characters do not overlap horizontally on the stage plane.
+    """Verify that co-planar 2D cutout/character layers do not overlap horizontally on the stage plane.
 
     When two upright characters' torsos overlap horizontally (`overlap_x >
     max_overlap_px`), their translucent/multiply layers muddy together into
     an unreadable silhouette.
 
     Rules (domain-agnostic — measurements are derived, never guessed):
-    - Discovers all root cutout character layers (`type == 'ai'`, `cutout == True`, `parent is None`).
+    - Discovers all root character layers: `type == 'ai'` with `cutout == True`,
+      or `type == 'component'` with `role` in `{humanoid, quadruped, mech}`,
+      with no `parent` and not `prop`.
     - Torso interval: for assets, derived from the opaque-pixel bounding box
       mapped into `layer['rect']` + `anim.x(f)`, with `torso_trim` (default 0.12)
       trimming outer sleeve/staff overhang on each side of the span
       (span floored at `min_span_px`, default 40.0 canvas px). For asset-less
-      layers, the band is declared by the spec via `blockCore`
-      [leftFrac, rightFrac] (in [0,1] of the rect width) — when missing,
-      verification fails naming the layer instead of assuming 20–80%.
+      layers — project components have no pixels to derive from — the band is
+      declared by the spec via `blockCore` [leftFrac, rightFrac] (in [0,1] of
+      the rect width) — when missing, verification fails naming the layer
+      instead of assuming 20–80%.
     - Exempts frames where a character is invisible (opacity < min_visible_opacity,
       default 0.20) or its layer carries `role: "prop"`. No guessed choreography
       exemptions (a leap is not assumed above the ground plane).
@@ -38,10 +41,19 @@ def verify_stage_blocking(spec, max_overlap_px=12.0,
     """
     layers_list = spec.get("layers", [])
     dur = int(spec["durationInFrames"])  # required by the schema
-    root_chars = [
+    # ai + cutout: asset-backed characters measured via opaque-pixel bbox.
+    # component: project components with a declared character role measured
+    # via the mandatory `blockCore` band (no pixels to derive from).
+    ai_chars = [
         L for L in layers_list
         if L.get("type") == "ai" and L.get("cutout") and not L.get("parent") and L.get("role") != "prop"
     ]
+    component_chars = [
+        L for L in layers_list
+        if L.get("type") == "component" and L.get("role") in ("humanoid", "quadruped", "mech")
+        and not L.get("parent")
+    ]
+    root_chars = ai_chars + component_chars
     if len(root_chars) < 2:
         return {"passed": True, "errors": [], "pairs": []}
 
