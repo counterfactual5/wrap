@@ -58,6 +58,12 @@ NETWORK_FETCH_TIMEOUT = 120
 # Asking macOS for its installed voice list is a local, instant query.
 VOICE_LIST_TIMEOUT = 20
 
+# Asset downloads (image / video payloads) are large and the far end may be
+# slow or half-dead. `urlretrieve` has no timeout at all, so a stalled
+# connection used to hang the stage with no diagnostic.
+DOWNLOAD_TIMEOUT = 120
+DOWNLOAD_CHUNK_BYTES = 1 << 20
+
 
 def render_timeout_seconds(shot_seconds, per_second=4.0, floor=RENDER_BASE_TIMEOUT):
     """A render budget for a shot of `shot_seconds` length.

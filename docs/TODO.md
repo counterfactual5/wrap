@@ -57,6 +57,18 @@ Remotion 写出的 PNG 带 alpha 通道，而 S3 把它直接编成 `yuv420p` �
 半透明区域本来就该这么解释 —— 于是"屏幕上是暗的、成片里也是暗的"。
 测试：`tests/stages/test_encode_opacity.py`（在修复前会失败）。
 
+### 资产下载：超时 + 长度校验 —— 完成于 `<本次提交>`
+
+`core/generation/images.py` 的 `download_file()` 用 `urllib.request.urlretrieve`：
+**没有超时**（半死的连接可以把整个阶段挂死，且没有任何诊断信息），
+而且它的"成功"不是成功——实测拿回 2567341 字节里的 192017 字节后，
+落盘文件**非空**，旧的"非空即成功"检查放行，真正的爆点在很远的地方才炸。
+
+现在改为：`urlopen(timeout=…)` + 分块流式读取 + **与 `Content-Length` 比对**，
+不完整就报错重试，文件先写 `.part`、完整了才 `os.replace` 到目标路径。
+超时常量进 `core/runtime/timeouts.py`（`DOWNLOAD_TIMEOUT` / `DOWNLOAD_CHUNK_BYTES`）。
+测试：`tests/core/test_download_integrity.py`。
+
 ---
 
 ## 待办
@@ -88,22 +100,6 @@ backdrop 身份字符串、由 `anim` 通道求值出的角色 x/y/opacity。
 
 **注意**：别把这三项塞进现有 `verify-continuity`——它现在的语义（验声明）是自洽的，
 塞进去会让"声明不一致"与"画面不一致"两种失败混在一起，无法区分。
-
-## 7. 资产下载没有超时（wrap-exp-03 实测 · 待做）
-
-`core/generation/images.py` 的 `download_file()` 用 `urllib.request.urlretrieve(url, target_path)`，
-**没有 timeout**。本轮实测：H3 视频下载第一次只拿到 192017/2567341 字节就断在连接上
-（`retrieval incomplete`），靠函数的 3 次重试机制救回；同一轮里还有多次
-`ECONNRESET` / `UND_ERR_CONNECT_TIMEOUT` 的 API 调用失败（引擎的 connector 重试扛住了）。
-
-问题不只是"下载慢"：`urlretrieve` 在连接半死不活时**可以无限期挂着**，
-而整条 S1 阶段是卡在这个调用上的——流程会停在那里，没有诊断信息。
-（`core/runtime/timeouts.py` 的超时预算覆盖的是 subprocess 调用，这里是进程内的 urllib 调用，没被覆盖。）
-
-**修法方向**：给 `urlretrieve` 换成带 `timeout=` 的分块读取（`urlopen` + `read(chunk)`），
-并把"下载不完整"当成**可重试的错误**而不是成功的文件——现在第 252 行的检查只验证
-"文件存在且非空"，一个截断的 184 KB 文件会被当成有效资产通过（随后在 prepare/合成阶段
-以别的形式炸掉，错误信息离根因很远）。至少要核对 `Content-Length`。
 
 ## 8. 整片 blackdetect 门禁看不见短黑场（假 PASS · wrap-exp-03 实测 · 待做）
 

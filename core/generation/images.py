@@ -234,18 +234,52 @@ def fetch_asset_url(node_id, attempts=3):
     return out
 
 
-def download_file(url, target_path, attempts=3):
+def download_file(url, target_path, attempts=3, timeout=None, chunk_bytes=None):
+    """Fetch a remote asset into target_path, with a timeout and a length check.
+
+    `urllib.request.urlretrieve` has no timeout: a half-dead connection can
+    hang the stage forever with nothing to report. Its "success" is not a
+    success either — a truncated response (measured in the field: 192017 of
+    2567341 bytes) leaves a NON-EMPTY file that passes an emptiness check and
+    only blows up much later, far from the cause. So the transfer is streamed
+    with a timeout, the declared length is compared against what arrived, and
+    the file is only moved into place once it is whole.
+    """
+    from core.runtime.timeouts import DOWNLOAD_CHUNK_BYTES, DOWNLOAD_TIMEOUT
+
+    timeout = DOWNLOAD_TIMEOUT if timeout is None else timeout
+    chunk_bytes = DOWNLOAD_CHUNK_BYTES if chunk_bytes is None else chunk_bytes
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     print(f"Downloading asset to {target_path} ...")
     last = None
+    part = f"{target_path}.part"
     for i in range(attempts):
         try:
-            urllib.request.urlretrieve(url, target_path)
+            expected = None
+            got = 0
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                length = resp.headers.get("Content-Length")
+                if length is not None:
+                    expected = int(length)
+                with open(part, "wb") as fh:
+                    while True:
+                        chunk = resp.read(chunk_bytes)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        got += len(chunk)
+            if got == 0:
+                raise IOError("the server returned no bytes")
+            if expected is not None and got != expected:
+                raise IOError(f"truncated download: got {got} of {expected} bytes")
+            os.replace(part, target_path)
             last = None
             break
         except Exception as ex:
             last = ex
             print(f"  download attempt {i + 1}/{attempts} failed: {ex}")
+            if os.path.exists(part):
+                os.remove(part)
             time.sleep(2 * (i + 1))
     if last is not None:
         raise RuntimeError(f"asset download failed after {attempts} attempts: {last}")
