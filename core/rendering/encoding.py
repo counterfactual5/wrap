@@ -136,15 +136,26 @@ def encode_mp4(spec, frames_dir, out_mp4):
         prepare_shot_audio({}, spec["durationInFrames"], FPS, audio_file)
         print("audio source: silent track (44100 Hz stereo aac)")
 
+    # The rendered PNGs carry an alpha channel (Remotion writes RGBA). Encoding
+    # them straight to yuv420p DISCARDS that alpha, so a layer's opacity ramp
+    # never reaches the picture: a backdrop faded to 45% arrives at full
+    # strength, and only opacity 0 (the element dropped entirely) reads as
+    # black. Composite the frames over an opaque black sheet first — that is
+    # what a transparent area means in a video without an alpha channel, and
+    # it makes a partial opacity darken the picture the way it reads on screen.
+    canvas = spec.get("canvas") or {}
+    cw, ch = canvas.get("w") or 1920, canvas.get("h") or 1080
     cmd = [
         "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", f"color=c=black:s={cw}x{ch}:r={FPS}",
         "-framerate", str(FPS), "-i", os.path.join(frames_dir, "%05d.png"),
     ]
     if audio_file and os.path.exists(audio_file):
         cmd.extend(["-i", audio_file])
 
-
     cmd.extend([
+        "-filter_complex", "[0:v][1:v]overlay=shortest=1[v]",
+        "-map", "[v]",
         "-frames:v", str(spec["durationInFrames"]), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-threads", "1", "-r", str(FPS),
         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
