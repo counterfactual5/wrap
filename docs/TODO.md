@@ -82,6 +82,27 @@ Remotion 写出的 PNG 带 alpha 通道，而 S3 把它直接编成 `yuv420p` �
 短窗的 integrated loudness 不可靠（需要门限块），所以用短窗 RMS 量洞里的电平 ✓。
 测试：`tests/core/test_black_gate_sensitivity.py`。
 
+## 9. trim 的秒数按「镜头帧率」换算，源素材帧率不同时会落在错的地方（wrap-exp-03 实测 · 待做）
+
+**问题**：`trim` 在 spec 里声明的单位是**秒**（校验器的报错原文：`video trim must be
+[startSec, endSec]`），但实现把它换算成**帧号**时用的是**镜头的帧率**：
+
+- `core/rendering/timeline.py`：`t0 = _js_round(trim[0] * fps) / fps`
+- `remotion/Shot.tsx`：`trimBefore={Math.round(layer.trim[0] * fps)}`
+
+而 Remotion 的 `trimBefore` 是**源素材的帧号**。源素材是 24 fps（H3 的 768P 片段）、
+镜头是 30 fps 时，`trim: [1.55, 6.583]` 实际落在**源素材的 1.94 s**（1.25 倍），
+不是声明的 1.55 s。音轨链用的是同一组数（`atrim=start=t0:end=t1`），
+所以画面与声音彼此对齐 ✓，但**两者一起落错了地方**。
+
+**后果**：trim 的落点无法靠"再调一点"修正——本片为躲开素材音轨里的低谷，
+反复改了 3 次 trim，每次都因为这 1.25 倍而落在意料之外的位置（这是排查被带偏的直接原因）。
+
+**修法方向**：trim 的秒数应当按**源素材的帧率**换算成源帧号；
+S2 已经探测了素材（时长/尺寸），把源帧率一并探测并写进 manifest / 渲染 props，
+`video_timeline` 与 `Shot.tsx` 都改用源帧率。引擎自己的 30 fps 素材不受影响（30 = 30），
+所以这是一处**只在源帧率与镜头帧率不同时才显形**的偏差。
+
 ---
 
 ## 待办
