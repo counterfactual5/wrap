@@ -69,6 +69,19 @@ Remotion 写出的 PNG 带 alpha 通道，而 S3 把它直接编成 `yuv420p` �
 超时常量进 `core/runtime/timeouts.py`（`DOWNLOAD_TIMEOUT` / `DOWNLOAD_CHUNK_BYTES`）。
 测试：`tests/core/test_download_integrity.py`。
 
+### 整片黑场门禁不再漏掉短落黑 —— 完成于 `<本次提交>`
+
+`core/assembly/timeline.py` 的整片黑场检查用 `blackdetect=d=0.2`：**三帧落黑（30fps 下 0.1 s）
+低于这个门槛，压根不会被报出来**，于是 gates 文件写下 `blackdetect: 0, pass`，
+而画面上正是一个 100 ms 的洞 —— 实测接缝处 `black_start 5.933 / black_end 6.033`，
+而门禁说"没有黑场"。同时那 100 ms 里**声音还在响**（−16…−30 dBFS），构成声画错位。
+
+现在：`d=0.05`（两帧落黑就能看见 ✓）、解析出每段黑场的**起止与时长**并打印出来 ✓，
+并新增一行 `black_with_sound`：**画面黑着而配乐还在响**的一律判失败 ✓
+（这正是验收第 ⑦ 条"接缝处不得有静音洞"要查的东西）。
+短窗的 integrated loudness 不可靠（需要门限块），所以用短窗 RMS 量洞里的电平 ✓。
+测试：`tests/core/test_black_gate_sensitivity.py`。
+
 ---
 
 ## 待办
@@ -101,25 +114,3 @@ backdrop 身份字符串、由 `anim` 通道求值出的角色 x/y/opacity。
 **注意**：别把这三项塞进现有 `verify-continuity`——它现在的语义（验声明）是自洽的，
 塞进去会让"声明不一致"与"画面不一致"两种失败混在一起，无法区分。
 
-## 8. 整片 blackdetect 门禁看不见短黑场（假 PASS · wrap-exp-03 实测 · 待做）
-
-`core/assembly/timeline.py:282` 的整片黑场检查用
-`blackdetect=d=0.2:picture_black_ratio_th=0.98:pixel_black_th=0.02`。
-**`d=0.2` 是最小黑场时长**：30 fps 下不足 6 帧的落黑**根本不会被报出来**。
-
-实测（wrap-exp-03 收官评审）：接缝处连续 3 帧纯黑（全局帧 178/179/180，灰度均值 0.00，
-`blackdetect` 实测 `black_start 5.933333 / black_end 6.033333 / black_duration 0.1`），
-而 `build/gates_full_commodity-journey.json` 记的是
-`{"id":"black","metric":"blackdetect","value":0,"bound":"0 intervals","pass":true}`——
-**一次假 PASS**：门禁报"没有黑场"，实际有 100 ms 全黑，且这 100 ms 里声音仍在响
-（−16…−30 dB），构成声画错位。这与本文件第 4 条（跳过的检查被记成通过）同类，
-但更糟：它不是"没测"，而是"测了，门槛太高，把要抓的东西放过去了"。
-
-**修法方向（三选一，或并行）**：
-1. 把最小时长降到 2–3 帧（`d=0.06`）——代价是更多**刻意**的短落黑也会被判 FAIL，
-   所以必须同时给"允许落黑"的表达方式（现在只有整片级的 `allow_black=true` 逃生口，
-   无法只允许某一处）；
-2. 增加一条**声画一致性**检查：画面黑而声音非静音的区间一律算失败——
-   这才是"接缝黑场"真正该被禁止的理由（不是黑场本身，而是黑的时候还有声）；
-3. 在门禁产物里区分"未发现黑场"与"黑场短于检测下限"（例如同时报告最短落黑时长），
-   让"0 intervals"不再等于"画面没有黑过"。

@@ -234,6 +234,64 @@ def _measurement_available(av):
             or float(av.get("audio_duration") or 0) > 0)
 
 
+def _black_spans(blackdetect_stderr):
+    """Parse blackdetect's stderr into the spans it reported.
+
+    blackdetect prints `black_start:... black_end:... black_duration:...` per
+    run. The gate needs the runs' positions and lengths, not just their
+    count: a three-frame hole at the cut and a one-second black frame at the
+    end are different defects, and only the positions let the audio side
+    check whether the soundtrack was still playing underneath.
+    """
+    spans = []
+    start = end = dur = None
+    for line in blackdetect_stderr.splitlines():
+        # blackdetect prints start, end and duration on ONE line, so these are
+        # independent tests, not an elif chain.
+        if "black_start:" in line:
+            try:
+                start = float(line.split("black_start:")[1].split()[0])
+            except (IndexError, ValueError):
+                start = None
+        if "black_end:" in line and start is not None:
+            try:
+                end = float(line.split("black_end:")[1].split()[0])
+            except (IndexError, ValueError):
+                end = None
+        if "black_duration:" in line and start is not None:
+            try:
+                dur = float(line.split("black_duration:")[1].split()[0])
+            except (IndexError, ValueError):
+                dur = None
+            if end is not None:
+                spans.append({"start": start, "end": end,
+                              "duration": dur if dur is not None else end - start})
+                start = end = dur = None
+    return spans
+
+
+def _window_rms_db(out_path, start, duration):
+    """Mean volume in dBFS over a window, or None when it cannot be read.
+
+    Used for very short windows (a black dip is a few frames), where an
+    integrated loudness measurement is not trustworthy.
+    """
+    proc = subprocess.run(
+        # volumedetect reports at the INFO level, so the log level must stay
+        # at default (-v error would swallow the very number we come for).
+        ["ffmpeg", "-hide_banner", "-ss", f"{start:.3f}",
+         "-t", f"{duration:.3f}", "-i", out_path, "-af", "volumedetect",
+         "-f", "null", "-"],
+        capture_output=True, text=True, timeout=LOCAL_TOOL_TIMEOUT)
+    for line in proc.stderr.splitlines():
+        if "mean_volume:" in line:
+            try:
+                return float(line.split("mean_volume:")[1].split()[0])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
 def gate_full_video(out_path, timeline_id, segments, allow_black=False):
     """Post-assembly QC on the concatenated full video.
 
@@ -277,13 +335,42 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
         print("SKIP  black          blackdetect         timeline allows black (allow_black=true)")
     else:
         # 2. True digital-black frames (concat fill around missing frames).
+        # `d` is the SHORTEST run blackdetect reports: at d=0.2 a three-frame
+        # dip (0.1 s at 30 fps) was invisible, and the gate then wrote
+        # "0 intervals, pass" over a real 100 ms hole in the picture. 0.05 s
+        # catches a two-frame dip, which is the smallest a viewer can see.
         bd = subprocess.run(
             ["ffmpeg", "-hide_banner", "-i", out_path,
-             "-vf", "blackdetect=d=0.2:picture_black_ratio_th=0.98:pixel_black_th=0.02",
+             "-vf", "blackdetect=d=0.05:picture_black_ratio_th=0.98:pixel_black_th=0.02",
              "-f", "null", "-"],
             capture_output=True, text=True, timeout=LOCAL_TOOL_TIMEOUT).stderr
-        n_black = bd.count("black_start")
+        black_spans = _black_spans(bd)
+        n_black = len(black_spans)
+        shortest = min((s["duration"] for s in black_spans), default=0.0)
         add("black", "blackdetect", n_black, n_black == 0, "0 intervals")
+        if n_black:
+            print(f"      black runs: " + ", ".join(
+                f"{s['start']:.3f}s-{s['end']:.3f}s ({s['duration']:.3f}s)" for s in black_spans))
+        # A black picture with sound still playing is the case that matters:
+        # the viewer sees a hole while the soundtrack keeps going. It is also
+        # what the old duration threshold could not see.
+        if n_black and av.get("has_audio"):
+            silent_holes = []
+            for s in black_spans:
+                # A short window's INTEGRATED loudness is unreliable (the
+                # measurement needs a gating block), so the level under the
+                # hole is read as a plain RMS instead.
+                lvl = _window_rms_db(
+                    out_path, max(0.0, s["start"]), max(0.05, s["duration"]))
+                if lvl is not None and lvl > -60.0:
+                    silent_holes.append((s, lvl))
+            if silent_holes:
+                add("black_with_sound", "blackdetect+audio_loudness",
+                    "; ".join(f"{s['start']:.3f}s ({lvl:.1f} LUFS)" for s, lvl in silent_holes),
+                    False, "no black frame while the soundtrack plays")
+            else:
+                add("black_with_sound", "blackdetect+audio_loudness", 0, True,
+                    "no black frame while the soundtrack plays")
 
     if not measured:
         # The file may well carry a soundtrack — the probe could not say.

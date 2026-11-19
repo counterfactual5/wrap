@@ -163,7 +163,9 @@ def encode_mp4(spec, frames_dir, out_mp4):
         "-pix_fmt", "yuv420p",
     ])
     if audio_file and os.path.exists(audio_file):
-        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-shortest"])
+        # `-map [v]` above means ffmpeg no longer auto-maps the soundtrack:
+        # input 0 is the colour sheet, 1 the frames, 2 the audio.
+        cmd.extend(["-map", "2:a", "-c:a", "aac", "-b:a", "192k", "-shortest"])
 
     cmd.append(out_mp4)
     print(" ".join(cmd))
