@@ -237,6 +237,24 @@ or breathing solely to satisfy freeze detection. For intentional holds,
 document the intent before opting out via `frame_freeze`; record the skip,
 check duration/readability, and never describe that test as passed.
 
+**A checklist item that quotes a number must say where the number came
+from.** Name the artifact it was measured on (the pre-encode frame
+sequence, the delivered mp4, the source clip), the method, and the
+threshold it is compared against. The same measurement on two artifacts
+differs: the same frame-to-frame change reads 99.39% on the PNG sequence and
+99.01% on the encoded mp4 (h264 compresses the difference), and a reviewer
+who cannot tell which one you quoted will read the item as wrong. The same
+applies to "the freeze is at 11.2 s": say that it came from
+`freezedetect` with which parameters, on which file. Numbers without a
+provenance are claims, not evidence.
+
+**A field the spec declares but nothing reads is a defect, not a
+no-op.** If `spec` carries a parameter the component ignores (an
+`inFrame` that never fires, a `timing.in` nobody consumes), the rendered
+result silently disagrees with what the spec says. Either implement it or
+remove it from the spec — and never let a checklist item depend on a
+parameter that does nothing.
+
 ### Bounded communication and independent decisions
 
 - Script reviewer ↔ writer, factual reviewer ↔ researcher/writer, design

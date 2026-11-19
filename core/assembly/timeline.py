@@ -372,6 +372,32 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
                 add("black_with_sound", "blackdetect+audio_loudness", 0, True,
                     "no black frame while the soundtrack plays")
 
+    # A cut whose audio DIPS and then comes back is a hole, not a fade: the
+    # picture shows a gap while the soundtrack keeps playing. A deliberate
+    # fade-out does not recover, so the recovery is what tells the two apart.
+    # Measured in the field: a 17 dB step at the cut followed by a 0.45 s
+    # dip and a 1.5 s recovery, which no segment-averaged loudness number
+    # could see.
+    if av.get("has_audio") and len(segments) > 1:
+        holes = []
+        for i in range(len(segments) - 1):
+            cut_at = segments[i][1] + segments[i][2]
+            pre = _window_rms_db(out_path, max(0.0, cut_at - 0.4), 0.4)
+            post = _window_rms_db(out_path, cut_at, 0.4)
+            later = _window_rms_db(out_path, cut_at + 0.6, 0.4)
+            if pre is None or post is None or later is None:
+                continue
+            if pre - post < 6.0:
+                continue                      # no dip at the cut
+            if later < pre - 3.0:
+                continue                      # it stayed down: a fade, not a hole
+            holes.append(f"{cut_at:.3f}s ({pre:.1f}->{post:.1f}->{later:.1f} dBFS)")
+        add("seam_audio_hole", "seam_level_dip_and_recover", len(holes),
+            not holes, "no dip-and-recover at a cut")
+        if holes:
+            for h in holes:
+                print(f"      audio hole at the cut: {h}")
+
     if not measured:
         # The file may well carry a soundtrack — the probe could not say.
         # Skipping the audio gates here would be "did not check" dressed up

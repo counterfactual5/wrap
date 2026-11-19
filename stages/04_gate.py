@@ -298,7 +298,12 @@ def main():
         })
     else:
         fz = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.5", "-f", "null", "-"],
+            # d is the SHORTEST run freezedetect reports. At d=0.5 a frozen
+            # tail of 0.29 s (9 frames at 30 fps) was invisible, so a shot
+            # could end on a still and the gate still said "0 frozen
+            # segment(s)". 0.2 s catches six frames — the smallest hold a
+            # viewer can see as a hold rather than a cut.
+            ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.2", "-f", "null", "-"],
             capture_output=True, text=True, timeout=LOCAL_TOOL_TIMEOUT
         ).stderr
         frozen = [l for l in fz.splitlines() if "freeze_start" in l]
