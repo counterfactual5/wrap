@@ -104,3 +104,19 @@ gates 文件 —— **与真实通过不可区分**（没有 `skipped` 标记）
 而不是静默交付一个没有压暗的成片；或者在 S3 合成时把 PNG 统一合成到不透明底色
 （当前是直接丢 alpha）。项目侧的正确写法是：压暗必须是自己的一层，把暗度烘焙进
 填充色 `rgba()`（wrap-exp-02 的 `veil` 组件即此写法）。
+
+## 7. 资产下载没有超时（wrap-exp-03 实测 · 待做）
+
+`core/generation/images.py` 的 `download_file()` 用 `urllib.request.urlretrieve(url, target_path)`，
+**没有 timeout**。本轮实测：H3 视频下载第一次只拿到 192017/2567341 字节就断在连接上
+（`retrieval incomplete`），靠函数的 3 次重试机制救回；同一轮里还有多次
+`ECONNRESET` / `UND_ERR_CONNECT_TIMEOUT` 的 API 调用失败（引擎的 connector 重试扛住了）。
+
+问题不只是"下载慢"：`urlretrieve` 在连接半死不活时**可以无限期挂着**，
+而整条 S1 阶段是卡在这个调用上的——流程会停在那里，没有诊断信息。
+（`core/runtime/timeouts.py` 的超时预算覆盖的是 subprocess 调用，这里是进程内的 urllib 调用，没被覆盖。）
+
+**修法方向**：给 `urlretrieve` 换成带 `timeout=` 的分块读取（`urlopen` + `read(chunk)`），
+并把"下载不完整"当成**可重试的错误**而不是成功的文件——现在第 252 行的检查只验证
+"文件存在且非空"，一个截断的 184 KB 文件会被当成有效资产通过（随后在 prepare/合成阶段
+以别的形式炸掉，错误信息离根因很远）。至少要核对 `Content-Length`。
