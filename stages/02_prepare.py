@@ -277,6 +277,7 @@ def main():
                     read_rgb(src, sw, sh), sw, sh, hex_rgb(L["keyColor"]),
                     ring=g.get("ring", EDGE_KEY_RING), tol=g.get("tol", EDGE_KEY_TOL)
                 )
+                purity_status = "measured"
                 lo = g.get("lo", 0.98)
                 verdict = "PASS" if purity >= lo else "BLOCKED"
                 print(f"{asset_name}: edge_key_purity={purity:.4f} (>= {lo}) {verdict}")
@@ -284,9 +285,16 @@ def main():
                     blocked = True
                     continue
             else:
-                purity = 1.0
+                # A full-bleed opaque backdrop has no key to measure: there is
+                # nothing keyed out, so the purity gate does not apply. Record
+                # that as NOT MEASURED (purity=None + purity_status), not as a
+                # perfect 1.0 — a stored 1.0 reads downstream as "measured and
+                # clean", which is a different claim from "not applicable".
+                purity = None
+                purity_status = "not_applicable"
                 if g is not None and is_opaque_backdrop:
-                    print(f"{asset_name}: full-bleed opaque backdrop (blend:normal) — edge_key_purity exempt")
+                    print(f"{asset_name}: full-bleed opaque backdrop (blend:normal) — "
+                          f"edge_key_purity NOT MEASURED (no key to measure)")
 
             cfg_sig = (pw, ph, cutout, vf)
             prev_sig = prepared_asset_configs.get(asset_name)
@@ -298,7 +306,8 @@ def main():
                      os.path.join(ROOT, rel)],
                     check=True, timeout=LOCAL_TOOL_TIMEOUT
                 )
-                manifest.register("prepared", f"{shot_id}/{asset_name}", rel, source="scaled", purity=purity, size=[pw, ph])
+                manifest.register("prepared", f"{shot_id}/{asset_name}", rel, source="scaled", purity=purity,
+                                  purity_status=purity_status, size=[pw, ph])
                 print(f"prepared {rel} {pw}x{ph}")
             if prev_sig is not None and prev_sig != cfg_sig and asset_name == L["asset"]:
                 # Secondary layer sharing the same asset with a different rect/cutout config:
@@ -310,7 +319,8 @@ def main():
                      os.path.join(ROOT, rel_layer)],
                     check=True, timeout=LOCAL_TOOL_TIMEOUT
                 )
-                manifest.register("prepared", f"{shot_id}/{layer_key}", rel_layer, source="scaled", purity=purity, size=[pw, ph])
+                manifest.register("prepared", f"{shot_id}/{layer_key}", rel_layer, source="scaled", purity=purity,
+                                  purity_status=purity_status, size=[pw, ph])
                 print(f"prepared {rel_layer} {pw}x{ph} (layer-scoped for {L['id']})")
 
     return 1 if blocked else 0

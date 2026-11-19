@@ -35,6 +35,20 @@ macOS `say` 一旦挂死，流水线会无限阻塞，没有诊断信息，只�
 `remotion/kinematics.ts` 的 `applyEase` 曾静默回 linear。现已对齐：TS 侧同样抛错，
 并导出 `EASES`（与 `core/spec/constants.py:ANIM_EASES` 同源），词表漂移可被检测。
 
+### gates：跳过的 / 不适用的检查不再记成通过 —— 完成于 `<本次提交>`
+
+两条门禁行曾经对**没有发生过的测量**说"通过"：
+
+- `stages/04_gate.py` 的 freeze 行：`spec.frame_freeze = true` 时跳过 freezedetect，
+  却写下 `{"id": "freeze", "value": 0, "pass": true}` —— 与"测过且干净"不可区分。
+- `stages/02_prepare.py` 的 purity 行：满幅不透明背景（`blend: normal` 且无 cutout）
+  **根本没有键可测**，S2 却硬写 `purity = 1.0`，S4 再拿它跟 0.98 比 → 恒真。
+
+现在两者都写 `pass: null`，并用 status 区分「没测」（`skipped`）与「不适用」
+（`not_applicable`）；S2 的 prepared 行同时记 `purity_status`，S4 把不可测的层列进
+`not_measured_layers`，不再让它们冒充被测过的数字。
+测试：`tests/stages/test_gate_not_measured.py`。
+
 ---
 
 ## 待办
@@ -66,26 +80,6 @@ backdrop 身份字符串、由 `anim` 通道求值出的角色 x/y/opacity。
 
 **注意**：别把这三项塞进现有 `verify-continuity`——它现在的语义（验声明）是自洽的，
 塞进去会让"声明不一致"与"画面不一致"两种失败混在一起，无法区分。
-
-## 4. gates 文件把「跳过的检查」记成「通过」
-
-`stages/04_gate.py` 在 `spec.frame_freeze is True` 时**完全跳过** freezedetect，
-却仍把 `{"id": "freeze", "metric": "freezedetect", "value": 0, "pass": true}` 写进
-gates 文件 —— **与真实通过不可区分**（没有 `skipped` 标记）。
-
-修复方向：跳过时写 `"pass": null, "status": "skipped"`（或加 `skipped: true`），
-让下游能区分"测过且通过"与"没测"。判定逻辑本身（`frozen = []` → 不 FAIL）是对的，
-只是**报告**丢了信息。
-
-## 5. `purity` 门禁对 `blend:normal` 的层是常数
-
-`stages/02_prepare.py` 对 `blend == "normal"` 且无 cutout 的层**硬编码 `purity = 1.0`** 并
-跳过测量。于是"过 purity 门"对满幅不透明背景**恒真**（wrap-exp-02 实测：引擎自带 ring 定义
-在备图外圈量得 0.0000，门禁却报 1.0）。
-
-修复方向：要么在报告里显式标注该门禁**未测量**（与 `frame_freeze` 同类问题），
-要么把"满幅不透明背景"这一事实作为**另一条**可验证的门（例如"源资产边缘是否已被裁净"），
-而不是让 purity 恒真。
 
 ## 6. 背板（最底层）图层的 opacity 压暗在交付成片里不生效（wrap-exp-02 实测 · 待做）
 

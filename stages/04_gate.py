@@ -192,6 +192,8 @@ def main():
     mp4 = os.path.join(ROOT, "build", f"{shot_id}.mp4")
     results, red = [], False
 
+    purity_exempt = []
+
     def measure(g):
         inp = ("-framerate", str(FPS))
         if g["metric"] == "changed_pixel_ratio":
@@ -212,41 +214,70 @@ def main():
         if g["metric"] == "edge_key_purity":
             # Verify sha256 through the manifest (not trust a stored number): a
             # tampered prepared asset must fail the gate, not sail through it.
-            rows = []
+            measured, exempt = [], []
+
+            def _collect(row, label):
+                if row is None:
+                    raise RuntimeError(
+                        f"prepared asset '{label}' not manifest-verified; run S2")
+                if row.get("purity_status") == "not_applicable":
+                    # A full-bleed opaque backdrop has no key to measure. That
+                    # is "not applicable", not "measured and clean".
+                    exempt.append(label)
+                    return
+                val = row.get("purity")
+                if val is None:
+                    raise RuntimeError(f"no purity recorded for '{label}'; run S2")
+                measured.append(val)
+
             for L in spec["layers"]:
                 if L["type"] != "ai":
                     continue
                 layer_scoped = manifest.verified("prepared", f"{shot_id}/{L['id']}__layer")
                 if layer_scoped is not None:
-                    rows.append(layer_scoped.get("purity"))
+                    _collect(layer_scoped, f"{shot_id}/{L['id']}__layer")
                 else:
-                    row = manifest.verified("prepared", f"{shot_id}/{L['asset']}")
-                    if row is None:
-                        raise RuntimeError(
-                            f"prepared asset '{shot_id}/{L['asset']}' not manifest-verified; run S2")
-                    rows.append(row.get("purity"))
+                    _collect(manifest.verified("prepared", f"{shot_id}/{L['asset']}"),
+                             f"{shot_id}/{L['asset']}")
                 for p in L.get("poses") or []:
                     pa = p.get("asset")
                     if not pa or pa == L["asset"]:
                         continue
-                    prow = manifest.verified("prepared", f"{shot_id}/{pa}")
-                    if prow is None:
-                        raise RuntimeError(
-                            f"prepared asset '{shot_id}/{pa}' not manifest-verified; run S2")
-                    rows.append(prow.get("purity"))
-            if not rows or any(r is None for r in rows):
-                raise RuntimeError("no purity recorded; run S2")
-            return min(rows)
+                    _collect(manifest.verified("prepared", f"{shot_id}/{pa}"),
+                             f"{shot_id}/{pa}")
+            if not measured:
+                # Every layer was exempt: the gate has no applicable subject.
+                # Return None so the caller records it as not measured.
+                return None
+            if exempt:
+                purity_exempt.extend(exempt)
+            return min(measured)
         raise ValueError(g["metric"])
 
     for g in spec["gates"]:
         v = measure(g)
+        if v is None:
+            # The gate had no applicable subject (a full-bleed opaque backdrop
+            # has no key to measure). Record it as NOT MEASURED — a row that
+            # says "pass" here would claim a measurement that never happened.
+            results.append({
+                "id": g["id"], "metric": g["metric"], "value": None,
+                "lo": g.get("lo"), "hi": g.get("hi"), "pass": None,
+                "status": "not_applicable",
+                "reason": "no applicable subject for this gate (e.g. a full-bleed "
+                          "opaque backdrop has no key to measure)",
+            })
+            print(f"SKIP  {g['id']:<10} {g['metric']:<20} NOT MEASURED (not applicable)")
+            continue
         ok = (g.get("lo") is None or v >= g["lo"]) and (g.get("hi") is None or v <= g["hi"])
         red |= not ok
-        results.append({
+        row = {
             "id": g["id"], "metric": g["metric"], "value": v,
             "lo": g.get("lo"), "hi": g.get("hi"), "pass": ok
-        })
+        }
+        if g["metric"] == "edge_key_purity" and purity_exempt:
+            row["not_measured_layers"] = list(purity_exempt)
+        results.append(row)
         print(f"{'PASS' if ok else 'FAIL'}  {g['id']:<10} {g['metric']:<20} {v:.6f}  [{g.get('lo')}, {g.get('hi')}]")
         if not ok and g["metric"] in ("changed_pixel_ratio", "subject_motion_ratio"):
             reason = "high_motion" if (g.get("hi") is not None and v > g["hi"]) else "low_motion"
@@ -256,27 +287,35 @@ def main():
 
     if spec.get("frame_freeze") is True:
         print("SKIP  freeze     freezedetect         spec allows frozen frames (frame_freeze=true)")
-        frozen = []
+        # The check did not run. Record it as NOT MEASURED rather than as a
+        # pass: "measured and clean" and "never looked" must stay
+        # distinguishable in the gates file, exactly like the
+        # visual_inspect row (pass=null, status=pending_judge).
+        results.append({
+            "id": "freeze", "metric": "freezedetect", "value": None, "pass": None,
+            "status": "skipped", "skipped": True,
+            "reason": "spec.frame_freeze=true allows frozen frames; freezedetect was not run",
+        })
     else:
         fz = subprocess.run(
             ["ffmpeg", "-hide_banner", "-i", mp4, "-vf", "freezedetect=n=0.001:d=0.5", "-f", "null", "-"],
             capture_output=True, text=True, timeout=LOCAL_TOOL_TIMEOUT
         ).stderr
         frozen = [l for l in fz.splitlines() if "freeze_start" in l]
-    print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")
-    if frozen:
-        # The motion gate's verdict picks the diagnosis. If the frame-to-frame
-        # change was too LOW, the footage is the problem; if the motion gate
-        # PASSED while the picture stood still, the change was real but never
-        # reached the screen (it stayed outside the visible crop).
-        motion_failed = any(r["metric"] in ("changed_pixel_ratio", "subject_motion_ratio")
-                            and not r["pass"] for r in results)
-        hint = _video_hint(spec, reason="low_motion" if motion_failed else "frozen_window")
-        if not hint:
-            hint = _component_freeze_hint()
-        print(hint)
-    red |= bool(frozen)
-    results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
+        print(f"{'FAIL' if frozen else 'PASS'}  freeze     freezedetect         {len(frozen)} frozen segment(s)")
+        if frozen:
+            # The motion gate's verdict picks the diagnosis. If the frame-to-frame
+            # change was too LOW, the footage is the problem; if the motion gate
+            # PASSED while the picture stood still, the change was real but never
+            # reached the screen (it stayed outside the visible crop).
+            motion_failed = any(r["metric"] in ("changed_pixel_ratio", "subject_motion_ratio")
+                                and not r["pass"] for r in results)
+            hint = _video_hint(spec, reason="low_motion" if motion_failed else "frozen_window")
+            if not hint:
+                hint = _component_freeze_hint()
+            print(hint)
+        red |= bool(frozen)
+        results.append({"id": "freeze", "metric": "freezedetect", "value": len(frozen), "pass": not frozen})
 
     # Audio QC Gates: silence, loudness (LUFS), and AV duration alignment.
     # They run whenever the RENDERED mp4 actually carries an audio track —
