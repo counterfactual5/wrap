@@ -7,8 +7,29 @@ from core.runtime import manifest
 from core.runtime.config import ROOT
 from core.audio.sentinel import has_bgm as declares_bgm
 from core.rendering.timeline import atempo_chain, video_timeline
+from core.rendering.frames import normalize_frame_formats
 from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
 from core.spec.constants import HEX
+
+
+def canvas_background(spec):
+    """The opaque sheet the frames are composited over: (width, height, color).
+
+    The color is an ffmpeg color spec derived from spec.canvas.bg — the
+    project's declared canvas background, or black when it declares none.
+    Shared with the S4 master/video binding check so the two always composite
+    the master the same way.
+    """
+    canvas = spec.get("canvas") or {}
+    cw, ch = canvas.get("w") or 1920, canvas.get("h") or 1080
+    raw_bg = str(canvas.get("bg") or "").strip()
+    if HEX.fullmatch(raw_bg):
+        bg_color = f"0x{raw_bg[1:]}"
+    elif raw_bg.lower() in ("black", "white"):
+        bg_color = raw_bg.lower()
+    else:
+        bg_color = "black"
+    return cw, ch, bg_color
 
 
 def video_audio_source(spec):
@@ -144,15 +165,16 @@ def encode_mp4(spec, frames_dir, out_mp4):
     # black. Composite the frames over an opaque sheet matching spec.canvas.bg
     # (or black when unset) — that preserves both transparent opacity ramps and
     # the project's declared canvas background.
-    canvas = spec.get("canvas") or {}
-    cw, ch = canvas.get("w") or 1920, canvas.get("h") or 1080
-    raw_bg = str(canvas.get("bg") or "").strip()
-    if HEX.fullmatch(raw_bg):
-        bg_color = f"0x{raw_bg[1:]}"
-    elif raw_bg.lower() in ("black", "white"):
-        bg_color = raw_bg.lower()
-    else:
-        bg_color = "black"
+    #
+    # The frame sequence must reach the decoder in ONE pixel format: Remotion
+    # writes RGBA only for the frames that carry transparency and RGB for the
+    # rest, so a rendered sequence can mix color types; the PNG demuxer then
+    # changes the decoded format mid-stream, ffmpeg reconfigures the filter
+    # graph, the overlay's frame sync is reset, and the encoder emits the bare
+    # background sheet (a black frame) at positions that differ from run to
+    # run. S3 normalizes the sequence right after the render (see
+    # core.rendering.frames) — the encoder only reads what it is given.
+    cw, ch, bg_color = canvas_background(spec)
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-f", "lavfi", "-i", f"color=c={bg_color}:s={cw}x{ch}:r={FPS}",

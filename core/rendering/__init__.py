@@ -12,6 +12,8 @@ main() and the flow:
 - video_frames:  frame extraction with trim / playbackRate / loop / fit and a
                  transparent fill for unmounted windows
 - remotion:      props assembly and the `npx remotion render` driver
+- frames:        one pixel format for the whole frame sequence, and the
+                 master/video binding check
 - encoding:      audio ownership resolution and the mp4 encode
 
 The public API is re-exported here so `from core.rendering import X` keeps
@@ -25,4 +27,12 @@ from core.rendering.video_frames import (
 )
 from core.rendering.quartz import _render_quartz_fallback
 from core.rendering.remotion import build_props, render_remotion
-from core.rendering.encoding import encode_mp4, video_audio_source
+from core.rendering.frames import (
+    MASTER_DELTA_LIMIT,
+    convert_frame_formats,
+    master_video_deltas,
+    normalize_frame_formats,
+    png_color_type,
+    sequence_color_types,
+)
+from core.rendering.encoding import canvas_background, encode_mp4, video_audio_source

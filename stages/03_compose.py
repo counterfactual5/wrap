@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from core.runtime import manifest
 from core.media.fingerprints import encoder_fingerprint, frames_fingerprint
 from core.rendering import encode_mp4, render_remotion
+from core.rendering.frames import normalize_frame_formats
 from core.runtime.config import ROOT
 from core.spec.loader import load_spec
 
@@ -38,6 +39,17 @@ def main():
     frames_dir = os.path.join(ROOT, "build", "frames", shot_id)
 
     render_remotion(spec, frames_dir, shot_id)
+
+    # One pixel format for the whole sequence. Remotion writes RGBA only for
+    # the frames that carry transparency and RGB for the rest; a mixed
+    # sequence changes the decoded frame format mid-stream, ffmpeg
+    # reconfigures the filter graph, and the encoder loses frames at
+    # positions that differ from run to run (measured: five encodes of the
+    # same 360 frames each lost different ones). The pixels do not change.
+    norm = normalize_frame_formats(frames_dir, spec.get("fps", 30))
+    if norm["normalized"]:
+        print(f"frames: normalized {norm['frames']} frames to one pixel format "
+              f"(was {norm['color_types']}, {norm['transparent_frames']} with alpha)")
 
     n = len([f for f in os.listdir(frames_dir) if f.endswith(".png")])
     if n != spec["durationInFrames"]:

@@ -179,6 +179,77 @@ def _component_freeze_hint():
             "camera push), or rework the motion approach rather than scaling a small transform harder.")
 
 
+def _master_match_gate(spec, frames_pattern, mp4, fps):
+    """Does the delivered mp4 show the frame master's picture, frame by frame?
+
+    The master is composited over the canvas background the way the encoder
+    composites it, and the two streams are differenced. What is left is the
+    encoder's own quantization (mean |dY| <= 1.5 on a correct render), so a
+    frame that differs by more than MASTER_DELTA_LIMIT is a frame the video
+    does not contain - the defect that let a shot with lost frames pass every
+    quality gate.
+    """
+    import shutil
+
+    from core.rendering.encoding import canvas_background
+    from core.rendering.frames import (
+        MASTER_DELTA_LIMIT,
+        convert_frame_formats,
+        master_video_deltas,
+    )
+
+    frames_dir = os.path.dirname(frames_pattern)
+    if not os.path.isdir(frames_dir) or not [
+            n for n in os.listdir(frames_dir) if n.endswith(".png")]:
+        # No master to compare against. S4's _verify_measured_object already
+        # refuses to gate a shot whose frames are missing, so this only
+        # happens when the frames are gone (or the check is stubbed out).
+        # Record that the binding was NOT measured — a row claiming a pass
+        # would be a claim nothing verified.
+        print("SKIP  master    master_video_luma_delta no frame master to compare against")
+        return {"id": "master_match", "metric": "master_video_luma_delta",
+                "value": None, "hi": MASTER_DELTA_LIMIT, "pass": None,
+                "status": "not_measured",
+                "reason": "no frame master exists for this shot"}
+
+    work = os.path.join(ROOT, ".tmp", f"gate-master-{spec['id']}")
+    try:
+        uniform_dir = convert_frame_formats(frames_dir, work, fps)
+        _, _, bg_color = canvas_background(spec)
+        deltas = master_video_deltas(spec, uniform_dir, mp4, canvas_bg=bg_color)
+    except (RuntimeError, OSError) as ex:
+        print(f"FAIL  master    master_video_luma_delta could not compare the mp4 with "
+              f"the frame master: {ex}")
+        return {"id": "master_match", "metric": "master_video_luma_delta",
+                "value": None, "hi": MASTER_DELTA_LIMIT, "pass": False,
+                "measurement_ok": False, "error": str(ex)}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    if not deltas:
+        print("FAIL  master    master_video_luma_delta no frame could be compared")
+        return {"id": "master_match", "metric": "master_video_luma_delta",
+                "value": None, "hi": MASTER_DELTA_LIMIT, "pass": False,
+                "measurement_ok": False}
+
+    worst = max(deltas, key=lambda d: d[1])
+    over = [d for d in deltas if d[1] > MASTER_DELTA_LIMIT]
+    ok = not over
+    print(f"{'PASS' if ok else 'FAIL'}  master    master_video_luma_delta "
+          f"{worst[1]:.3f}  [<= {MASTER_DELTA_LIMIT}]  "
+          f"({len(deltas)} frames compared, worst at frame {worst[0]})")
+    if over:
+        listed = ", ".join(str(d[0]) for d in over[:12])
+        more = "" if len(over) <= 12 else f" (+{len(over) - 12} more)"
+        print(f"      the video does not match the frame master at frame(s): {listed}{more}")
+    return {
+        "id": "master_match", "metric": "master_video_luma_delta",
+        "value": round(worst[1], 4), "hi": MASTER_DELTA_LIMIT, "pass": ok,
+        "frames_compared": len(deltas), "worst_frame": worst[0],
+        "over_limit_frames": [d[0] for d in over][:24],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="S4: Quality gates validation")
     parser.add_argument("--spec", default=None, help="Path to spec file (required)")
@@ -538,6 +609,15 @@ def main():
         print(f"{'PASS' if ok else 'WARN'}  encoder   ffmpeg_fingerprint   manifest={vid['encoder'][:12]} live={live[:12]}")
         results.append({"id": "encoder", "metric": "ffmpeg_fingerprint",
                         "value": live, "pass": ok, "warn": not ok})
+
+    # The delivered mp4 must BE the encoding of the frame master. The manifest
+    # binds the frames to the shot, but nothing compared the mp4's PIXELS with
+    # those frames: a video that lost frames to an encoder defect passed every
+    # quality gate while no longer matching the frames it was encoded from.
+    master_row = _master_match_gate(spec, frames, mp4, FPS)
+    results.append(master_row)
+    if master_row.get("pass") is False:
+        red = True
 
     gate_dir = os.path.join(ROOT, "build", "gates")
     os.makedirs(gate_dir, exist_ok=True)
