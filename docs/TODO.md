@@ -102,6 +102,24 @@ Remotion 写出的 PNG 带 alpha 通道，而 S3 把它直接编成 `yuv420p` �
 3. **接缝音频空洞与单位**：`core/assembly/timeline.py` 的 `_seam_audio_hole_detail` 改用单次 PCM 解码 + `250ms` 滑动窗同时扫描切点前/中/后（`[cut-0.45s, cut+0.45s]`），抓出此前漏检的“镜头 1 尾端空洞”并避免长窗平均稀释；修正 `black_with_sound` 将短窗 RMS 错标成 `LUFS` 的文本问题（改回 `dBFS`）。
 测试：`tests/stages/test_encode_opacity.py`、`tests/stages/test_compose_video_sync.py`、`tests/core/test_seam_audio_hole.py`、`tests/core/test_black_gate_sensitivity.py`、`tests/core/test_audio_gate_honesty.py`。
 
+## 10. 画面与音轨的 trim 落在不同的时间点（wrap-exp-03 实测 · 待做）
+
+**问题**：同一层的 `trim` 被两处消费，落在**不同的时间点**：
+- 画面：`remotion/Shot.tsx` 的 `trimBefore = round(trim[0] * fps)` → 消费的是 **prepared 文件**
+  （S2 已把源重编码到镜头帧率），实测渲染帧对齐 prepared 第 47 帧（47/30 = 1.567 s，像素 MAD 1.64）；
+- 音轨：`core/rendering/encoding.py` 的 `atrim=start={t0}:end={t1}`，`t0` 来自 `video_timeline()`，
+  实测落在**约 1.25 s**——正好是素材自身淡入低谷里。
+
+**后果**：剪切点上音轨比画面**早了约 0.32 s**，于是接缝处出现 16 dB / 90 ms 的电平下陷
+（−15.8 → −32.0 dBFS，250–300 ms 后回升）。**改 trim 只会让画面动、不会让声音跟上**——
+这就是为什么反复调 trim 都躲不开那个坑（画面落在准备版的 47 帧 ✓，声音落在别处 ✗）。
+
+**修法方向**：两处必须消费**同一个**时间点——要么音轨的 `atrim` 也以 prepared 文件的时间轴
+（30 fps）解释，要么画面与音轨都改为消费源素材的时间轴并各自按源帧率换算；
+无论哪种，都要加一条门禁：**剪切点两侧的画面与声音窗口必须一致**（现在 `seam_audio_hole`
+只看电平形状，看不见"画面切在 A 点、声音切在 B 点"）。
+验收第 ⑦ 条明写「画面与声音须同窗裁剪」，这条门禁就是为它准备的。
+
 ---
 
 ## 待办
