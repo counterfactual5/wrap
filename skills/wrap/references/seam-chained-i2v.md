@@ -60,7 +60,34 @@ Measured seams fail in these four ways; each has a check that catches it.
 |---|---|---|
 | 1 | The two keyframe stills are not the same subject, so the clip morphs | Compare the subject's R−B **and** its form (sleeves, buttons, wear, pocket, weave) across the two stills, and the chroma sweep across the clip's frames |
 | 2 | The picture jumps scale at the cut (near → wide) and nothing explains it | Measure the mean |Δluma| across the cut against the shot's own frame-to-frame variation; if it stands out, the cut is a visible jump — either match the framings or name the reset in the copy |
-| 3 | The audio dips under the cut and recovers (a hole, not a fade) | `gates_full_*.json` → `seam_audio_hole` (the level before, under and after the cut) |
+| 3 | The audio dips under the cut and recovers (a hole, not a fade) | `gates_full_*.json` → `seam_audio_hole` (the level before, under and after the cut). It reads the level in **20 ms windows**: a long window averages a short hole away, and a gate that reports "clean" over a real dip is worse than no gate |
 | 4 | A short black dip at the cut is invisible to the old gate | `gates_full_*.json` → `black` and `black_with_sound` |
+
+## The delivered film must BE the encoding of the frame master
+
+A shot ships as two artifacts: the frame master (`build/frames/<shot>/*.png`) and the
+delivered mp4. Nothing in the pipeline used to compare their **pixels** — the manifest
+binds the frames to the shot, and that is all. So an encoder that loses frames produces a
+video that no longer matches the master it was encoded from, and every quality gate passes
+it.
+
+Measured: Remotion writes RGBA only for the frames that carry transparency and RGB for the
+rest, so a rendered sequence mixes color types; the PNG demuxer then changes the decoded
+format mid-stream, ffmpeg reconfigures the filter graph, the overlay's frame sync resets,
+and the encoder emits the bare background sheet — a black frame — at positions that **differ
+from run to run** (five encodes of the same 360 frames lost five different sets of frames).
+
+Checks:
+
+- S3 normalizes the sequence to one pixel format before encoding; the pixels do not change.
+- S4's `master_match` gate composites the master over the canvas background the way the
+  encoder does and differences the two streams; a correct render stays at or below ~1.5
+  mean |ΔY| (the encoder's own quantization), a corrupted one at 35–61.
+- **When reviewing a delivered film, check the binding yourself**: decode the mp4 and the
+  master, find the flat/black frames in each, and compare the sets. They must be identical.
+  A black frame in the film that is not a transparent frame in the master is a lost frame.
+  Do not conclude "the video is from a different render" — re-encode the master with the
+  engine's own command and compare; if the re-encode loses frames too, the encoder is the
+  problem, not the render.
 
 Part of the wrap skill — see skills/wrap/SKILL.md; pitfalls referenced live in pitfalls.md.
