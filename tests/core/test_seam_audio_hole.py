@@ -62,6 +62,25 @@ class _SeamAudioHole(unittest.TestCase):
         self.assertTrue(rows["seam_audio_hole"]["pass"],
                         f"a fade-out that stays down is not a hole: {rows['seam_audio_hole']}")
 
+    def test_a_dip_immediately_before_a_cut_also_fails(self):
+        film = os.path.join(BUILD, "pre-hole.mp4")
+        # The dip ends AT the cut, hitting the tail of shot A rather than the head of shot B.
+        _film(film, dip_start=0.80, dip_seconds=0.40)
+        gate_full_video(film, "seam-pre-hole", [("a", 0.0, 1.2), ("b", 1.2, 1.2)], allow_black=False)
+        rows = _gates("seam-pre-hole")
+        self.assertIn("seam_audio_hole", rows)
+        self.assertFalse(rows["seam_audio_hole"]["pass"],
+                         f"a pre-cut dip that recovers at a cut must fail: {rows['seam_audio_hole']}")
+
+    def test_a_short_crossfade_at_cut_passes(self):
+        film = os.path.join(BUILD, "crossfade.mp4")
+        # An 80 ms cross-shot fade centered on the cut is normal audio shaping, not a hole.
+        _film(film, dip_start=1.16, dip_seconds=0.08)
+        gate_full_video(film, "seam-crossfade", [("a", 0.0, 1.2), ("b", 1.2, 1.2)], allow_black=False)
+        rows = _gates("seam-crossfade")
+        self.assertTrue(rows["seam_audio_hole"]["pass"],
+                        f"a short 80 ms crossfade at a cut should pass: {rows['seam_audio_hole']}")
+
 
 if __name__ == "__main__":
     unittest.main()

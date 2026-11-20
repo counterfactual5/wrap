@@ -8,6 +8,7 @@ from core.runtime.config import ROOT
 from core.audio.sentinel import has_bgm as declares_bgm
 from core.rendering.timeline import atempo_chain, video_timeline
 from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
+from core.spec.constants import HEX
 
 
 def video_audio_source(spec):
@@ -99,7 +100,7 @@ def encode_mp4(spec, frames_dir, out_mp4):
                 input_args + ["-i", clip_audio],
                 "-af",
                 base_af,
-                round(shot_seconds, 4),
+                round(shot_seconds, 6),
                 audio_file,
             )
         except subprocess.CalledProcessError as ex:
@@ -140,21 +141,38 @@ def encode_mp4(spec, frames_dir, out_mp4):
     # them straight to yuv420p DISCARDS that alpha, so a layer's opacity ramp
     # never reaches the picture: a backdrop faded to 45% arrives at full
     # strength, and only opacity 0 (the element dropped entirely) reads as
-    # black. Composite the frames over an opaque black sheet first — that is
-    # what a transparent area means in a video without an alpha channel, and
-    # it makes a partial opacity darken the picture the way it reads on screen.
+    # black. Composite the frames over an opaque sheet matching spec.canvas.bg
+    # (or black when unset) — that preserves both transparent opacity ramps and
+    # the project's declared canvas background.
     canvas = spec.get("canvas") or {}
     cw, ch = canvas.get("w") or 1920, canvas.get("h") or 1080
+    raw_bg = str(canvas.get("bg") or "").strip()
+    if HEX.fullmatch(raw_bg):
+        bg_color = f"0x{raw_bg[1:]}"
+    elif raw_bg.lower() in ("black", "white"):
+        bg_color = raw_bg.lower()
+    else:
+        bg_color = "black"
     cmd = [
         "ffmpeg", "-v", "error", "-y",
-        "-f", "lavfi", "-i", f"color=c=black:s={cw}x{ch}:r={FPS}",
+        "-f", "lavfi", "-i", f"color=c={bg_color}:s={cw}x{ch}:r={FPS}",
         "-framerate", str(FPS), "-i", os.path.join(frames_dir, "%05d.png"),
     ]
-    if audio_file and os.path.exists(audio_file):
+    has_audio_file = bool(audio_file and os.path.exists(audio_file))
+    if has_audio_file:
         cmd.extend(["-i", audio_file])
 
+    # Pad audio with silence (`apad`) before `-shortest` so AAC packet rounding
+    # (e.g. 5.033311s vs 151 frames = 5.033333s) or a short non-looping clip
+    # track can never truncate the final rendered video frame; `[v]` remains
+    # strictly bounded by `overlay=shortest=1` to exact `durationInFrames`.
+    filter_complex = (
+        "[0:v][1:v]overlay=shortest=1[v];[2:a]apad[a]"
+        if has_audio_file
+        else "[0:v][1:v]overlay=shortest=1[v]"
+    )
     cmd.extend([
-        "-filter_complex", "[0:v][1:v]overlay=shortest=1[v]",
+        "-filter_complex", filter_complex,
         "-map", "[v]",
         "-frames:v", str(spec["durationInFrames"]), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-threads", "1", "-r", str(FPS),
@@ -162,10 +180,10 @@ def encode_mp4(spec, frames_dir, out_mp4):
         "-movflags", "+faststart", "-fflags", "+bitexact", "-flags:v", "+bitexact",
         "-pix_fmt", "yuv420p",
     ])
-    if audio_file and os.path.exists(audio_file):
+    if has_audio_file:
         # `-map [v]` above means ffmpeg no longer auto-maps the soundtrack:
-        # input 0 is the colour sheet, 1 the frames, 2 the audio.
-        cmd.extend(["-map", "2:a", "-c:a", "aac", "-b:a", "192k", "-shortest"])
+        # input 0 is the colour sheet, 1 the frames, 2 the padded audio.
+        cmd.extend(["-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-shortest"])
 
     cmd.append(out_mp4)
     print(" ".join(cmd))

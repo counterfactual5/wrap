@@ -63,5 +63,107 @@ class _BackdropOpacityReachesTheVideo(unittest.TestCase):
                            f"the fade went too far — it is not compositing (first={first:.1f} last={last:.1f})")
 
 
+class _EncodingCanvasBgAndFrameCount(unittest.TestCase):
+    """Real ffmpeg checks for declared canvas.bg compositing and exact 1-frame preservation."""
+
+    def test_declared_canvas_bg_reaches_transparent_regions(self):
+        import subprocess
+        import tempfile
+        from unittest import mock
+        from core.audio import measure_av_durations
+        from core.rendering import encoding
+        from core.rendering.video_frames import _write_solid_png
+
+        with tempfile.TemporaryDirectory() as tmp:
+            frames_dir = os.path.join(tmp, "frames")
+            os.makedirs(frames_dir)
+            for i in range(1, 11):
+                _write_solid_png(os.path.join(frames_dir, f"{i:05d}.png"), 32, 32, (0, 0, 0, 0))
+            out_mp4 = os.path.join(tmp, "out.mp4")
+            spec = {
+                "id": "bg-color-test",
+                "canvas": {"w": 32, "h": 32, "bg": "#204080"},
+                "fps": 30,
+                "durationInFrames": 10,
+                "layers": [],
+            }
+            with mock.patch.object(encoding, "ROOT", tmp):
+                encoding.encode_mp4(spec, frames_dir, out_mp4)
+            probe = measure_av_durations(out_mp4)
+            self.assertEqual(probe["video_frames"], 10)
+            rgb = subprocess.check_output([
+                "ffmpeg", "-v", "error", "-i", out_mp4,
+                "-vf", "select=eq(n\\,0)", "-vframes", "1",
+                "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+            ])
+            n = len(rgb) // 3
+            mean_r = sum(rgb[0::3]) / n
+            mean_g = sum(rgb[1::3]) / n
+            mean_b = sum(rgb[2::3]) / n
+            self.assertLess(abs(mean_r - 0x20), 10, f"expected R~32, got {mean_r:.1f}")
+            self.assertLess(abs(mean_g - 0x40), 10, f"expected G~64, got {mean_g:.1f}")
+            self.assertLess(abs(mean_b - 0x80), 10, f"expected B~128, got {mean_b:.1f}")
+
+    def test_clip_audio_preserves_all_151_frames_at_30fps(self):
+        import subprocess
+        import tempfile
+        from unittest import mock
+        from core.audio import measure_av_durations
+        from core.rendering import encoding
+        from core.rendering.video_frames import _write_solid_png
+        from core.runtime import manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_mp4 = os.path.join(tmp, "clip.mp4")
+            subprocess.run([
+                "ffmpeg", "-y", "-v", "error",
+                "-f", "lavfi", "-i", "color=c=#335577:s=32x32:r=30:d=6.0",
+                "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=6.0",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                clip_mp4,
+            ], check=True)
+            manifest_path = os.path.join(tmp, "manifest.json")
+            frames_dir = os.path.join(tmp, "frames")
+            os.makedirs(frames_dir)
+            for i in range(1, 152):
+                _write_solid_png(os.path.join(frames_dir, f"{i:05d}.png"), 32, 32, (40, 80, 120, 255))
+
+            old_manifest = os.environ.get("POSTER_MANIFEST")
+            os.environ["POSTER_MANIFEST"] = manifest_path
+            try:
+                manifest.register("prepared", "frames-151/clip", clip_mp4)
+                for trim_end in (5.533, 2.0):
+                    out_mp4 = os.path.join(tmp, f"out_{trim_end}.mp4")
+                    spec = {
+                        "id": "frames-151",
+                        "canvas": {"w": 32, "h": 32, "bg": "#000000"},
+                        "fps": 30,
+                        "durationInFrames": 151,
+                        "layers": [{
+                            "id": "vid",
+                            "type": "video",
+                            "asset": "clip",
+                            "trim": [0.5, trim_end],
+                            "loop": False,
+                            "muted": False,
+                            "rect": [0, 0, 32, 32],
+                            "z": 0,
+                        }],
+                    }
+                    with mock.patch.object(encoding, "ROOT", tmp):
+                        encoding.encode_mp4(spec, frames_dir, out_mp4)
+                    probe = measure_av_durations(out_mp4)
+                    self.assertEqual(
+                        probe["video_frames"], 151,
+                        f"trim=[0.5, {trim_end}] dropped frames: {probe}",
+                    )
+                    self.assertTrue(probe["has_audio"])
+            finally:
+                if old_manifest is None:
+                    os.environ.pop("POSTER_MANIFEST", None)
+                else:
+                    os.environ["POSTER_MANIFEST"] = old_manifest
+
+
 if __name__ == "__main__":
     unittest.main()

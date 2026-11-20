@@ -4,6 +4,7 @@
 """
 import json
 import math
+import os
 import re
 import subprocess
 from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
@@ -59,5 +60,8 @@ def run_two_pass_loudnorm(input_args, filter_flag, base_filter, target_duration,
         + list(codec_args)
         + [out_path]
     )
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     subprocess.run(pass2_cmd, check=True, timeout=LOCAL_TOOL_TIMEOUT)
     return out_path

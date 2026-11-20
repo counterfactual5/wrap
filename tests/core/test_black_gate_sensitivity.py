@@ -92,6 +92,9 @@ class _ShortBlackDipIsCaught(unittest.TestCase):
         self.assertIn("black_with_sound", by_id)
         self.assertFalse(by_id["black_with_sound"]["pass"],
                          "a black frame under a playing soundtrack must fail")
+        val = str(by_id["black_with_sound"]["value"])
+        self.assertIn("dBFS", val)
+        self.assertNotIn("LUFS", val)
 
     def test_a_clean_film_still_passes(self):
         film = os.path.join(BUILD, "clean.mp4")

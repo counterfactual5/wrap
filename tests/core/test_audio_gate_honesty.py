@@ -689,5 +689,43 @@ class TestDefect16ScratchFilesAreCleanedUp(unittest.TestCase):
                             "the narration metadata must survive")
 
 
+class TestDefect17VideoFrameCountMustMatchSpec(GateTestCase):
+    """Defect 17: output frame count must match spec.durationInFrames (e.g. no 1-frame AAC chop)."""
+
+    def test_gate_fails_when_video_frames_differ_from_spec(self):
+        code, results = self.run_gate(
+            self.base_spec(durationInFrames=151, audio={"bgm": "theme.wav"}),
+            measure_av_durations=self.probed(video_frames=150),
+            measure_audio_silence=self.audible(),
+            measure_audio_loudness_detail={"return_value": {
+                "lufs": -16.0, "measurement_ok": True, "silent": False, "error": None}},
+        )
+        self.assertEqual(code, 1, "a dropped video frame must fail S4")
+        vfc = next(
+            (r for r in results if r.get("metric") == "video_frame_count"),
+            None,
+        )
+        self.assertIsNotNone(vfc, f"video_frame_count missing in {results}")
+        self.assertFalse(vfc["pass"])
+        self.assertEqual(vfc["value"], 150)
+
+    def test_gate_passes_when_video_frames_match_spec(self):
+        code, results = self.run_gate(
+            self.base_spec(durationInFrames=30, audio={"bgm": "theme.wav"}),
+            measure_av_durations=self.probed(video_frames=30),
+            measure_audio_silence=self.audible(),
+            measure_audio_loudness_detail={"return_value": {
+                "lufs": -16.0, "measurement_ok": True, "silent": False, "error": None}},
+        )
+        self.assertEqual(code, 0)
+        vfc = next(
+            (r for r in results if r.get("metric") == "video_frame_count"),
+            None,
+        )
+        self.assertIsNotNone(vfc, f"video_frame_count missing in {results}")
+        self.assertTrue(vfc["pass"])
+        self.assertEqual(vfc["value"], 30)
+
+
 if __name__ == "__main__":
     unittest.main()

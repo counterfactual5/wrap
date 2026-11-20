@@ -158,14 +158,14 @@ def measure_audio_loudness(file_path, start=None, duration=None):
 
 
 def measure_av_durations(file_path):
-    """Measures video and audio stream durations and their absolute delta in seconds.
+    """Measures video and audio stream durations, video frame count, and AV delta.
 
     Also reports `measurement_ok`: False when ffprobe could not read the file
     at all. A failed probe is NOT "this file has no audio track" — it means
     the audio gates have nothing to measure and must fail, not pass.
     """
     cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
+        "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration,nb_frames",
         "-of", "json", file_path
     ]
     res = subprocess.run(cmd, capture_output=True, text=True,
@@ -177,6 +177,7 @@ def measure_av_durations(file_path):
                       f"{_stderr_tail(res.stderr)}"),
             "video_duration": 0.0,
             "audio_duration": 0.0,
+            "video_frames": None,
             "delta": 0.0,
             "has_audio": False,
         }
@@ -184,6 +185,7 @@ def measure_av_durations(file_path):
         data = json.loads(res.stdout or "{}")
         streams = data.get("streams") or []
         durs = {}
+        video_frames = None
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
@@ -191,6 +193,11 @@ def measure_av_durations(file_path):
             if codec_type is None or "duration" not in stream:
                 continue
             durs[codec_type] = float(stream["duration"])
+            if codec_type == "video" and stream.get("nb_frames") is not None:
+                try:
+                    video_frames = int(stream["nb_frames"])
+                except (ValueError, TypeError):
+                    pass
     except (ValueError, TypeError) as ex:
         return {
             "measurement_ok": False,
@@ -198,6 +205,7 @@ def measure_av_durations(file_path):
                       f"{ex}"),
             "video_duration": 0.0,
             "audio_duration": 0.0,
+            "video_frames": None,
             "delta": 0.0,
             "has_audio": False,
         }
@@ -208,6 +216,7 @@ def measure_av_durations(file_path):
         "error": None,
         "video_duration": vid_d,
         "audio_duration": aud_d,
+        "video_frames": video_frames,
         "delta": abs(vid_d - aud_d),
         "has_audio": "audio" in durs
     }

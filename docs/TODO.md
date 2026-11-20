@@ -82,26 +82,25 @@ Remotion 写出的 PNG 带 alpha 通道，而 S3 把它直接编成 `yuv420p` �
 短窗的 integrated loudness 不可靠（需要门限块），所以用短窗 RMS 量洞里的电平 ✓。
 测试：`tests/core/test_black_gate_sensitivity.py`。
 
-## 9. trim 的秒数按「镜头帧率」换算，源素材帧率不同时会落在错的地方（wrap-exp-03 实测 · 待做）
+## 9. 经复核：`24fps` 视频 `trim` 并非 1.25× 错位（`S2` 已按镜头帧率重编码）—— 已核实关闭
 
-**问题**：`trim` 在 spec 里声明的单位是**秒**（校验器的报错原文：`video trim must be
-[startSec, endSec]`），但实现把它换算成**帧号**时用的是**镜头的帧率**：
+**原登记假设**（`37d54eb`）：认为 `Shot.tsx` 用镜头帧率（30）乘 `trim` 秒数会让 `24fps` 视频落到 1.25× 处（如 `1.55 → 1.94 s`），建议改用源帧率 `24fps` 换算 `trimBefore`。
 
-- `core/rendering/timeline.py`：`t0 = _js_round(trim[0] * fps) / fps`
-- `remotion/Shot.tsx`：`trimBefore={Math.round(layer.trim[0] * fps)}`
+**像素级复核结果**：经逐像素绝对差实测 `wrap-exp-03` 的 `build/frames/scramble/00001.png`（`trim: [1.55, 6.583]`）：
+- `stages/02_prepare.py` 在 S2 **已经用 `-r {FPS}` 把 24fps 源视频重编码成了 30fps 的 `build/prepared/{shot}/{asset}.mp4`**；
+- Remotion 消费的是该 `30fps` prepared 文件，实测 `00001.png` 精准对齐 prepared 第 47 帧（`47/30 = 1.567 s`，MAD=1.64），对应原始 24fps 视频第 37 帧（`37/24 = 1.542 s`，MAD=9.90）——**没有 `1.94 s` 的 1.25× 偏差**。
 
-而 Remotion 的 `trimBefore` 是**源素材的帧号**。源素材是 24 fps（H3 的 768P 片段）、
-镜头是 30 fps 时，`trim: [1.55, 6.583]` 实际落在**源素材的 1.94 s**（1.25 倍），
-不是声明的 1.55 s。音轨链用的是同一组数（`atrim=start=t0:end=t1`），
-所以画面与声音彼此对齐 ✓，但**两者一起落错了地方**。
+因此**不可**把 `trimBefore` 改成按源帧率 `24` 换算（在 S2 输出 `30fps` prepared 剪辑的前提下那样反而会切到 `37/30 = 1.233 s` 造成真错位）。若未来要免重编码直通原始 24fps 素材，届时再与 S2 帧率契约一并改造。
 
-**后果**：trim 的落点无法靠"再调一点"修正——本片为躲开素材音轨里的低谷，
-反复改了 3 次 trim，每次都因为这 1.25 倍而落在意料之外的位置（这是排查被带偏的直接原因）。
+---
 
-**修法方向**：trim 的秒数应当按**源素材的帧率**换算成源帧号；
-S2 已经探测了素材（时长/尺寸），把源帧率一并探测并写进 manifest / 渲染 props，
-`video_timeline` 与 `Shot.tsx` 都改用源帧率。引擎自己的 30 fps 素材不受影响（30 = 30），
-所以这是一处**只在源帧率与镜头帧率不同时才显形**的偏差。
+### `clip_audio` 截断丢末帧 + 底层合成无视 `canvas.bg` —— 完成于 `<本次提交>`
+
+1. **`encode_mp4` 丢帧**：`core/rendering/encoding.py` 原先传给两轮 `loudnorm` 的时长被 `round(shot_seconds, 4)` 向下截断（例如 `151 / 30 = 5.033333 s` → `5.0333 s`），经 AAC 1024 采样量化后音频轨比视频少数十微秒，再叠加终端 `-shortest` 导致 ffmpeg 直接砍掉最后一帧视频（151 帧变成 150 帧），而 S4 未检 `nb_frames == durationInFrames`。
+   现已在混流阶段通过 `[2:a]apad[a]` 补齐音频尾零再配合 `-shortest`，确保严格由 `[v]`（精确 `durationInFrames` 帧）定界；`core/audio/mastering.py` 在 pass 2 输出前确保父目录存在（修复全新目录无 `.tmp/` 时失败）；`core/audio/metrics.py` 一并探测 `nb_frames`，`stages/04_gate.py` 新增 `video_frame_count` 门禁。
+2. **`canvas.bg` 穿透**：底层不透明底板不再写死 `color=c=black`，改读 `spec["canvas"].get("bg")`（有效 `#rrggbb` 转 `0xrrggbb`，缺省回落 `black`）。
+3. **接缝音频空洞与单位**：`core/assembly/timeline.py` 的 `_seam_audio_hole_detail` 改用单次 PCM 解码 + `250ms` 滑动窗同时扫描切点前/中/后（`[cut-0.45s, cut+0.45s]`），抓出此前漏检的“镜头 1 尾端空洞”并避免长窗平均稀释；修正 `black_with_sound` 将短窗 RMS 错标成 `LUFS` 的文本问题（改回 `dBFS`）。
+测试：`tests/stages/test_encode_opacity.py`、`tests/stages/test_compose_video_sync.py`、`tests/core/test_seam_audio_hole.py`、`tests/core/test_black_gate_sensitivity.py`、`tests/core/test_audio_gate_honesty.py`。
 
 ---
 

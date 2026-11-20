@@ -16,7 +16,9 @@ end the process now raises `AssemblyError`; `pipeline.py` turns it into the
 exit the author sees.
 """
 import json
+import math
 import os
+import struct
 import subprocess
 
 from core.runtime.config import ROOT
@@ -292,6 +294,80 @@ def _window_rms_db(out_path, start, duration):
     return None
 
 
+def _pcm_rms_db(samples, start_idx, end_idx):
+    """RMS level in dBFS over `samples[start_idx:end_idx]`, or None if empty."""
+    cnt = end_idx - start_idx
+    if cnt <= 0:
+        return None
+    sq = sum(s * s for s in samples[start_idx:end_idx])
+    rms = math.sqrt(sq / cnt) / 32768.0
+    if rms <= 1e-12:
+        return -96.0
+    return 20.0 * math.log10(rms)
+
+
+def _seam_audio_hole_detail(out_path, cut_at, seg_start, next_end):
+    """Probe a single cut boundary `[cut_at - 1.0, cut_at + 1.1]` in one decode.
+
+    Detects dip-and-recover holes whether they sit immediately BEFORE the cut
+    (e.g. a clip track ending early), ACROSS the cut, or immediately AFTER
+    the cut — while remaining insensitive to normal <= 80ms cross-shot fades.
+    Returns a formatted summary string when a hole is found, or None.
+    """
+    win_start = max(seg_start, cut_at - 1.0)
+    win_end = min(next_end, cut_at + 1.1)
+    win_dur = win_end - win_start
+    if win_dur < 0.8:
+        return None
+
+    sr = 16000
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-v", "error",
+         "-ss", f"{win_start:.3f}", "-t", f"{win_dur:.3f}",
+         "-i", out_path, "-vn", "-ac", "1", "-ar", str(sr),
+         "-f", "s16le", "-"],
+        capture_output=True, timeout=LOCAL_TOOL_TIMEOUT)
+    if proc.returncode != 0 or len(proc.stdout) < int(0.4 * sr) * 2:
+        return None
+
+    n_samples = len(proc.stdout) // 2
+    samples = struct.unpack(f"<{n_samples}h", proc.stdout[:n_samples * 2])
+    cut_idx = int(round((cut_at - win_start) * sr))
+
+    pre_end = max(0, cut_idx - int(0.50 * sr))
+    post_start = min(n_samples, cut_idx + int(0.60 * sr))
+    min_shoulder = int(0.15 * sr)
+    if pre_end < min_shoulder or (n_samples - post_start) < min_shoulder:
+        return None
+
+    far_pre = _pcm_rms_db(samples, 0, pre_end)
+    far_post = _pcm_rms_db(samples, post_start, n_samples)
+    if far_pre is None or far_post is None:
+        return None
+
+    near_a = max(0, cut_idx - int(0.45 * sr))
+    near_b = min(n_samples, cut_idx + int(0.45 * sr))
+    bin_n = int(0.25 * sr)
+    step_n = int(0.05 * sr)
+    if near_b - near_a < bin_n:
+        return None
+
+    near_vals = []
+    pos = near_a
+    while pos + bin_n <= near_b:
+        v = _pcm_rms_db(samples, pos, pos + bin_n)
+        if v is not None:
+            near_vals.append(v)
+        pos += step_n
+    if not near_vals:
+        return None
+
+    min_near = min(near_vals)
+    if far_pre - min_near >= 6.0 and far_post - min_near >= 3.0:
+        return f"{cut_at:.3f}s ({far_pre:.1f}->{min_near:.1f}->{far_post:.1f} dBFS)"
+    return None
+
+
 def gate_full_video(out_path, timeline_id, segments, allow_black=False):
     """Post-assembly QC on the concatenated full video.
 
@@ -366,32 +442,25 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
                     silent_holes.append((s, lvl))
             if silent_holes:
                 add("black_with_sound", "blackdetect+audio_loudness",
-                    "; ".join(f"{s['start']:.3f}s ({lvl:.1f} LUFS)" for s, lvl in silent_holes),
+                    "; ".join(f"{s['start']:.3f}s ({lvl:.1f} dBFS)" for s, lvl in silent_holes),
                     False, "no black frame while the soundtrack plays")
             else:
                 add("black_with_sound", "blackdetect+audio_loudness", 0, True,
                     "no black frame while the soundtrack plays")
 
-    # A cut whose audio DIPS and then comes back is a hole, not a fade: the
-    # picture shows a gap while the soundtrack keeps playing. A deliberate
-    # fade-out does not recover, so the recovery is what tells the two apart.
-    # Measured in the field: a 17 dB step at the cut followed by a 0.45 s
-    # dip and a 1.5 s recovery, which no segment-averaged loudness number
-    # could see.
+    # A cut whose audio DIPS (before, across, or right after the cut) and then
+    # comes back is a hole, not a fade: the picture shows a gap while the
+    # soundtrack keeps playing. A deliberate fade-out does not recover, so the
+    # recovery is what tells the two apart.
     if av.get("has_audio") and len(segments) > 1:
         holes = []
         for i in range(len(segments) - 1):
-            cut_at = segments[i][1] + segments[i][2]
-            pre = _window_rms_db(out_path, max(0.0, cut_at - 0.4), 0.4)
-            post = _window_rms_db(out_path, cut_at, 0.4)
-            later = _window_rms_db(out_path, cut_at + 0.6, 0.4)
-            if pre is None or post is None or later is None:
-                continue
-            if pre - post < 6.0:
-                continue                      # no dip at the cut
-            if later < pre - 3.0:
-                continue                      # it stayed down: a fade, not a hole
-            holes.append(f"{cut_at:.3f}s ({pre:.1f}->{post:.1f}->{later:.1f} dBFS)")
+            _, s0, d0 = segments[i]
+            _, s1, d1 = segments[i + 1]
+            cut_at = s0 + d0
+            hole = _seam_audio_hole_detail(out_path, cut_at, s0, s1 + d1)
+            if hole:
+                holes.append(hole)
         add("seam_audio_hole", "seam_level_dip_and_recover", len(holes),
             not holes, "no dip-and-recover at a cut")
         if holes:

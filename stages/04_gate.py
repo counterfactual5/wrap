@@ -336,6 +336,15 @@ def main():
     voice_meta_path = os.path.join(ROOT, ".tmp", f"{shot_id}_audio.aac.meta.json")
     declared_voiceover = bool(isinstance(spec.get("audio"), dict)
                               and (spec.get("audio") or {}).get("voiceover"))
+    if av_probe.get("measurement_ok", True):
+        vframes = av_probe.get("video_frames")
+        expected_frames = spec.get("durationInFrames")
+        if vframes is not None and expected_frames:
+            frames_ok = (vframes == expected_frames)
+            red |= not frames_ok
+            print(f"{'PASS' if frames_ok else 'FAIL'}  frames     video_frame_count    {vframes}  [== {expected_frames}]")
+            results.append({"id": "video_frames", "metric": "video_frame_count",
+                            "value": vframes, "expected": expected_frames, "pass": frames_ok})
     if not av_probe.get("measurement_ok", True):
         # The probe FAILED. That is not the same thing as "this file has no
         # audio track": the gates have nothing to measure, and a check that
