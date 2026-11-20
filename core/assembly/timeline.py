@@ -313,6 +313,17 @@ def _seam_audio_hole_detail(out_path, cut_at, seg_start, next_end):
     (e.g. a clip track ending early), ACROSS the cut, or immediately AFTER
     the cut — while remaining insensitive to normal <= 80ms cross-shot fades.
     Returns a formatted summary string when a hole is found, or None.
+
+    The level is read in SHORT windows (20 ms, 10 ms step), because a long
+    window averages a short hole away. Measured on a real cut: a 90 ms / 16 dB
+    dip at the cut moved a 250 ms window's RMS by only 1.9 dB, so the gate
+    wrote "no hole" over a hole a reviewer could hear. A hole is now:
+      - deeper than 6 dB below the level before the cut,
+      - recovered to within 3 dB of the level after the cut (a fade that
+        stays down is not a hole),
+      - present for at least 40 ms (one noisy window is not a hole), and
+      - not the shape of a cross-shot fade: a dip that straddles the cut and
+        is no longer than 200 ms is normal audio shaping, not a defect.
     """
     win_start = max(seg_start, cut_at - 1.0)
     win_end = min(next_end, cut_at + 1.1)
@@ -345,27 +356,62 @@ def _seam_audio_hole_detail(out_path, cut_at, seg_start, next_end):
     if far_pre is None or far_post is None:
         return None
 
+    # Short windows: a hole is a short event, and averaging it away is what
+    # made this gate blind to it.
+    bin_n = int(0.020 * sr)
+    step_n = int(0.010 * sr)
     near_a = max(0, cut_idx - int(0.45 * sr))
     near_b = min(n_samples, cut_idx + int(0.45 * sr))
-    bin_n = int(0.25 * sr)
-    step_n = int(0.05 * sr)
     if near_b - near_a < bin_n:
         return None
 
-    near_vals = []
+    slots = []
     pos = near_a
     while pos + bin_n <= near_b:
         v = _pcm_rms_db(samples, pos, pos + bin_n)
         if v is not None:
-            near_vals.append(v)
+            slots.append((pos, v))
         pos += step_n
-    if not near_vals:
+    if not slots:
         return None
 
-    min_near = min(near_vals)
-    if far_pre - min_near >= 6.0 and far_post - min_near >= 3.0:
-        return f"{cut_at:.3f}s ({far_pre:.1f}->{min_near:.1f}->{far_post:.1f} dBFS)"
-    return None
+    min_pos, min_near = min(slots, key=lambda s: s[1])
+    if far_pre - min_near < 6.0:
+        return None
+    if far_post - min_near < 3.0:
+        # The level stays down: a fade, not a hole.
+        return None
+
+    # How long the level stays under the pre-cut level: the run of short
+    # windows around the minimum that sit 6 dB below the level before the cut.
+    threshold = far_pre - 6.0
+    below = [i for i, (_, v) in enumerate(slots) if v < threshold]
+    if not below:
+        return None
+    centre = min(range(len(slots)), key=lambda i: slots[i][1])
+    if centre not in below:
+        return None
+    lo = hi = centre
+    while lo - 1 in below:
+        lo -= 1
+    while hi + 1 in below:
+        hi += 1
+    dip_start = win_start + slots[lo][0] / sr
+    dip_end = win_start + (slots[hi][0] + bin_n) / sr
+    if dip_end - dip_start < 0.040:
+        # A single noisy window is not a hole.
+        return None
+    # The shape of a cross-shot fade: the level is already down on BOTH sides
+    # of the cut. A hole sits on one side (the clip's own audio died there),
+    # so it is reported even when it is short.
+    pre_level = _pcm_rms_db(samples, max(0, cut_idx - int(0.020 * sr)), cut_idx)
+    post_level = _pcm_rms_db(samples, cut_idx, min(n_samples, cut_idx + int(0.020 * sr)))
+    if pre_level is not None and post_level is not None \
+            and pre_level < threshold and post_level < threshold \
+            and dip_end - dip_start <= 0.20:
+        return None
+    return f"{cut_at:.3f}s ({far_pre:.1f}->{min_near:.1f}->{far_post:.1f} dBFS, " \
+           f"{dip_start:.3f}s-{dip_end:.3f}s)"
 
 
 def gate_full_video(out_path, timeline_id, segments, allow_black=False):

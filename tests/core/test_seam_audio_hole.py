@@ -21,14 +21,14 @@ from core.assembly.timeline import gate_full_video
 BUILD = os.path.join(ROOT, "build", "tmp-seam")
 
 
-def _film(path, dip_start=1.2, dip_seconds=0.45, total=2.4, fps=30):
+def _film(path, dip_start=1.2, dip_seconds=0.45, total=2.4, fps=30, dip_volume=0.02):
     """A film whose audio drops to near-silence for a moment after 0.9 s and
     then comes back — the shape of a hole at a cut."""
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y",
          "-f", "lavfi", "-i", f"color=c=gray:s=320x180:r={fps}:d={total}",
          "-f", "lavfi", "-i", f"sine=frequency=200:duration={total}",
-         "-af", f"volume=enable='between(t,{dip_start},{dip_start+dip_seconds})':volume=0.02",
+         "-af", f"volume=enable='between(t,{dip_start},{dip_start+dip_seconds})':volume={dip_volume}",
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", path],
         check=True, timeout=120)
 
@@ -80,6 +80,26 @@ class _SeamAudioHole(unittest.TestCase):
         rows = _gates("seam-crossfade")
         self.assertTrue(rows["seam_audio_hole"]["pass"],
                         f"a short 80 ms crossfade at a cut should pass: {rows['seam_audio_hole']}")
+
+    def test_a_short_deep_dip_at_a_cut_fails(self):
+        """A 90 ms / 16 dB dip is short enough that a long analysis window
+        averages it away, and deep enough that a viewer hears it. The gate
+        used to write "no hole" over exactly this shape: measured on a real
+        cut, a 250 ms window's RMS moved by only 1.9 dB."""
+        film = os.path.join(BUILD, "short-deep-hole.mp4")
+        _film(film, dip_start=1.2, dip_seconds=0.09, dip_volume=0.16)
+        gate_full_video(film, "seam-short-deep", [("a", 0.0, 1.2), ("b", 1.2, 1.2)], allow_black=False)
+        rows = _gates("seam-short-deep")
+        self.assertFalse(rows["seam_audio_hole"]["pass"],
+                         f"a short deep dip that recovers at a cut must fail: {rows['seam_audio_hole']}")
+
+    def test_a_short_deep_dip_before_a_cut_fails(self):
+        film = os.path.join(BUILD, "short-deep-pre-hole.mp4")
+        _film(film, dip_start=1.11, dip_seconds=0.09, dip_volume=0.16)
+        gate_full_video(film, "seam-short-deep-pre", [("a", 0.0, 1.2), ("b", 1.2, 1.2)], allow_black=False)
+        rows = _gates("seam-short-deep-pre")
+        self.assertFalse(rows["seam_audio_hole"]["pass"],
+                         f"a short deep dip before a cut must fail: {rows['seam_audio_hole']}")
 
 
 if __name__ == "__main__":
