@@ -14,3 +14,11 @@ public/
 .DS_Store
 
 .video_agent/
+
+# Local credentials and secrets
+.env
+.env.*
+!.env.example
+models.local.json
+*.pem
+*.key
