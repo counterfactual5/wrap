@@ -369,6 +369,13 @@ Include project-specific narrative and audience-comprehension checks in
 duration delta ≤ 250 ms, zero digital-black intervals, whole-track
 silence/loudness, AV alignment ≤ 250 ms, per-segment loudness jump ≤ 3 LU
 → `build/gates_full_{timeline_id}.json`.
+**Two of those gates are about the SEAMS and are the ones that catch the
+defects a per-shot gate cannot see**: `seam_audio_hole` (the sound dips under
+a cut and recovers — a hole, not a fade) and `seam_digital_gap` (the sound
+STOPS under a cut — a clipped sound; its own caliber, because the dip gate
+needs a ≥ 40 ms span and a shorter drop to the silence floor slips past it).
+A cut that loses its sound is a film-level defect: every shot's own gates can
+pass and the film still has a click in it.
 
 ### Multi-shot timelines (Image → Clip → Seam → Film)
 

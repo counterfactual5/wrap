@@ -276,8 +276,21 @@ python3 stages/03_compose.py --spec spec/my-shot.poster.json
 
 ## Reusable Agent Skill
 
-Packaged at `skills/wrap/` (installed as a symlink at
-`~/.agents/skills/wrap`). It carries the operating manual: the zero-template
+Packaged at `skills/wrap/`. It carries the operating manual: the zero-template
 contract, the layer/tracks protocol, the generation capability schema, audio
 rules, stage table, timelines, rigging, and the measured authoring
 pitfalls.
+
+Install it as a symlink so the repo stays the single source of truth and the
+skill never drifts from the engine it documents:
+
+```bash
+# MiniMax Code (user scope - visible to every Agent)
+mkdir -p ~/.minimax/skills && ln -sfn "$PWD/skills/wrap" ~/.minimax/skills/wrap
+
+# AGENTS.md-style runtimes (Claude Code and friends)
+mkdir -p ~/.agents/skills && ln -sfn "$PWD/skills/wrap" ~/.agents/skills/wrap
+```
+
+After installing, load it by name (`wrap`) — it resolves through the symlink
+to `skills/wrap/SKILL.md` in this repo.

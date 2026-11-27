@@ -119,7 +119,9 @@ Checks:
   measurement cannot fail. What proves the absence of holes in that case is the **absence of
   the alpha channel itself** — plus the frame count, the black-frame check and the freeze
   check. Quoting the measured alpha as if it were a test is a vacuous check, and an
-  independent reviewer will say so.
+  independent reviewer will say so. S3 now prints which of the two it rests on
+  ("measured: …" vs "not a measurement: the frames carry no alpha channel …"), so the
+  distinction travels with the log.
 - **When reviewing a delivered film, look for the holes yourself**: the `black` and
   `black_with_sound` rows in `gates_full_*.json` report them, but they only run on the
   assembled film. Decode the frame master and look for transparent regions where a video
