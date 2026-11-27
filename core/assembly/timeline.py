@@ -414,6 +414,94 @@ def _seam_audio_hole_detail(out_path, cut_at, seg_start, next_end):
            f"{dip_start:.3f}s-{dip_end:.3f}s)"
 
 
+# A cut whose audio falls to the SILENCE FLOOR for a moment is a different
+# defect from a dip: the sound STOPS and restarts, which is audible as a
+# click, not as a quiet passage. Measured on a real H3 clip: the third shot's
+# audio began 27.9 ms after its picture, so the cut fell inside that gap and
+# the film carried 27.5 ms of digital silence under it. The dip-and-recover
+# gate calls that clean — its span is below the 40 ms that gate requires —
+# so the gap needs its own measurement.
+#
+# The floor is -60 dBFS, not "the samples are zero": an AAC round trip puts
+# a ramp on the edges of a silence (measured: the edge windows of a real
+# 27.5 ms gap read -58.8 and -84 dBFS), so a per-sample zero test would
+# miss the very gap it is meant to catch.
+#
+# What counts as a gap, and what does not:
+#   - the sound must be PRESENT on both sides of it (> -45 dBFS, the
+#     engine's "audible" threshold). A film whose soundtrack is silent on
+#     purpose has no gap to report, and a shot that ends in silence with the
+#     next one starting in silence is a deliberate pause, not a clipped sound.
+#   - the gap must be SHORT (10–100 ms). A longer silence with the sound
+#     resuming right after it is the next shot starting quietly.
+#   - the gap must TOUCH the cut. A dropout in the middle of a shot is a
+#     source-material problem, not a seam problem.
+DIGITAL_GAP_MIN_MS = 10.0
+DIGITAL_GAP_MAX_MS = 100.0
+DIGITAL_SILENCE_FLOOR_DB = -60.0
+DIGITAL_GAP_TOUCH_MS = 50.0      # how close to the cut the gap must lie
+DIGITAL_GAP_WINDOW_S = 0.002     # the measurement window
+DIGITAL_GAP_HOP_S = 0.001
+
+
+def _seam_digital_gap_detail(out_path, cut_at, seg_start, next_end):
+    """A short drop to the silence floor at the cut, or None.
+
+    The level is read in short windows (2 ms, 1 ms hop): a longer window
+    averages the gap away — the same mistake the dip gate had to be
+    corrected for.
+    """
+    win_start = max(seg_start, cut_at - 0.15)
+    win_end = min(next_end, cut_at + 0.35)
+    if win_end - win_start < 0.1:
+        return None
+
+    sr = 16000
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-v", "error",
+         "-ss", f"{win_start:.3f}", "-t", f"{win_end - win_start:.3f}",
+         "-i", out_path, "-vn", "-ac", "1", "-ar", str(sr),
+         "-f", "s16le", "-"],
+        capture_output=True, timeout=LOCAL_TOOL_TIMEOUT)
+    if proc.returncode != 0 or len(proc.stdout) < int(0.1 * sr) * 2:
+        return None
+    n_samples = len(proc.stdout) // 2
+    samples = struct.unpack(f"<{n_samples}h", proc.stdout[:n_samples * 2])
+
+    win_n = max(1, int(DIGITAL_GAP_WINDOW_S * sr))
+    hop_n = max(1, int(DIGITAL_GAP_HOP_S * sr))
+    silent = []
+    for pos in range(0, n_samples - win_n + 1, hop_n):
+        level = _pcm_rms_db(samples, pos, pos + win_n)
+        silent.append(level is not None and level < DIGITAL_SILENCE_FLOOR_DB)
+
+    i = 0
+    while i < len(silent):
+        if not silent[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(silent) and silent[j]:
+            j += 1
+        g0 = win_start + i * hop_n / sr
+        g1 = win_start + min(n_samples, j * hop_n + win_n) / sr
+        gap_ms = (g1 - g0) * 1000.0
+        if DIGITAL_GAP_MIN_MS <= gap_ms <= DIGITAL_GAP_MAX_MS \
+                and g0 <= cut_at + DIGITAL_GAP_TOUCH_MS / 1000.0 \
+                and g1 >= cut_at - DIGITAL_GAP_TOUCH_MS / 1000.0:
+            before = _pcm_rms_db(samples, max(0, i * hop_n - int(0.05 * sr)),
+                                 i * hop_n)
+            after = _pcm_rms_db(samples, min(n_samples, j * hop_n),
+                                min(n_samples, j * hop_n + int(0.05 * sr)))
+            if before is not None and after is not None \
+                    and before > -45.0 and after > -45.0:
+                return f"{cut_at:.3f}s ({gap_ms:.1f} ms down to the silence floor, " \
+                       f"{before:.1f}->{after:.1f} dBFS around it, " \
+                       f"{g0:.3f}s-{g1:.3f}s)"
+        i = j
+    return None
+
+
 def gate_full_video(out_path, timeline_id, segments, allow_black=False):
     """Post-assembly QC on the concatenated full video.
 
@@ -512,6 +600,25 @@ def gate_full_video(out_path, timeline_id, segments, allow_black=False):
         if holes:
             for h in holes:
                 print(f"      audio hole at the cut: {h}")
+
+        # A digital gap is a separate defect from a dip: the waveform stops
+        # and restarts. It gets its own row because its caliber is its own
+        # (a run of near-zero samples at the cut, not an envelope dip), and
+        # because a reader of the gates file needs to see which criterion
+        # spoke.
+        gaps = []
+        for i in range(len(segments) - 1):
+            _, s0, d0 = segments[i]
+            _, s1, d1 = segments[i + 1]
+            cut_at = s0 + d0
+            gap = _seam_digital_gap_detail(out_path, cut_at, s0, s1 + d1)
+            if gap:
+                gaps.append(gap)
+        add("seam_digital_gap", "seam_digital_silence_run", len(gaps),
+            not gaps, "no digital gap at a cut (10-100 ms)")
+        if gaps:
+            for g in gaps:
+                print(f"      digital gap at the cut: {g}")
 
     if not measured:
         # The file may well carry a soundtrack — the probe could not say.

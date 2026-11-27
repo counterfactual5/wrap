@@ -62,6 +62,7 @@ Measured seams fail in these four ways; each has a check that catches it.
 | 2 | The picture jumps scale at the cut (near → wide) and nothing explains it | Measure the mean |Δluma| across the cut against the shot's own frame-to-frame variation; if it stands out, the cut is a visible jump — either match the framings or name the reset in the copy |
 | 3 | The audio dips under the cut and recovers (a hole, not a fade) | `gates_full_*.json` → `seam_audio_hole` (the level before, under and after the cut). It reads the level in **20 ms windows**: a long window averages a short hole away, and a gate that reports "clean" over a real dip is worse than no gate |
 | 4 | A short black dip at the cut is invisible to the old gate | `gates_full_*.json` → `black` and `black_with_sound` |
+| 5 | The sound **stops** under the cut (a clipped sound, not a quiet passage) | `gates_full_*.json` → `seam_digital_gap`. A separate row from `seam_audio_hole` because the caliber is its own: the dip gate needs a span of **≥ 40 ms**, so a shorter drop to the silence floor slips past it. Measured: a real clip whose audio began 27.9 ms after its picture put 27.5 ms of digital silence under a cut — the dip gate called it clean, the gap row catches it. A gap is reported only when the sound is **present on both sides** (a film that is silent on purpose has no gap), the gap is **short (10–100 ms)** (a longer silence is the next shot starting quietly) and it **touches the cut** |
 
 ## The delivered film must BE the encoding of the frame master
 
