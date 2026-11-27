@@ -113,6 +113,12 @@ Checks:
   **fails in S3 and is never encoded** — the bar is never lowered to let a hole through.
 - `core/rendering/holes.py` is the guard; `core/rendering/compose.py` is the flow. A frame
   the spec fades out on purpose is not a hole: the promise falls with the opacity.
+- **"mean alpha = 1.0" is not evidence of "no transparent frame".** If the master PNGs carry
+  no alpha channel at all (colour type 2, RGB), every frame reads 1.0 by construction and the
+  measurement cannot fail. What proves the absence of holes in that case is the **absence of
+  the alpha channel itself** — plus the frame count, the black-frame check and the freeze
+  check. Quoting the measured alpha as if it were a test is a vacuous check, and an
+  independent reviewer will say so.
 - **When reviewing a delivered film, look for the holes yourself**: the `black` and
   `black_with_sound` rows in `gates_full_*.json` report them, but they only run on the
   assembled film. Decode the frame master and look for transparent regions where a video
