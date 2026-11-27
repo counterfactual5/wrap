@@ -14,6 +14,9 @@ main() and the flow:
 - remotion:      props assembly and the `npx remotion render` driver
 - frames:        one pixel format for the whole frame sequence, and the
                  master/video binding check
+- holes:         the guard that proves the rendered frames carry the picture
+                 the spec promised (the renderer can leave a layer empty)
+- compose:       S3's flow - render, normalize, prove no holes
 - encoding:      audio ownership resolution and the mp4 encode
 
 The public API is re-exported here so `from core.rendering import X` keeps
@@ -35,4 +38,6 @@ from core.rendering.frames import (
     png_color_type,
     sequence_color_types,
 )
+from core.rendering.holes import find_holes, format_holes, required_opacity
+from core.rendering.compose import compose_frames
 from core.rendering.encoding import canvas_background, encode_mp4, video_audio_source

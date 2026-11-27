@@ -90,4 +90,33 @@ Checks:
   engine's own command and compare; if the re-encode loses frames too, the encoder is the
   problem, not the render.
 
+## The renderer can leave a frame empty — and that frame reaches the film as a black hole
+
+Remotion paints a video layer from a `<video>` element. That element can fail to deliver the
+frame it was asked for: it stays empty, the layer leaves a transparent gap, and the encoder
+composites the gap over the canvas background. The delivered film then has a **black hole**
+in it, with the soundtrack still playing underneath — a viewer sees the picture blink out.
+
+Measured on a real H3 clip (180 frames, one video layer covering the canvas): the first
+render left gaps at frames 89 and 90, and **the same spec re-rendered produced none**. The
+defect is a race in the renderer, not a property of the spec, so re-running the pipeline is
+not a fix — only a guard is.
+
+Checks:
+
+- S3 now runs the hole guard: it reads the rendered frame sequence, measures each frame's
+  mean alpha, and compares it with what the spec promised there (the strongest lower bound
+  the spec's video layers give — opacity × rect area). A frame that falls more than 5 %
+  below its promise is a hole.
+- The shot is re-rendered while holes remain (the race is not reproducible, so a second
+  render usually comes back clean). A shot that still has holes after the last attempt
+  **fails in S3 and is never encoded** — the bar is never lowered to let a hole through.
+- `core/rendering/holes.py` is the guard; `core/rendering/compose.py` is the flow. A frame
+  the spec fades out on purpose is not a hole: the promise falls with the opacity.
+- **When reviewing a delivered film, look for the holes yourself**: the `black` and
+  `black_with_sound` rows in `gates_full_*.json` report them, but they only run on the
+  assembled film. Decode the frame master and look for transparent regions where a video
+  layer should have painted — a transparent frame in the master is a hole, and it became a
+  black frame in the film.
+
 Part of the wrap skill — see skills/wrap/SKILL.md; pitfalls referenced live in pitfalls.md.
