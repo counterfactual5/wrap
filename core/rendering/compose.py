@@ -14,7 +14,8 @@ import os
 import sys
 
 from core.rendering.frames import normalize_frame_formats
-from core.rendering.holes import RENDER_ATTEMPTS, find_holes, format_holes
+from core.rendering.holes import (RENDER_ATTEMPTS, describe_holes, find_holes,
+                                  format_holes)
 from core.rendering.remotion import render_remotion
 
 
@@ -47,6 +48,10 @@ def compose_frames(spec, shot_id, frames_dir, render=None):
 
         holes = find_holes(spec, frames_dir, fps)
         if not holes:
+            # Say what the verdict rests on: a measurement, or the structural
+            # fact that the frames carry no alpha channel (in which case
+            # "mean alpha = 1.0" would be a constant, not a reading).
+            print(f"holes: {describe_holes(spec, frames_dir, shot_id, fps)}")
             return n
         print(f"holes: {format_holes(holes, shot_id)} "
               f"(render attempt {attempt}/{RENDER_ATTEMPTS})")

@@ -18,6 +18,8 @@ from core.rendering.compose import compose_frames
 from core.rendering.holes import (
     HOLE_TOLERANCE,
     RENDER_ATTEMPTS,
+    alpha_basis,
+    describe_holes,
     find_holes,
     format_holes,
     measured_opacity,
@@ -213,6 +215,57 @@ class ComposeFlowTests(unittest.TestCase):
     def test_the_attempt_budget_is_small_and_finite(self):
         self.assertGreaterEqual(RENDER_ATTEMPTS, 2)
         self.assertLessEqual(RENDER_ATTEMPTS, 5)
+
+
+class AlphaBasisTests(unittest.TestCase):
+    """What the guard's verdict rests on.
+
+    A sequence of frames that carry NO alpha channel reads "mean alpha =
+    1.0000" by construction: no frame can hold a transparent hole, so the
+    reading is a constant and quoting it as evidence would be a check that
+    cannot fail. The guard has to say which of the two it is.
+    """
+
+    def test_a_sequence_without_alpha_is_not_a_measurement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = os.path.join(tmp, "frames")
+            _write_frames(frames, 3)          # RGB, no alpha
+            basis = alpha_basis(frames)
+            self.assertEqual(basis["basis"], "no_alpha")
+            self.assertFalse(basis["can_show_transparent_hole"])
+            self.assertIn("structural argument", basis["note"])
+
+    def test_a_sequence_with_alpha_is_a_measurement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = os.path.join(tmp, "frames")
+            _write_frames(frames, 3, empty_at=(2,))   # one frame carries alpha
+            basis = alpha_basis(frames)
+            self.assertEqual(basis["basis"], "measured")
+            self.assertTrue(basis["can_show_transparent_hole"])
+
+    def test_the_summary_names_the_basis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = os.path.join(tmp, "frames")
+            _write_frames(frames, 3)
+            summary = describe_holes(_spec(), frames, "shot", 30)
+            self.assertIn("not a measurement", summary)
+            self.assertIn("alpha channel", summary.lower())
+
+    def test_the_summary_reports_a_measurement_when_it_has_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = os.path.join(tmp, "frames")
+            _write_frames(frames, 3, empty_at=(2,))
+            summary = describe_holes(_spec(), frames, "shot", 30)
+            self.assertIn("measured", summary)
+            self.assertIn("min mean alpha", summary)
+
+    def test_a_sequence_without_alpha_still_answers_the_question(self):
+        """No alpha channel means no frame CAN hold a transparent hole - the
+        verdict is right, it just must not be dressed up as a measurement."""
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = os.path.join(tmp, "frames")
+            _write_frames(frames, 3)
+            self.assertEqual(find_holes(_spec(), frames, 30), [])
 
 
 if __name__ == "__main__":

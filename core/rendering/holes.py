@@ -36,8 +36,19 @@ loudly when they persist.
 import os
 import subprocess
 
+from core.rendering.frames import sequence_color_types
 from core.rig.kinematics import eval_channel
 from core.runtime.timeouts import LOCAL_TOOL_TIMEOUT
+
+# A frame whose mean |dY| against the master exceeds this is not the master's
+# picture. Measured on a correct render of the same shot: every frame stayed
+# at or below 1.5 (the encoder's own quantization at crf 18), while the
+# format-switch defect showed 35-61 on the frames it corrupted.
+MASTER_DELTA_LIMIT = 6.0
+
+# The colour type of a PNG that carries an alpha channel (6 = RGBA) and the
+# one that does not (2 = RGB).
+COLOR_TYPE_RGBA = 6
 
 # A frame may fall this far below its requirement before it is called a hole.
 # It absorbs the renderer's own quantization and the components that draw on
@@ -139,6 +150,37 @@ def measured_opacity(frames_dir, fps=30):
     return values
 
 
+def alpha_basis(frames_dir):
+    """Whether these frames can show a transparent hole at all.
+
+    "measured"  - the frames carry an alpha channel, so the mean alpha of a
+                  frame is a real measurement and a frame that fell below the
+                  spec's promise really did fall below it.
+
+    "no_alpha"  - the frames carry NO alpha channel (PNG colour type 2).
+                  Then no frame CAN hold a transparent hole, and that is a
+                  STRUCTURAL argument, not a measurement: "mean alpha =
+                  1.0000" is what the reading gives by construction, and
+                  quoting it as evidence would be a check that cannot fail.
+
+    The two are reported apart on purpose. A hole the renderer painted as
+    opaque BLACK is invisible to this guard in either case - the whole-film
+    black gate is what covers that.
+    """
+    types = sequence_color_types(frames_dir)
+    has_alpha = COLOR_TYPE_RGBA in types
+    return {
+        "basis": "measured" if has_alpha else "no_alpha",
+        "color_types": sorted(types),
+        "can_show_transparent_hole": has_alpha,
+        "note": ("the frames carry an alpha channel, so the mean alpha is a measurement"
+                 if has_alpha else
+                 "the frames carry no alpha channel (PNG colour type 2), so no frame can hold "
+                 "a transparent hole - a structural argument; a hole painted as opaque black "
+                 "would not be visible here (the whole-film black gate covers that)"),
+    }
+
+
 def find_holes(spec, frames_dir, fps=30, tolerance=HOLE_TOLERANCE):
     """The frames the renderer left empty: a list of {"frame", "measured"}.
 
@@ -169,3 +211,19 @@ def format_holes(holes, shot_id):
     listed = ", ".join(str(h["frame"]) for h in holes)
     return (f"{shot_id}: {len(holes)} frame(s) the renderer left empty "
             f"(composition frames {listed})")
+
+
+def describe_holes(spec, frames_dir, shot_id, fps=30):
+    """The guard's verdict and the basis it stands on, as one line.
+
+    The basis matters as much as the verdict: a reader who only sees "no
+    holes" cannot tell a measurement from an argument that cannot fail.
+    """
+    basis = alpha_basis(frames_dir)
+    holes = find_holes(spec, frames_dir, fps)
+    verdict = format_holes(holes, shot_id)
+    if basis["basis"] == "measured":
+        cov = measured_opacity(frames_dir, fps)
+        low = f"; min mean alpha {min(cov):.4f}" if cov else ""
+        return f"{verdict} (measured: {basis['note']}{low})"
+    return f"{verdict} (not a measurement: {basis['note']})"
